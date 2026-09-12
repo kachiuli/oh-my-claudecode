@@ -8,7 +8,8 @@ Date: 2026-09-12. Environment: Windows, Node 24.18.1, Git, Vitest 4.1.11.
   `5281b19e0d64f8e6dc6767f2130299a88af2dc71`.
 - Initial fork HEAD was identical; upstream package version was 5.4.0.
 - Dedicated branch: `codex/glm-workflow-v1`.
-- No dependencies added, upstream history rewritten, or remote pushes made.
+- No dependencies added or upstream history rewritten. Publication targets the
+  personal fork; no pushes to the upstream repository.
 - Generated distribution and bridge outputs are build products, not part of the
   source change. Run `npm run build` before using the updated checkout CLI.
 

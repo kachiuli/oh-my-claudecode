@@ -2,6 +2,8 @@ English | [한국어](README.ko.md) | [中文](README.zh.md) | [日本語](READM
 
 # oh-my-claudecode
 
+**Personal fork:** I maintain this fork of [Yeachan Heo's oh-my-claudecode](https://github.com/Yeachan-Heo/oh-my-claudecode) for my own Claude-led development workflow with GLM workers and Codex review. [Why this fork exists](#why-i-maintain-this-fork) · [Set it up](#glm-workflow-v1-fork-setup). The upstream project, authors and community links are credited below.
+
 [![npm version](https://img.shields.io/npm/v/oh-my-claude-sisyphus?color=cb3837)](https://www.npmjs.com/package/oh-my-claude-sisyphus)
 [![npm downloads](https://img.shields.io/npm/dm/oh-my-claude-sisyphus?color=blue)](https://www.npmjs.com/package/oh-my-claude-sisyphus)
 [![GitHub stars](https://img.shields.io/github/stars/Yeachan-Heo/oh-my-claudecode?style=flat&color=yellow)](https://github.com/Yeachan-Heo/oh-my-claudecode/stargazers)
@@ -20,9 +22,26 @@ _Don't learn Claude Code. Just use OMC._
 
 **Fork opt-in workflow:** [Set up Claude planning, isolated GLM workers, and Codex review](#glm-workflow-v1-fork-setup). Includes installation, first-run instructions, limitations, and recovery steps. Existing OMC defaults remain unchanged.
 
-[Get Started](#quick-start) • [Documentation](https://yeachan-heo.github.io/oh-my-claudecode-website) • [CLI Reference](https://yeachan-heo.github.io/oh-my-claudecode-website/docs/#cli-reference) • [Workflows](https://yeachan-heo.github.io/oh-my-claudecode-website/docs/#workflows) • [Migration Guide](docs/MIGRATION.md) • [Discord](https://discord.gg/wSyUQYfhAw)
+[My Use Case](#why-i-maintain-this-fork) • [GLM Setup](#glm-workflow-v1-fork-setup) • [Upstream Quick Start](#quick-start) • [Documentation](https://yeachan-heo.github.io/oh-my-claudecode-website) • [CLI Reference](https://yeachan-heo.github.io/oh-my-claudecode-website/docs/#cli-reference) • [Workflows](https://yeachan-heo.github.io/oh-my-claudecode-website/docs/#workflows) • [Migration Guide](docs/MIGRATION.md) • [Discord](https://discord.gg/wSyUQYfhAw)
 
 ---
+
+## Why I maintain this fork
+
+I want to use my Claude subscription through Claude Code to lead work on my actual projects: understand the problem, plan the change, make architecture decisions and decide what is ready to integrate. I want GLM to handle routine implementation in parallel, while Codex provides an independent final review.
+
+My aim is to keep Claude's context and quota focused on decisions. Workers should return a small result, test evidence and a commit, so the lead can inspect relevant changes without reading every worker's full conversation.
+
+My intended workflow is:
+
+1. **Claude plans the work.** The lead splits a feature into clear tasks, assigns ownership of files and defines the interfaces and tests before implementation starts.
+2. **Three or four GLM workers implement it.** Each task gets a fresh process, a separate Git worktree and a defined scope. Workers return concise results and commits instead of merging their own work.
+3. **Claude accepts and checks the changes.** The lead inspects the results, explicitly integrates accepted commits onto a dedicated branch and runs local tests and other deterministic checks.
+4. **Codex reviews independently.** After those checks pass, Codex performs a read-only review of the integrated code against the requirements, without receiving GLM transcripts.
+5. **Claude decides which findings need action.** The lead validates findings, sends valid fixes back to GLM and checks the resulting changes. The default limit is an initial review plus one re-review, with no endless review loop.
+6. **I publish a coherent result.** I decide when to merge or push the integration branch and run remote CI, rather than triggering that process for every worker commit.
+
+This is the personal workflow V1 is intended to support; live provider authentication and the full setup still need validation. Start with the [setup and first-run guide below](#glm-workflow-v1-fork-setup) and read the [current verification limits](docs/GLM-WORKFLOW-VALIDATION.md). Existing OMC defaults remain available; persistent worker sessions and distributed execution are outside V1.
 
 ## Core Maintainers
 
