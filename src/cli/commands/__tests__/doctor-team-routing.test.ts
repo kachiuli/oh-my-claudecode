@@ -4,6 +4,7 @@ import type { TeamRoleProvider } from '../../../shared/types.js';
 const mocks = vi.hoisted(() => ({
   loadConfig: vi.fn(),
   probeCli: vi.fn(),
+  probeGlmCli: vi.fn(),
 }));
 
 vi.mock('../../../config/loader.js', () => ({
@@ -12,6 +13,7 @@ vi.mock('../../../config/loader.js', () => ({
 
 vi.mock('../../../team/cli-detection.js', () => ({
   probeCli: mocks.probeCli,
+  probeGlmCli: mocks.probeGlmCli,
 }));
 
 import { doctorTeamRoutingCommand } from '../doctor-team-routing.js';
@@ -44,6 +46,7 @@ describe('doctorTeamRoutingCommand', () => {
   beforeEach(() => {
     mocks.loadConfig.mockReset();
     mocks.probeCli.mockReset();
+    mocks.probeGlmCli.mockReset();
     mocks.loadConfig.mockReturnValue(configWithProviders([]));
     mocks.probeCli.mockReturnValue({ found: false, error: 'CLI resolver failed' });
     logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
@@ -53,6 +56,21 @@ describe('doctorTeamRoutingCommand', () => {
   afterEach(() => {
     logSpy.mockRestore();
     errorSpy.mockRestore();
+  });
+
+  it.each([false, true])('reports unavailable GLM without promising fallback (found=%s)', async found => {
+    mocks.loadConfig.mockReturnValue(configWithProviders(['glm']));
+    mocks.probeCli.mockReturnValue({ found: true });
+    mocks.probeGlmCli.mockReturnValue({ found, launchable: false, modelOverride: true, fallback: false, error: 'GLM unavailable' });
+    await doctorTeamRoutingCommand({});
+    const text = output(logSpy);
+    expect(text).toContain('GLM tasks fail closed');
+    expect(text).toContain('model override configured');
+    expect(text).not.toContain('All configured providers are available');
+    expect(text).not.toContain('can fall back');
+    logSpy.mockClear();
+    await doctorTeamRoutingCommand({ json: true });
+    expect(JSON.parse(String(logSpy.mock.calls[0]?.[0])).missing).toEqual(['glm']);
   });
 
   it('emits ordered JSON probes with resolved fields and only missing providers', async () => {

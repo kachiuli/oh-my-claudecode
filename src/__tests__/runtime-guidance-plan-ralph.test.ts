@@ -8,6 +8,7 @@ const availability = vi.hoisted(() => ({
   cursor: false,
   grok: false,
   antigravity: false,
+  glm: false,
 }));
 
 vi.mock('../team/model-contract.js', () => ({

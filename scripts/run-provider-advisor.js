@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawnSync } from 'child_process';
 import { mkdir, writeFile } from 'fs/promises';
-import { join } from 'path';
+import { join, isAbsolute } from 'path';
 import process from 'process';
 import { resolveOmcStateRoot } from './lib/state-root.mjs';
 
@@ -12,8 +12,21 @@ const PROVIDER_BINARIES = {
   antigravity: 'agy',
   grok: 'grok',
   cursor: 'cursor-agent',
+  glm: 'claude-glm',
 };
 const SHOULD_USE_WINDOWS_SHELL = process.platform === 'win32';
+
+function redactGlmText(text) {
+  let safe = String(text);
+  for (const [key, value] of Object.entries(process.env)) {
+    if (/(?:key|token|secret|password|credential|authorization)/i.test(key) && value && value.length >= 4) {
+      safe = safe.split(value).join('[REDACTED]');
+    }
+  }
+  return safe.replace(/\bBearer\s+[A-Za-z0-9._~+\/-]+/gi, 'Bearer [REDACTED]')
+    .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, '[REDACTED]')
+    .replace(/((?:api[_-]?key|access[_-]?token|password|secret)\s*[=:]\s*)[^\s,;]+/gi, '$1[REDACTED]');
+}
 
 // Antigravity (`agy`) headless print mode has a known upstream non-TTY bug
 // (google-antigravity/antigravity-cli#76) that, beyond the empty-exit-0 case,
@@ -52,6 +65,10 @@ const ANTIGRAVITY_TIMEOUT_MS = (() => {
  * - cursor: `cursor-agent --print --force --trust --sandbox disabled <prompt>`
  */
 function buildProviderArgs(provider, prompt, { pipePromptViaStdin = false } = {}) {
+  if (provider === 'glm') {
+    const model = process.env.OMC_EXTERNAL_MODELS_DEFAULT_GLM_MODEL || process.env.OMC_GLM_DEFAULT_MODEL;
+    return ['-p', ...(model ? ['--model', model] : [])];
+  }
   if (provider === 'codex') {
     return ['exec', '--dangerously-bypass-approvals-and-sandbox', pipePromptViaStdin ? '-' : prompt];
   }
@@ -81,6 +98,7 @@ function buildProviderArgs(provider, prompt, { pipePromptViaStdin = false } = {}
 }
 
 function shouldPipePromptViaStdin(provider, prompt) {
+  if (provider === 'glm') return true;
   if (provider === 'codex' || provider === 'gemini') {
     if (typeof prompt === 'string' && (prompt.includes('\n') || prompt.length > 500)) {
       return true;
@@ -199,8 +217,15 @@ function ensureBinary(provider, binary) {
     stdio: 'ignore',
     encoding: 'utf8',
     env: buildProviderEnv(provider),
-    shell: SHOULD_USE_WINDOWS_SHELL,
+    shell: provider === 'glm' ? false : SHOULD_USE_WINDOWS_SHELL,
   });
+  if (provider === 'glm') {
+    if (probe.error || probe.status !== 0) {
+      console.error('[ask-glm] local executable unavailable or version probe failed (fallback disabled)');
+      process.exit(1);
+    }
+    return;
+  }
 
   const isMissingOnWindowsShell = SHOULD_USE_WINDOWS_SHELL
     && probe.status !== 0
@@ -312,7 +337,12 @@ async function writeArtifact({ provider, originalTask, finalPrompt, rawOutput, e
 
 async function main() {
   const { provider, prompt } = parseArgs(process.argv.slice(2));
-  const binary = PROVIDER_BINARIES[provider];
+  const binary = provider === 'glm' ? process.env.OMC_GLM_COMMAND || 'claude-glm' : PROVIDER_BINARIES[provider];
+  if (provider === 'glm' && (/[\0\r\n]/.test(binary)
+    || (!isAbsolute(binary) && !/^[A-Za-z0-9._-]+$/.test(binary))
+    || (SHOULD_USE_WINDOWS_SHELL && /\.(cmd|bat|ps1)$/i.test(binary)))) {
+    throw new Error('GLM command must be a directly executable filename or absolute path; shell commands are unsupported');
+  }
 
   guardProviderPlatform(provider);
   ensureBinary(provider, binary);
@@ -323,7 +353,8 @@ async function main() {
     encoding: 'utf8',
     maxBuffer: 10 * 1024 * 1024,
     env: buildProviderEnv(provider),
-    shell: SHOULD_USE_WINDOWS_SHELL,
+    shell: provider === 'glm' ? false : SHOULD_USE_WINDOWS_SHELL,
+    ...(provider === 'glm' ? { timeout: 300000, killSignal: 'SIGKILL' } : {}),
     // Bound antigravity so an upstream non-TTY hang (#76) fails cleanly instead of
     // blocking forever; agy's own --print-timeout does not work. SIGKILL (not a
     // catchable SIGTERM) guarantees spawnSync returns even if agy traps signals.
@@ -357,16 +388,16 @@ async function main() {
 
   const artifactPath = await writeArtifact({
     provider,
-    originalTask: resolveOriginalTask(prompt),
-    finalPrompt: prompt,
-    rawOutput,
+    originalTask: provider === 'glm' ? redactGlmText(resolveOriginalTask(prompt)) : resolveOriginalTask(prompt),
+    finalPrompt: provider === 'glm' ? redactGlmText(prompt) : prompt,
+    rawOutput: provider === 'glm' ? redactGlmText(rawOutput) : rawOutput,
     exitCode,
   });
 
   console.log(artifactPath);
 
   if (run.error) {
-    console.error(`[ask-${provider}] ${run.error.message}`);
+    console.error(provider === 'glm' ? '[ask-glm] provider process failed (fallback disabled)' : `[ask-${provider}] ${run.error.message}`);
   }
 
   if (exitCode !== 0) {

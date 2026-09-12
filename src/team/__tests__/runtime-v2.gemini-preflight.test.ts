@@ -161,6 +161,48 @@ describe('runtime-v2 Gemini preflight routing', () => {
     if (home) await rm(home, { recursive: true, force: true });
   });
 
+  it('fails a missing GLM executable without falling back to Claude', async () => {
+    cwd = await mkdtemp(join(tmpdir(), 'glm-missing-preflight-'));
+    const { startTeamV2 } = await import('../runtime-v2.js');
+    await expect(startTeamV2({ teamName: 'glm-missing', workerCount: 1, agentTypes: ['glm'], tasks: [], cwd,
+      pluginConfig: { team: { glm: { command: join(cwd, 'missing-glm'), fallback: false } } },
+    })).rejects.toThrow('fallback disabled');
+    expect(modelContractMocks.resolveValidatedBinaryPath).not.toHaveBeenCalledWith('claude');
+    expect(mocks.createTeamSession).not.toHaveBeenCalled();
+  });
+
+  it('enforces the GLM pool limit before creating panes', async () => {
+    cwd = await mkdtemp(join(tmpdir(), 'glm-limit-preflight-'));
+    const { startTeamV2 } = await import('../runtime-v2.js');
+    await expect(startTeamV2({ teamName: 'glm-limit', workerCount: 7, agentTypes: ['glm'], tasks: [], cwd,
+      pluginConfig: { team: { glm: { command: process.execPath } } },
+    })).rejects.toThrow('maxWorkers (6)');
+    expect(mocks.createTeamSession).not.toHaveBeenCalled();
+  });
+
+  it('rejects GLM auto-merge before repository or pane operations', async () => {
+    cwd = await mkdtemp(join(tmpdir(), 'glm-merge-preflight-'));
+    const { startTeamV2 } = await import('../runtime-v2.js');
+    await expect(startTeamV2({ teamName: 'glm-merge', workerCount: 1, agentTypes: ['glm'], tasks: [], cwd,
+      autoMerge: true, pluginConfig: {},
+    })).rejects.toThrow('explicit lead integration');
+    expect(mocks.createTeamSession).not.toHaveBeenCalled();
+  });
+
+  it('promotes direct GLM selection to native named worktrees', async () => {
+    cwd = await mkdtemp(join(tmpdir(), 'glm-worktree-preflight-'));
+    const worktrees = await import('../git-worktree.js');
+    const ensure = vi.spyOn(worktrees, 'ensureWorkerWorktree').mockImplementation(() => { throw new Error('test-worktree-stop'); });
+    try {
+      const { startTeamV2 } = await import('../runtime-v2.js');
+      await expect(startTeamV2({ teamName: 'glm-isolation', workerCount: 1, agentTypes: ['glm'], tasks: [], cwd,
+        pluginConfig: { team: { glm: { command: process.execPath }, ops: { worktreeMode: 'disabled' } } },
+      })).rejects.toThrow('test-worktree-stop');
+      expect(ensure).toHaveBeenCalledWith('glm-isolation', 'worker-1', cwd, expect.objectContaining({ mode: 'named' }));
+      expect(mocks.createTeamSession).not.toHaveBeenCalled();
+    } finally { ensure.mockRestore(); }
+  });
+
   it('rejects an invalid worker count before provider preflight or state creation', async () => {
     cwd = await mkdtemp(join(tmpdir(), 'invalid-worker-count-'));
     const { startTeamV2 } = await import('../runtime-v2.js');

@@ -2,6 +2,10 @@
 
 > Internal API documentation for oh-my-claudecode developers and contributors.
 
+The fork's opt-in [Claude/GLM/Codex workflow](GLM-WORKFLOW.md) exposes explicit
+lead operations from `src/team/workflow.ts`, backed by native worktrees and
+bounded artifacts. See the [design audit](design/glm-workflow-v1.md).
+
 ## Table of Contents
 1. [Notepad Wisdom System](#notepad-wisdom-system)
 2. [Delegation Categories](#delegation-categories)

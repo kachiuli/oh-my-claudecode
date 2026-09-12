@@ -331,4 +331,12 @@ describe('cli-detection', () => {
     expect(mockSpawnSync).toHaveBeenNthCalledWith(1, 'which', ['claude'], expect.objectContaining({ shell: false }));
     expect(mockSpawnSync).toHaveBeenNthCalledWith(6, 'which', ['agy'], expect.objectContaining({ shell: false }));
   });
+
+  it('includes GLM only when explicitly requested by the detection caller', () => {
+    mockSpawnSync.mockReturnValue(spawnResult({ status: 1 }));
+    const result = detectAllClis({ glm: { command: process.execPath, fallback: false, defaultWorkers: 4, maxWorkers: 6 } });
+    expect(Object.keys(result)).toEqual(['claude', 'codex', 'gemini', 'cursor', 'grok', 'antigravity', 'glm']);
+    expect(result.glm.available).toBe(false);
+    expect(mockSpawnSync).toHaveBeenLastCalledWith(process.execPath, ['--version'], expect.objectContaining({ shell: false }));
+  });
 });

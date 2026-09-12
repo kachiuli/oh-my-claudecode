@@ -258,6 +258,19 @@ describe('scaleUp duplicate worker guard', () => {
     ]);
   });
 
+  it('isolates GLM scale-up even when the existing team shares a workspace', async () => {
+    config = makeConfig({ worktree_mode: 'disabled', next_worker_index: 2 });
+    const worktreePath = join(cwd, '.omc', 'team', 'demo-team', 'worktrees', 'worker-2');
+    await mkdir(worktreePath, { recursive: true });
+    gitWorktreeMocks.ensureWorkerWorktree.mockReturnValue({ path: worktreePath, branch: 'omc-team/demo-team/worker-2', detached: false, created: true });
+    const result = await scaleUp('demo-team', 1, 'glm', [{ subject: 'demo', description: 'demo task' }], cwd,
+      { OMC_TEAM_SCALING_ENABLED: '1', OMC_TEAM_SKIP_READY_WAIT: '1' });
+    expect(result).toMatchObject({ ok: true });
+    expect(gitWorktreeMocks.ensureWorkerWorktree).toHaveBeenCalledWith('demo-team', 'worker-2', resolve(cwd), expect.objectContaining({ mode: 'named' }));
+    expect(config.workers.find(worker => worker.name === 'worker-2')).toMatchObject({ worker_cli: 'glm', working_dir: worktreePath });
+    gitWorktreeMocks.ensureWorkerWorktree.mockReset();
+  });
+
   it.each(['claude', 'codex', 'gemini', 'antigravity', 'grok', 'cursor'] as const)(
     'passes the shared default model through unrouted scale-up for %s', async (provider) => {
       config = makeConfig({ agent_type: provider, next_worker_index: 2 });

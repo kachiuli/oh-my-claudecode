@@ -166,6 +166,15 @@ async function stopDisposableProvider(child: ReturnType<typeof spawn>): Promise<
 }
 
 describe('worker launch acknowledgement', () => {
+  it('round-trips a GLM launch identity through persisted validation', async () => {
+    cwd = await createFixture('glm-worker-launch-ack-');
+    const launch = await prepareWorkerLaunchAttempt({ cwd, teamName: 'glm-launch', workerName: 'worker-1',
+      paneId: '%2', provider: 'glm', runtimeCliPath: process.execPath });
+    const loaded = await loadWorkerLaunchAttempt({ cwd, teamName: 'glm-launch', workerName: 'worker-1',
+      paneId: '%2', provider: 'glm', attemptId: launch.attempt_id, runtimeCliPath: process.execPath });
+    expect(loaded?.provider).toBe('glm');
+    expect(loaded?.attempt_id).toBe(launch.attempt_id);
+  });
   it('accepts only the exact child-written acknowledgement before running the provider', async () => {
     const launchAttempt = await attempt();
     const stopPath = join(cwd, 'provider-stop');

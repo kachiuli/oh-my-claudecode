@@ -114,10 +114,10 @@ function isNonEmptyString(value: unknown): value is string {
 function isOptionalExternalModelsDefaults(value: unknown): boolean {
   if (value === undefined) return true;
   if (!isRecord(value)) return false;
-  const allowed = new Set(['provider', 'codexModel', 'geminiModel', 'grokModel', 'antigravityModel', 'cursorModel']);
+  const allowed = new Set(['provider', 'codexModel', 'geminiModel', 'grokModel', 'antigravityModel', 'cursorModel', 'glmModel']);
   if (Object.keys(value).some(key => !allowed.has(key))) return false;
   if (value.provider !== undefined && !['codex', 'gemini', 'antigravity'].includes(value.provider as string)) return false;
-  return ['codexModel', 'geminiModel', 'grokModel', 'antigravityModel', 'cursorModel']
+  return ['codexModel', 'geminiModel', 'grokModel', 'antigravityModel', 'cursorModel', 'glmModel']
     .every(key => value[key] === undefined || value[key] === '' || isNonEmptyString(value[key]));
 }
 
@@ -147,7 +147,7 @@ function isWorkerInfo(value: unknown): boolean {
   if (!isRecord(value) || typeof value.name !== 'string' || !WORKER_NAME_SAFE_PATTERN.test(value.name) || !isSafeCounter(value.index) || value.index < 1) return false;
   return (value.role === undefined || typeof value.role === 'string')
     && (value.assigned_tasks === undefined || isStringArray(value.assigned_tasks))
-    && (value.worker_cli === undefined || ['claude', 'codex', 'gemini', 'cursor', 'grok', 'antigravity'].includes(value.worker_cli as string))
+    && (value.worker_cli === undefined || ['claude', 'codex', 'gemini', 'cursor', 'grok', 'antigravity', 'glm'].includes(value.worker_cli as string))
     && (value.pid === undefined || (isSafeCounter(value.pid) && value.pid > 0))
     && (value.pane_id === undefined || typeof value.pane_id === 'string')
     && (value.working_dir === undefined || typeof value.working_dir === 'string')
@@ -168,7 +168,7 @@ function isWorkerInfo(value: unknown): boolean {
 
 function isLaunchDescriptor(value: unknown): boolean {
   return isRecord(value) && value.schema_version === 1
-    && ['claude', 'codex', 'gemini', 'cursor', 'grok', 'antigravity'].includes(value.provider as string)
+    && ['claude', 'codex', 'gemini', 'cursor', 'grok', 'antigravity', 'glm'].includes(value.provider as string)
     && (value.model === null || typeof value.model === 'string')
     && isNonEmptyString(value.binary) && isStringArray(value.args);
 }
@@ -227,6 +227,7 @@ function isTeamConfig(value: unknown, requireRevision: boolean, expectedTeamName
     || (value.worker_launch_mode !== undefined && !['interactive', 'prompt'].includes(value.worker_launch_mode as string))
     || !isSafeCounter(value.worker_count)
     || !isValidPersistedMaxWorkers(value.max_workers)
+    || (value.glm_max_workers !== undefined && !isValidPersistedMaxWorkers(value.glm_max_workers))
     || !Array.isArray(value.workers) || value.worker_count !== value.workers.length
     || !value.workers.every(isWorkerInfo) || !hasUniqueWorkerIdentity(value.workers)
     || !isTimestamp(value.created_at) || !isNonEmptyString(value.tmux_session)
@@ -308,7 +309,7 @@ function isResolvedRoleRoute(value: unknown): value is { primary: RoleAssignment
 function isRoleAssignment(value: unknown, allowEmptyExternalModel = false): value is RoleAssignment {
   const provider = isRecord(value) ? value.provider as string : undefined;
   return isRecord(value)
-    && ['claude', 'codex', 'gemini', 'grok', 'cursor', 'antigravity'].includes(provider as string)
+    && ['claude', 'codex', 'gemini', 'grok', 'cursor', 'antigravity', 'glm'].includes(provider as string)
     && (isNonEmptyString(value.model) || (allowEmptyExternalModel && provider !== 'claude' && value.model === ''))
     && KNOWN_AGENT_NAMES.some(agent => agent === value.agent);
 }
