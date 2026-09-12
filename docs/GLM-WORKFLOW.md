@@ -4,6 +4,10 @@ This opt-in V1 assigns planning and integration to the Claude Code lead, bulk
 implementation to local GLM wrappers, and independent final review to Codex CLI.
 Without this profile, normal OMC routing and provider defaults remain unchanged.
 
+Start with the [README setup and first-run instructions](../README.md#glm-workflow-v1-fork-setup)
+to build this fork, configure the separate GLM profile, and understand the current
+validation limits. This guide supplies the detailed plan and command reference.
+
 ## Configure the local provider
 
 Add the following to your OMC configuration (`.claude/omc.jsonc` in the project or
@@ -88,9 +92,16 @@ whether a review finding is valid.
 
 ## Prepare a scoped plan
 
-Start from a clean Git checkout. The lead writes a JSON plan before dispatch.
-Use the exact current commit SHA for `baseCommit`; choose a dedicated integration
-branch, never `main` or `master`. A one-task illustration:
+Start from a clean Git checkout. Commit or ignore project configuration before
+capturing the base with `git rev-parse HEAD`. The lead writes the JSON plan under
+`.omc/plans/feature-x.json` before dispatch; keep this plan and subsequent decision
+and fix files untracked or ignored. Untracked files under `.omc/` are allowed by
+the workflow's clean-checkout check; a new untracked `plan.json` at the repository
+root would block initialization.
+
+Use the exact current commit SHA for every initial `baseCommit`; choose a new,
+dedicated integration branch, never `main` or `master`. Run workflow commands from
+the target project's root. A one-task illustration:
 
 ```json
 {
@@ -127,7 +138,7 @@ expansion takes place. On Windows, use directly executable commands, for example
 `node` plus a script path instead of a shell-only npm shim.
 
 ```text
-omc team workflow init --file plan.json --workers 4
+omc team workflow init --file .omc/plans/feature-x.json --workers 4
 omc team workflow run feature-x
 omc team workflow status feature-x
 ```
@@ -139,8 +150,10 @@ ambiguous output needs lead inspection rather than destructive retry cleanup.
 Each worker uses OMC's native named worktree and branch. Canonical workflow state
 stays under the leader's OMC team root. Workers must commit their task, stay within
 write ownership, preserve their assigned branch, and return a concise result.
-Worktrees provide Git isolation, not an operating-system security sandbox. Use a
-trusted local wrapper and additional OS isolation if required by your environment.
+GLM workers currently launch with `--dangerously-skip-permissions`, which bypasses
+Claude Code's interactive permission prompts. Worktrees provide Git isolation,
+not an operating-system security sandbox. Use a trusted local wrapper and
+additional OS isolation if required by your environment.
 
 ## Accept and verify
 
@@ -182,8 +195,8 @@ The Claude lead evaluates each finding and supplies decisions in a JSON array:
 ```
 
 ```text
-omc team workflow adjudicate feature-x --file decisions.json
-omc team workflow add-fix feature-x --file fix.json
+omc team workflow adjudicate feature-x --file .omc/plans/decisions.json
+omc team workflow add-fix feature-x --file .omc/plans/fix.json
 omc team workflow run feature-x
 omc team workflow accept feature-x fix-backend
 omc team workflow verify feature-x

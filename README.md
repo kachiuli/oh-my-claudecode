@@ -18,7 +18,7 @@ English | [한국어](README.ko.md) | [中文](README.zh.md) | [日本語](READM
 
 _Don't learn Claude Code. Just use OMC._
 
-**Fork opt-in workflow:** [Claude planning, isolated GLM implementation workers, and independent Codex review](docs/GLM-WORKFLOW.md). Existing OMC defaults remain unchanged.
+**Fork opt-in workflow:** [Set up Claude planning, isolated GLM workers, and Codex review](#glm-workflow-v1-fork-setup). Includes installation, first-run instructions, limitations, and recovery steps. Existing OMC defaults remain unchanged.
 
 [Get Started](#quick-start) • [Documentation](https://yeachan-heo.github.io/oh-my-claudecode-website) • [CLI Reference](https://yeachan-heo.github.io/oh-my-claudecode-website/docs/#cli-reference) • [Workflows](https://yeachan-heo.github.io/oh-my-claudecode-website/docs/#workflows) • [Migration Guide](docs/MIGRATION.md) • [Discord](https://discord.gg/wSyUQYfhAw)
 
@@ -53,6 +53,8 @@ _Don't learn Claude Code. Just use OMC._
 | Junho Yeo      | [@junhoyeo](https://github.com/junhoyeo)       | 15      |
 
 ## Quick Start
+
+For this fork's GLM additions, use the [GLM setup below](#glm-workflow-v1-fork-setup); the upstream marketplace and published npm package do not contain these unpublished changes.
 
 **Step 1: Install**
 
@@ -146,8 +148,9 @@ OMC exposes two different surfaces:
 | Feature                                        | Terminal CLI                                  | In-session skill                                                        | Notes                                                                                                                                |
 | ---------------------------------------------- | --------------------------------------------- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
 | Setup                                          | `omc setup`                                   | `/omc-setup`                                                            | Both are real entrypoints.                                                                                                            |
-| Ask providers                                  | `omc ask codex "review this patch"`           | `/ask codex "review this patch"`                                        | Both route through the same advisor flow. Providers: `claude`, `codex`, `gemini`, `antigravity`, `grok`, `cursor`.                                            |
+| Ask providers                                  | `omc ask codex "review this patch"`           | `/ask codex "review this patch"`                                        | Both route through the same advisor flow. Providers: `claude`, `codex`, `gemini`, `antigravity`, `grok`, `cursor`; this fork also adds `glm`.                                            |
 | Team orchestration                             | `omc team 2:codex "review auth flow"`         | `/team 3:executor "fix all TypeScript errors"`                          | Both exist, but they are different runtimes: `omc team` launches tmux CLI workers; `/team` runs the in-session native team workflow. |
+| Claude/GLM/Codex workflow (this fork)            | `omc team workflow init --file .omc/plans/feature-x.json` | Claude lead invokes the terminal operations                       | Explicit scoped plan, worker acceptance, verification, review and remediation gates. See [setup](#glm-workflow-v1-fork-setup). |
 | Pre-flight danger scan                         | `omc lookout scan --brief "..." [--json] [--strict]` | —                                                                | Advisory only: scans the task briefing and workspace before an unattended run and reports danger findings (findings/severity contract). Exit codes: 0 for successful non-strict scans (and strict scans without high-risk signals), 1 `--strict` with high-risk signals, 2 usage/scan error. |
 | Autopilot / Ralph / Execute / Deep Interview   | —                                             | `/autopilot ...`, `/ralph ...`, `/execute ...`, `/deep-interview ...`   | These are in-session skills. There is no `omc autopilot` / `omc ralph` / `omc execute` CLI subcommand in this repo.                  |
 | Autoresearch                                   | `omc autoresearch` (**hard-deprecated shim**) | `/deep-interview --autoresearch ...` + `/oh-my-claudecode:autoresearch` | Setup stays in deep-interview; execution now belongs to the stateful skill.                                                          |
@@ -167,6 +170,150 @@ If you're uncertain about requirements, have a vague idea, or want to micromanag
 ```
 
 The deep interview uses Socratic questioning to clarify your thinking before any code is written. It exposes hidden assumptions and measures clarity across weighted dimensions, ensuring you know exactly what to build before execution begins.
+
+## GLM workflow V1: fork setup
+
+This opt-in workflow keeps **Claude as the lead**, runs **GLM implementation workers in separate Git worktrees**, and asks **Codex for independent review**. Claude supplies the plan, accepts commits and decides what to do with review findings. The controller does not start a Claude lead for you.
+
+**Current readiness:** suitable for a controlled trial, starting in a separate clone of your project. The implementation passed 92 targeted tests, 17 selected GLM regression checks, build, lint and typechecking. Actual authenticated GLM/Codex execution has not been tested. The broader Windows test suite has failures; some match upstream, and others remain unclassified. See the [validation report](docs/GLM-WORKFLOW-VALIDATION.md) before relying on it for daily work.
+
+### 1. Build and select this fork
+
+Use the checkout containing the `codex/glm-workflow-v1` changes. These additions have not been published to npm; installing the upstream package or plugin alone will not enable them. You need Git, a supported Node.js version (for example 22 or 24), and installed/authenticated Claude Code and Codex CLIs.
+
+Run from this fork's checkout:
+
+```bash
+npm ci
+npm run build
+node bridge/cli.cjs team workflow --help
+```
+
+To use the `omc` commands below from your project directory, you can then run `npm link` from the fork checkout. This changes the globally linked OMC command to this checkout; rebuilding here updates the code it runs. Check `omc team workflow --help` before proceeding.
+
+If you prefer a local invocation, replace `omc` in every command below with `node` and the absolute path to this checkout's `bridge/cli.cjs`. For example, on Windows:
+
+```powershell
+node C:/dev/oh-my-claudecode/bridge/cli.cjs team workflow --help
+```
+
+Give Claude the same absolute CLI path if its shell uses a different OMC installation. Run workflow commands from the **project you want to change**, not from the OMC source checkout.
+
+### 2. Create a separate GLM profile and wrapper
+
+Follow Z.AI's [manual Claude Code configuration instructions](https://docs.z.ai/devpack/tool/claude) for your endpoint, credentials and supported models, but save the GLM settings in **`~/.claude-glm/settings.json`**. Keep your ordinary Claude profile for the lead. Do not run a setup helper that overwrites the default Claude profile. Keep credentials outside your project and out of OMC configuration, logs and commits.
+
+On Linux, macOS or a POSIX environment such as WSL, create an executable named `claude-glm` outside the repository and place it on PATH:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+export CLAUDE_CONFIG_DIR="$HOME/.claude-glm"
+exec claude "$@"
+```
+
+Make the wrapper executable with `chmod +x /absolute/path/to/claude-glm`. It must preserve arguments and must not print credentials. Run the wrapper and all related tools inside the same POSIX environment.
+
+**Native Windows:** this launch path requires a directly executable wrapper, such as an `.exe`. `.cmd`, `.bat` and `.ps1` wrappers are rejected because OMC launches GLM without a shell. The Bash wrapper above is for a POSIX environment; it is not a PowerShell script. A trusted local wrapper must select your GLM profile and forward Claude CLI arguments.
+
+### 3. Enable the routing profile
+
+Add or merge this configuration into **`~/.config/claude-omc/config.jsonc`** for your user, or **`.claude/omc.jsonc`** for the target project:
+
+```json
+{
+  "team": {
+    "profile": "claude-glm-codex",
+    "glm": {
+      "command": "claude-glm",
+      "fallback": false,
+      "defaultWorkers": 4,
+      "maxWorkers": 6
+    }
+  }
+}
+```
+
+`command` is one executable name on PATH or an absolute executable path, with no arguments appended. `OMC_GLM_COMMAND` overrides it. Omit model settings to use your wrapper's default; to choose a model, set `externalModels.defaults.glmModel` to a model ID supported by your plan. `OMC_EXTERNAL_MODELS_DEFAULT_GLM_MODEL` overrides that value.
+
+The profile routes planner/architect to Claude HIGH, executor/debugger/test-engineer to GLM, and critic/code-reviewer to Codex. Explicit per-role settings retain precedence; the strict workflow rejects an executor other than GLM or reviewer other than Codex. Keep Claude specialist use focused on architecture or difficult decisions; routine implementation belongs to GLM.
+
+The default is **4 concurrent workers**, with a configured ceiling of **6**. These are local OMC limits, not a promise about subscription capacity; excess assignments wait in the queue. V1 requires `fallback: false`: a missing GLM executable fails instead of silently switching to Claude. `fallback: true` is rejected.
+
+```text
+omc doctor --team-routing
+omc ask glm "Reply with a short confirmation. Do not modify files."
+```
+
+Doctor checks configuration and executable availability, not authentication or which endpoint your wrapper uses. The small `ask` is a live provider call and consumes quota. Confirm your separate GLM profile works before dispatching workers, and confirm Codex authentication separately.
+
+### 4. Run a small task in a separate project clone
+
+Commit your existing project work, create a separate clone and open that clone in Claude Code. Begin with a small change and clear tests. Keep the checkout clean: use user-level OMC configuration, or commit/ignore intended project configuration before capturing the base commit. Save your plan as `.omc/plans/feature-x.json`; untracked `.omc` artifacts are allowed. An untracked root-level `plan.json` or `.claude/omc.jsonc` can otherwise block startup.
+
+Give the Claude lead your feature request and the absolute path to this fork's `docs/GLM-WORKFLOW.md`. Ask it to prepare a plan using the [complete plan schema and example](docs/GLM-WORKFLOW.md#prepare-a-scoped-plan) and invoke the workflow commands through the fork's CLI. Give each task an objective, current base commit, owned files, prohibited files, dependencies, contracts, acceptance criteria and executable test commands. Independent workers need separate write scopes; order overlapping tasks with dependencies. Choose a dedicated integration branch, not `main` or `master`.
+
+Fresh worktrees do not automatically receive ignored dependencies or local `.env` files. Include the required dependency setup and test prerequisites in the task, using the project's existing lockfile and tools. Keep credentials out of the plan.
+
+The following examples use plan name `feature-x` and task ID `backend`. Replace them with your plan's values. The `init` command reads the saved plan and creates the integration branch; run all subsequent operations from that same clone.
+
+```text
+omc team workflow init --file .omc/plans/feature-x.json --workers 4
+omc team workflow run feature-x
+omc team workflow status feature-x
+```
+
+Test commands in the plan use executable/argument arrays without shell expansion. On Windows, use a directly executable command such as `node` plus a script path rather than a shell-only npm shim.
+
+Workers must produce one coherent commit. The lead inspects each result and diff, then explicitly accepts or rejects it:
+
+```text
+omc team workflow accept feature-x backend
+omc team workflow reject feature-x unwanted-task --reason "Outside the agreed scope"
+```
+
+These illustrate separate decisions; only use `reject` for an actual task you intend to reject. Only accepted commits are integrated. Run again after accepting dependencies to dispatch newly ready tasks. Once intended work is integrated, run deterministic checks before Codex review:
+
+```text
+omc team workflow verify feature-x
+omc team workflow review feature-x
+```
+
+Codex review requests a **read-only sandbox** and receives the task requirements and integrated changes, without GLM transcripts. Claude must inspect the findings and record `fix` or `dismiss` decisions with reasons. If findings require changes, prepare the [decision and fix files](docs/GLM-WORKFLOW.md#independent-review-and-bounded-remediation), then:
+
+```text
+omc team workflow adjudicate feature-x --file .omc/plans/decisions.json
+omc team workflow add-fix feature-x --file .omc/plans/fix.json
+omc team workflow run feature-x
+omc team workflow accept feature-x fix-backend
+omc team workflow verify feature-x
+omc team workflow review feature-x
+```
+
+Replace `fix-backend` with the fix task's ID. Dismissed findings need recorded reasons but no fix task; a clean review needs no remediation.
+
+The default budget is **2 review passes total**: the initial review and at most one re-review. Failed review attempts also consume a pass. Unresolved accepted findings or an exhausted budget do not automatically become success. After the gates pass:
+
+```text
+omc team workflow finish feature-x
+omc team workflow cleanup feature-x
+```
+
+Cleanup removes only clean, accepted worktrees after completion; it retains dirty or rejected work and the workflow ledger. Review the final diff and your project's test results before merging or pushing. The workflow does not automatically push worker commits or wait for remote CI.
+
+**Which team command should I use?** `omc team 4:glm "task"` launches ordinary GLM team panes and requires tmux/psmux plus runtime-v2. It does not enforce the complete plan, acceptance and review process above. Use **`omc team workflow`** for that process; its local process controller does not require tmux.
+
+**Worker permissions:** GLM workers launch with `--dangerously-skip-permissions`. Use a trusted wrapper: worktrees separate Git work but do not sandbox filesystem or network access. Scope and branch checks reject invalid results after execution; they do not prevent every out-of-scope action. Keep the first trial in a separate clone with only the access it needs.
+
+### 5. Inspect results and report bugs
+
+`omc team workflow status feature-x` returns concise task status, commits, test summaries, risks and artifact paths. Normal status is capped at 16 KiB and identifies omitted entries; follow the returned state/artifact paths for complete evidence. Full worker logs are not automatically sent to the lead.
+
+If a command fails, interrupt an active run if needed and **preserve the worktrees and `.omc` files**. Do not force-delete dirty work or repeatedly rerun an interrupted task. V1 starts fresh worker processes and does not automatically resume timed-out or interrupted assignments. Inspect preserved changes before beginning a new scoped workflow.
+
+For a bug report, include the fork commit (`git rev-parse HEAD` in the OMC checkout), operating system, exact command, expected result, error message and workflow status. Include only relevant artifact excerpts, with credentials removed. Check [troubleshooting](docs/GLM-WORKFLOW.md#troubleshooting) for missing wrappers, scope failures, stale verification and exhausted review budgets.
+
+For the full contract and command walkthrough, read the [GLM workflow guide](docs/GLM-WORKFLOW.md). The [validation report](docs/GLM-WORKFLOW-VALIDATION.md) lists tested behavior and remaining limitations; the [V2 roadmap](docs/GLM-WORKFLOW-V2.md) records deferred features.
 
 ## Team Mode (Recommended)
 
