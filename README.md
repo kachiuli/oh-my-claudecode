@@ -196,9 +196,34 @@ This opt-in workflow keeps **Claude as the lead**, runs **GLM implementation wor
 
 **Current readiness:** suitable for a controlled trial, starting in a separate clone of your project. See the [validation report](docs/GLM-WORKFLOW-VALIDATION.md) for exact test results, independent-review fixes and remaining limits. Actual authenticated GLM/Codex execution has not been tested. The broader Windows test suite has failures; some match upstream, and others remain unclassified.
 
+You will configure three commands, each with its own provider access:
+
+| Command | Account / configuration | Job |
+| --- | --- | --- |
+| `claude` | Your normal Claude Code profile and Anthropic access | Lead: plan, inspect and integrate |
+| `claude-glm` | A second Claude Code profile with your Z.AI key | GLM workers: implement scoped tasks |
+| `codex` | Your Codex CLI sign-in | Independently review integrated changes |
+
+Claude and GLM use the **same Claude Code executable with different settings**. You do not switch the lead to GLM. OMC starts GLM processes through the wrapper and starts Codex when the lead invokes the review operation.
+
+### 0. Choose one environment
+
+The commands below use **Bash on Linux, macOS or WSL2**. For Windows, use an Ubuntu WSL2 terminal for this walkthrough. If needed, run `wsl --install -d Ubuntu` from an administrator PowerShell window, restart when requested, then open Ubuntu and complete its first-run user setup. See [Microsoft's WSL installation guide](https://learn.microsoft.com/en-us/windows/wsl/install).
+
+Install Git, Node.js 22 or 24 with npm, Claude Code, Codex and this fork **inside that same environment**. Keep the trial repositories there too, for example under `~/dev`. Windows installations and logins do not automatically provide the Linux commands or credentials. Native Windows requires a custom executable GLM wrapper; this fork does not ship one, so the Bash instructions are the complete example here.
+
+Before the provider checks in steps 2–5, make a separate clone of the project you want to change and use it as your trial directory. Commit any work you need to carry over before cloning; uncommitted changes are not copied. Keep this trial clone separate from the OMC source checkout.
+
 ### 1. Build and select this fork
 
-Use the checkout containing the `codex/glm-workflow-v1` changes. These additions have not been published to npm; installing the upstream package or plugin alone will not enable them. You need Git, a supported Node.js version (for example 22 or 24), and installed/authenticated Claude Code and Codex CLIs.
+Use the checkout containing the `codex/glm-workflow-v1` changes. These additions have not been published to npm; installing the upstream package or plugin alone will not enable them. If you do not have the fork yet:
+
+```bash
+mkdir -p "$HOME/dev"
+cd "$HOME/dev"
+git clone --branch codex/glm-workflow-v1 https://github.com/kachiuli/oh-my-claudecode.git
+cd oh-my-claudecode
+```
 
 Run from this fork's checkout:
 
@@ -218,26 +243,93 @@ node C:/dev/oh-my-claudecode/bridge/cli.cjs team workflow --help
 
 Give Claude the same absolute CLI path if its shell uses a different OMC installation. Run workflow commands from the **project you want to change**, not from the OMC source checkout.
 
-### 2. Create a separate GLM profile and wrapper
+### 2. Set up the normal Claude lead
 
-Follow Z.AI's [manual Claude Code configuration instructions](https://docs.z.ai/devpack/tool/claude) for your endpoint, credentials and supported models, but save the GLM settings in **`~/.claude-glm/settings.json`**. Keep your ordinary Claude profile for the lead. Do not run a setup helper that overwrites the default Claude profile. Keep credentials outside your project and out of OMC configuration, logs and commits.
+Install Claude Code if it is missing, using [Anthropic's installation instructions](https://code.claude.com/docs/en/setup). The native installer for Bash is:
 
-On Linux, macOS or a POSIX environment such as WSL, create an executable named `claude-glm` outside the repository and place it on PATH:
+```bash
+curl -fsSL https://claude.ai/install.sh | bash
+```
+
+Open a fresh terminal if needed so `claude` is on PATH. From your trial project directory, run `claude --version`, then `claude` and complete the sign-in prompts with your normal Claude account or Anthropic access. In that session, use `/status` to inspect the connection and send a small prompt. This is your lead. See [Claude Code authentication](https://code.claude.com/docs/en/authentication) for available sign-in methods.
+
+Keep GLM endpoint/key/model settings out of the normal `~/.claude/settings.json`, the project's `.claude/settings.json` and `.claude/settings.local.json`, and global shell exports. Also keep `CLAUDE_CONFIG_DIR` unset in the lead's terminal. If an earlier GLM helper changed these locations, remove or restore just those provider overrides before starting the lead; keep your other settings. Project settings still apply to both profiles and can override their user settings. [Settings precedence](https://code.claude.com/docs/en/settings).
+
+### 3. Create the GLM profile and wrapper
+
+Create a Z.AI API key with access to the GLM Coding Plan, following [Z.AI's Claude Code guide](https://docs.z.ai/devpack/tool/claude). Create the separate profile directory:
+
+```bash
+mkdir -p "$HOME/.claude-glm" "$HOME/.local/bin"
+chmod 700 "$HOME/.claude-glm"
+```
+
+Use a local editor to create **`~/.claude-glm/settings.json`** with this content. Replace `YOUR_ZAI_API_KEY` locally. The model IDs below are examples from Z.AI's guide checked on 2026-09-12; use IDs available to your plan if they differ. `model: "sonnet"` selects the GLM mapping below when you launch the wrapper interactively.
+
+```json
+{
+  "model": "sonnet",
+  "env": {
+    "ANTHROPIC_AUTH_TOKEN": "YOUR_ZAI_API_KEY",
+    "ANTHROPIC_BASE_URL": "https://api.z.ai/api/anthropic",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "glm-5.3[1m]",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "glm-5.3[1m]",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "glm-5.3-flash[1m]"
+  }
+}
+```
+
+Keep this file outside your repository and restrict it with `chmod 600 "$HOME/.claude-glm/settings.json"`. Do not put the key in OMC configuration, a plan, a prompt or a commit. Do not copy the lead's credentials into the GLM profile or run a helper that overwrites the default profile.
+
+Save the following as **`~/.local/bin/claude-glm`**, with Unix (LF) line endings:
 
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail
+unset ANTHROPIC_API_KEY CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_MODEL
+unset CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX CLAUDE_CODE_USE_FOUNDRY
 export CLAUDE_CONFIG_DIR="$HOME/.claude-glm"
 exec claude "$@"
 ```
 
-Make the wrapper executable with `chmod +x /absolute/path/to/claude-glm`. It must preserve arguments and must not print credentials. Run the wrapper and all related tools inside the same POSIX environment.
+The wrapper selects the GLM profile only for its own process and forwards every argument. It clears conflicting inherited auth/provider choices; project or managed provider overrides must still be resolved in the settings that define them. [Claude environment precedence](https://code.claude.com/docs/en/env-vars).
+
+```bash
+chmod +x "$HOME/.local/bin/claude-glm"
+export PATH="$HOME/.local/bin:$PATH"
+command -v claude claude-glm
+```
+
+Add the same PATH export to your shell startup file if it is not already there. From the trial project, run `claude-glm` once interactively, complete any onboarding/trust prompts, accept the configured API key if asked, and inspect `/status`. Send a small prompt and confirm the model/endpoint against your GLM settings or Z.AI usage. A model's self-description alone does not verify its provider. Exit that session, then confirm ordinary `claude` still uses your Anthropic connection. You can run the two commands in separate terminals at the same time.
 
 **Native Windows:** this launch path requires a directly executable wrapper, such as an `.exe`. `.cmd`, `.bat` and `.ps1` wrappers are rejected because OMC launches GLM without a shell. The Bash wrapper above is for a POSIX environment; it is not a PowerShell script. A trusted local wrapper must select your GLM profile and forward Claude CLI arguments.
 
-### 3. Enable the routing profile
+### 4. Install and sign in to Codex
 
-Add or merge this configuration into **`~/.config/claude-omc/config.jsonc`** for your user, or **`.claude/omc.jsonc`** for the target project:
+Install the **Codex CLI** in the same environment as the lead and OMC. The Bash installer below follows [OpenAI's Codex CLI guide](https://learn.chatgpt.com/docs/codex/cli):
+
+```bash
+curl -fsSL https://chatgpt.com/codex/install.sh | sh
+```
+
+Open a fresh terminal if the installer requests it, then:
+
+```bash
+codex --version
+codex login
+codex login status
+codex exec --help
+```
+
+`codex login` opens the ChatGPT sign-in flow. If the browser callback cannot reach your WSL/remote terminal, `codex login --device-auth` is an option when device-code login is enabled for your account or workspace. API-key users can instead pipe an already configured key through stdin with `printenv OPENAI_API_KEY | codex login --with-api-key`; this uses OpenAI API billing. Never paste credentials into the repository. See [OpenAI's authentication guide](https://learn.chatgpt.com/docs/auth).
+
+Run `codex` in the trial repository and use `/model` to select an available model. Note its exact model ID for `codexModel` in the OMC configuration below; **OMC passes an explicit review model**, so changing only Codex's own default is insufficient. Desktop or editor sign-in alone is not the check: `codex login status` must work in the environment that runs the workflow. The CLI must support `exec`, `--sandbox read-only`, `--ephemeral`, `--output-schema` and `--output-last-message`. [Codex command reference](https://learn.chatgpt.com/docs/developer-commands?surface=cli).
+
+### 5. Enable the routing profile
+
+Add or merge this configuration into **`~/.config/claude-omc/config.jsonc`** for your Linux/macOS/WSL user (`$XDG_CONFIG_HOME/claude-omc/config.jsonc` when set), or **`.claude/omc.jsonc`** for the target project. Native Windows uses **`%APPDATA%/claude-omc/config.jsonc`** for user configuration. Create the parent directory if needed. These are OMC routing files; they are separate from Claude Code's `settings.json`.
+
+Replace `YOUR_CODEX_MODEL_ID` with the ID you checked in Codex. Set `glmModel` to the GLM model you verified in step 3:
 
 ```json
 {
@@ -248,6 +340,12 @@ Add or merge this configuration into **`~/.config/claude-omc/config.jsonc`** for
       "fallback": false,
       "defaultWorkers": 4,
       "maxWorkers": 6
+    }
+  },
+  "externalModels": {
+    "defaults": {
+      "glmModel": "glm-5.3[1m]",
+      "codexModel": "YOUR_CODEX_MODEL_ID"
     }
   }
 }
@@ -264,13 +362,40 @@ omc doctor --team-routing
 omc ask glm "Reply with a short confirmation. Do not modify files."
 ```
 
-Doctor checks configuration and executable availability, not authentication or which endpoint your wrapper uses. The small `ask` is a live provider call and consumes quota. Confirm your separate GLM profile works before dispatching workers, and confirm Codex authentication separately.
+Doctor checks configuration and executable availability, not authentication or which endpoint your wrapper uses. The small `ask` is a live provider call and consumes quota. From the same trial repository, test Codex with the **same model ID** you put in OMC:
 
-### 4. Run a small task in a separate project clone
+```bash
+codex exec --sandbox read-only --ephemeral --model YOUR_CODEX_MODEL_ID "Reply with a short confirmation. Do not modify files."
+```
 
-Commit your existing project work, create a separate clone and open that clone in Claude Code. Begin with a small change and clear tests. Keep the checkout clean: use user-level OMC configuration, or commit/ignore intended project configuration before capturing the base commit. Save your plan as `.omc/plans/feature-x.json`; untracked `.omc` artifacts are allowed. An untracked root-level `plan.json` or `.claude/omc.jsonc` can otherwise block startup.
+Proceed when the normal Claude lead, GLM wrapper and Codex each work. These prompts consume provider quota; they check connectivity, not the complete orchestration. This fork does not need Codex registered as a Claude MCP server: the workflow calls its CLI directly. The setup commands here were checked against official docs and local CLI help; authenticated provider setup has not been run as part of this fork's validation.
+
+### 6. Start orchestration from the Claude lead
+
+Use the separate project clone you checked above. Begin with a small change and clear tests. Keep the checkout clean: use user-level OMC configuration, or commit/ignore intended project configuration before capturing the base commit. Save your plan as `.omc/plans/feature-x.json`; untracked `.omc` artifacts are allowed. An untracked root-level `plan.json` or `.claude/omc.jsonc` can otherwise block startup.
 
 Give the Claude lead your feature request and the absolute path to this fork's `docs/GLM-WORKFLOW.md`. Ask it to prepare a plan using the [complete plan schema and example](docs/GLM-WORKFLOW.md#prepare-a-scoped-plan) and invoke the workflow commands through the fork's CLI. Give each task an objective, current base commit, owned files, prohibited files, dependencies, contracts, acceptance criteria and executable test commands. Independent workers need separate write scopes; order overlapping tasks with dependencies. Choose a dedicated integration branch, not `main` or `master`.
+
+Start **`claude`**, then paste this prompt after replacing both paths and the feature description:
+
+```text
+You are the Claude lead for my personal Claude → GLM → Codex workflow.
+Read /absolute/path/to/oh-my-claudecode/docs/GLM-WORKFLOW.md.
+Use node /absolute/path/to/oh-my-claudecode/bridge/cli.cjs for OMC commands,
+with this project's clone as the working directory.
+
+Feature: [describe one small change and how to verify it].
+
+Inspect the project and create a scoped plan under .omc/plans with its current
+base commit, separate worker ownership and real test commands. Use the strict
+team workflow operations: initialize, run GLM workers, inspect their commits,
+accept or reject them, and verify accepted changes. After verification, ask Codex
+for independent review. Assess its findings, dispatch scoped GLM fixes where
+needed, and re-verify within the review budget. Keep me informed of failures.
+Report the final diff and checks. Do not merge into main or push automatically.
+```
+
+The commands below are the operations the lead invokes; you can also use them manually to inspect or recover the run. Starting `claude-glm` yourself only opens a GLM session. Starting the normal lead with this request connects the planning, workers, integration and review process.
 
 Fresh worktrees do not automatically receive ignored dependencies or local `.env` files. Include the required dependency setup and test prerequisites in the task, using the project's existing lockfile and tools. Keep credentials out of the plan.
 
@@ -324,7 +449,7 @@ Cleanup removes only clean, accepted worktrees after completion; it retains dirt
 
 **Worker permissions:** GLM workers launch with `--dangerously-skip-permissions`. Use a trusted wrapper: worktrees separate Git work but do not sandbox filesystem or network access. Scope and branch checks reject invalid results after execution; they do not prevent every out-of-scope action. Keep the first trial in a separate clone with only the access it needs.
 
-### 5. Inspect results and report bugs
+### 7. Inspect results and report bugs
 
 `omc team workflow status feature-x` returns concise task status, commits, test summaries, risks and artifact paths. Normal status is capped at 16 KiB and identifies omitted entries; follow the returned state/artifact paths for complete evidence. Full worker logs are not automatically sent to the lead.
 

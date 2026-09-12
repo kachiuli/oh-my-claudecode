@@ -5,13 +5,16 @@ implementation to local GLM wrappers, and independent final review to Codex CLI.
 Without this profile, normal OMC routing and provider defaults remain unchanged.
 
 Start with the [README setup and first-run instructions](../README.md#glm-workflow-v1-fork-setup)
-to build this fork, configure the separate GLM profile, and understand the current
-validation limits. This guide supplies the detailed plan and command reference.
+to build this fork, sign in the Claude lead, configure the separate GLM profile,
+authenticate Codex and start orchestration. It includes provider smoke checks
+and a ready-to-adapt lead prompt. This guide supplies the detailed plan and
+command reference.
 
 ## Configure the local provider
 
 Add the following to your OMC configuration (`.claude/omc.jsonc` in the project or
-`~/.config/claude-omc/config.jsonc` for the user):
+`~/.config/claude-omc/config.jsonc` for Linux/macOS/WSL users, respecting
+`XDG_CONFIG_HOME`; `%APPDATA%/claude-omc/config.jsonc` for native Windows users):
 
 ```json
 {
@@ -34,21 +37,15 @@ GLM wrapper choose. `OMC_EXTERNAL_MODELS_DEFAULT_GLM_MODEL` also overrides the m
 Fallback is disabled in V1; `fallback: true` is rejected. Missing GLM never silently
 spends Claude quota.
 
-A POSIX wrapper concept (install outside this repository):
+Create the wrapper using the [README's complete GLM profile setup](../README.md#3-create-the-glm-profile-and-wrapper).
+It selects a separate Claude Code profile while the normal Claude lead retains
+Anthropic access. Keep provider settings out of shared project settings, which
+apply to both profiles. Native Windows requires a directly executable wrapper;
+the README's Bash example runs on Linux, macOS or WSL.
 
-```bash
-#!/usr/bin/env bash
-set -euo pipefail
-export CLAUDE_CONFIG_DIR="$HOME/.claude-glm"
-exec claude "$@"
-```
-
-Configure the GLM Coding Plan / Anthropic-compatible endpoint in that separate
-Claude Code profile. Configure credentials outside OMC. OMC does not manage,
-copy or serialize provider authentication. The wrapper must not print credentials.
-Use an executable wrapper on Windows; `.cmd`, `.bat` and PowerShell scripts are
-not accepted by this shell-free GLM launch path. POSIX shell wrappers work in
-their native POSIX environment.
+Complete the [Codex sign-in and model selection](../README.md#4-install-and-sign-in-to-codex)
+before review. Set `externalModels.defaults.codexModel` to the model you verified;
+OMC's explicit review model takes precedence over Codex's own default.
 
 ```text
 omc doctor --team-routing
