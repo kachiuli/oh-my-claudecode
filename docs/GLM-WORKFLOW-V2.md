@@ -1,13 +1,18 @@
-# V2 candidates (not implemented)
+# After local V1.1: remaining candidates
 
-V1 intentionally runs one local process per assignment. These are future design
+Local V1.1 implements opt-in stable shared context, accepted dependency handoffs,
+CLI usage accounting and explicit same-task session continuation at a preserved
+clean base. See the [guide](GLM-WORKFLOW.md#balanced-mode-v11) and
+[implementation plan](design/glm-workflow-v1.1.md).
+
+V1 remains unchanged. The following are future design
 candidates, not supported configuration values or promised delivery dates.
 
 | Candidate | Likely extension point |
 | --- | --- |
-| Persistent GLM logical sessions | Provider launch contract and workflow process lifecycle; retain bounded completion metadata. |
-| Cache/context affinity | Queue admission using task scopes/contracts; keep ownership checks authoritative. |
-| Stable project context artifact | Existing artifact descriptors referenced by structured assignments. |
+| Cross-task GLM conversation forks and committed-work continuation | Extend V1.1's same-task pristine-worktree boundary only after verifying session directory semantics and history preservation. |
+| Cache/context affinity scheduling | Queue admission using task scopes/contracts; keep ownership checks authoritative. |
+| Larger versioned project context artifacts | Extend V1.1's bounded sharedContext using existing artifact descriptors. |
 | Backend/frontend/tests/general specialists | Existing roleRouting plus task scope metadata; no additional provider registry. |
 | Two-machine pods | Workflow ledger and accepted commit boundary; define transport and trust separately. |
 | Global provider concurrency | Replace local admission limit with an account-scoped lease service. |

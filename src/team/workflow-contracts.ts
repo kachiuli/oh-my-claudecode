@@ -1,4 +1,5 @@
 import type { ArtifactDescriptor } from '../shared/artifact-descriptor.js';
+import type { WorkflowTelemetry } from './workflow-usage.js';
 
 export interface WorkflowCommand { command: string; args: string[] }
 export interface WorkflowTask {
@@ -20,8 +21,10 @@ export interface WorkflowPlan {
   integrationBranch: string;
   tasks: WorkflowTask[];
   verification: WorkflowCommand[];
+  sharedContext?: string;
 }
 export interface WorkflowOptions {
+  mode?: 'v1' | 'balanced';
   workers?: number;
   maxWorkers?: number;
   maxAttempts?: number;
@@ -59,6 +62,31 @@ export interface WorkflowTaskState {
   claimToken?: string;
   updatedAt: string;
   findingIds?: string[];
+  session?: { id: string; confirmed: boolean; fingerprint: string; worktree: string; branch: string };
+  invocations?: WorkflowInvocation[];
+}
+export interface WorkflowInvocation {
+  attempt: number;
+  mode: 'fresh' | 'resume';
+  model?: string;
+  promptFingerprint?: string;
+  contextFingerprint?: string;
+  startedAt: string;
+  outcome: 'completed' | 'failed';
+  error?: string;
+  reason?: string;
+  artifacts: ArtifactDescriptor[];
+  telemetry: WorkflowTelemetry;
+}
+export interface WorkflowReviewAttempt {
+  pass: number;
+  head: string;
+  model?: string;
+  startedAt: string;
+  outcome: 'completed' | 'failed';
+  error?: string;
+  artifacts: ArtifactDescriptor[];
+  telemetry: WorkflowTelemetry;
 }
 export interface WorkflowFinding {
   id: string;
@@ -76,12 +104,13 @@ export interface WorkflowState {
   plan: WorkflowPlan;
   cwd: string;
   integrationHead: string;
-  options: Required<Omit<WorkflowOptions, 'glmModel' | 'codexModel'>> & { glmModel?: string; codexModel?: string };
+  options: Required<Omit<WorkflowOptions, 'glmModel' | 'codexModel' | 'mode'>> & Pick<WorkflowOptions, 'glmModel' | 'codexModel' | 'mode'>;
   stage: 'implementation' | 'integration' | 'verification' | 'review' | 'adjudication' | 'remediation' | 'complete';
   tasks: WorkflowTaskState[];
   verification?: { head: string; passed: boolean; checks: Array<{ command: WorkflowCommand; passed: boolean; artifacts: ArtifactDescriptor[] }> };
   reviewPasses: number;
   reviews: Array<{ pass: number; head: string; findings: WorkflowFinding[]; artifacts: ArtifactDescriptor[] }>;
+  reviewAttempts?: WorkflowReviewAttempt[];
   createdAt: string;
   updatedAt: string;
 }
@@ -180,9 +209,12 @@ export function parseWorkflowPlan(value: unknown, rejectedTaskIds: ReadonlySet<s
   if (!Array.isArray(raw.tasks) || raw.tasks.length < 1 || raw.tasks.length > 100) throw new Error('workflow_invalid_tasks');
   if (!Array.isArray(raw.verification) || !raw.verification.length || raw.verification.length > 30) throw new Error('workflow_verification_required');
   const tasks = raw.tasks.map(parseWorkflowTask);
+  const sharedContext = raw.sharedContext === undefined ? undefined : boundedText(raw.sharedContext, 16 * 1024);
+  if (sharedContext !== undefined && Buffer.byteLength(sharedContext) > 16 * 1024) throw new Error('workflow_shared_context_too_large');
   validateWorkflowTasks(tasks, rejectedTaskIds);
   return { name: safeWorkflowId(raw.name), objective: boundedText(raw.objective), baseCommit: workflowSha(raw.baseCommit),
-    integrationBranch: boundedText(raw.integrationBranch, 200), tasks, verification: raw.verification.map(parseWorkflowCommand) };
+    integrationBranch: boundedText(raw.integrationBranch, 200), tasks, verification: raw.verification.map(parseWorkflowCommand),
+    ...(sharedContext === undefined ? {} : { sharedContext }) };
 }
 export function parseWorkflowHandoff(value: unknown, taskId: string): WorkflowHandoff {
   const raw = object(value);

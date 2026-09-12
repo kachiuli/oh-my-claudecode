@@ -118,4 +118,90 @@ describe('bounded one-shot workflow process', () => {
     await expect(run('process.stderr.write("replacement")')).rejects.toThrow('workflow_artifact_write_refused');
     expect(readFileSync(target, 'utf8')).toBe('protected user content');
   });
+
+  function runMeasured(code: string, provider: 'glm' | 'codex' = 'glm', timeoutMs = 5000) {
+    return runWorkflowProcess({ command: process.execPath, args: ['-e', code], cwd, provider, collectUsage: true,
+      timeoutMs, artifactPrefix: join(cwd, 'measured') });
+  }
+
+  it('collects terminal usage beyond the captured log boundary', async () => {
+    const result = await runMeasured(`
+      process.stdout.write(('x'.repeat(20000)+'\\n').repeat(60));
+      process.stdout.write(JSON.stringify({type:'result',subtype:'success',session_id:'12345678-1234-4123-8123-123456789abc',
+        modelUsage:{glm:{inputTokens:100,outputTokens:30,cacheReadInputTokens:80,cacheCreationInputTokens:20}}})+'\\n');
+    `);
+    expect(result.passed).toBe(true);
+    expect(result.telemetry).toMatchObject({ inputTokens: 200, outputTokens: 30, cacheReadTokens: 80, cacheWriteTokens: 20 });
+    expect(result.telemetry!.durationMs).toBeGreaterThan(0);
+    expect(readFileSync(result.artifacts[0]!.path, 'utf8')).not.toContain('modelUsage');
+    expect(result.artifacts[0]!.sizeBytes).toBeLessThanOrEqual(1024 * 1024);
+  });
+
+  it('fails structured provider failures even when the executable exits successfully', async () => {
+    const result = await runMeasured(`process.stdout.write(JSON.stringify({type:'result',subtype:'error_during_execution'})+'\\n')`);
+    expect(result.passed).toBe(false);
+    expect(result.error).toBe('process_failed');
+    expect(result.telemetry).toMatchObject({ status: 'unknown', terminal: 'failure' });
+  });
+
+  it('requires a terminal event in measured mode but allows unavailable counters', async () => {
+    const result = await runMeasured(`process.stdout.write(JSON.stringify({type:'result',subtype:'success'})+'\\n')`);
+    expect(result.passed).toBe(true);
+    expect(result.telemetry).toMatchObject({ status: 'unknown', terminal: 'success' });
+  });
+
+  it('fails measured process output that lacks terminal framing', async () => {
+    const result = await runMeasured('process.stdout.write("legacy output")');
+    expect(result.passed).toBe(false);
+    expect(result.error).toBe('process_failed');
+    expect(result.telemetry!.diagnostics).toContain('missing_terminal_event');
+  });
+
+  it('leaves V1 output semantics unchanged without collection enabled', async () => {
+    const result = await run('process.stdout.write(JSON.stringify({type:"result",subtype:"error_during_execution"}))');
+    expect(result.passed).toBe(true);
+    expect(result.telemetry).toBeUndefined();
+  });
+
+  it('retains a provider-confirmed session ID after timeout without inventing usage', async () => {
+    const result = await runMeasured(`process.stdout.write(JSON.stringify({type:'system',subtype:'init',
+      session_id:'12345678-1234-4123-8123-123456789abc'})+'\\n'); setInterval(()=>{},1000)`, 'glm', 500);
+    expect(result.error).toBe('timeout');
+    expect(result.telemetry).toMatchObject({ status: 'unknown', sessionId: '12345678-1234-4123-8123-123456789abc' });
+    expect(result.telemetry!.inputTokens).toBeUndefined();
+  });
+
+  it('redacts structured logs and exposes no transcript or provider errors in telemetry', async () => {
+    vi.stubEnv('OMC_FIXTURE_API_TOKEN', 'fixture-sensitive-secret-12345');
+    const result = await runMeasured(`process.stdout.write(JSON.stringify({type:'error',message:process.env.OMC_FIXTURE_API_TOKEN})+'\\n')`, 'codex');
+    expect(result.error).toBe('process_failed');
+    expect(JSON.stringify(result)).not.toContain('fixture-sensitive');
+    expect(readFileSync(result.artifacts[0]!.path, 'utf8')).toContain('[REDACTED]');
+  });
+
+  it.each([0, 1])('accepts recovered Codex errors only when completion and process exit (%s) succeed', async exitCode => {
+    const result = await runMeasured(`
+      process.stdout.write(JSON.stringify({type:'error',message:'Reconnecting 1/5'})+'\\n');
+      process.stdout.write(JSON.stringify({type:'turn.completed',usage:{input_tokens:150,cached_input_tokens:100,output_tokens:25}})+'\\n');
+      process.exitCode=${exitCode};
+    `, 'codex');
+    expect(result.passed).toBe(exitCode === 0);
+    expect(result.telemetry!.terminal).toBe('success');
+    expect(result.telemetry!.diagnostics).toContain('recovered_provider_error');
+    if (exitCode) expect(result.error).toBe('process_failed');
+  });
+
+  it.each(['11223344-5566-4788-99aa-bbccddeeff00', '11223344-5566-4788-99Aa-bBCCdDeEfF00'])(
+    'does not return a UUID-shaped credential as provider session identity (%s)', async credential => {
+      vi.stubEnv('OMC_FIXTURE_API_TOKEN', credential);
+      const result = await runMeasured(`process.stdout.write(JSON.stringify({type:'result',subtype:'success',
+        session_id:process.env.OMC_FIXTURE_API_TOKEN,modelUsage:{glm:{inputTokens:100,outputTokens:30,
+        cacheReadInputTokens:80,cacheCreationInputTokens:20}}})+'\\n')`);
+      expect(result.telemetry!.sessionId).toBeUndefined();
+      expect(result.telemetry!.diagnostics).toContain('session_identity_invalid');
+      expect(result.telemetry!.status).toBe('partial');
+      expect(JSON.stringify(result).toLowerCase()).not.toContain(credential.toLowerCase());
+      expect(readFileSync(result.artifacts[0]!.path, 'utf8')).toContain('[REDACTED]');
+    },
+  );
 });

@@ -2,7 +2,7 @@ English | [한국어](README.ko.md) | [中文](README.zh.md) | [日本語](READM
 
 # oh-my-claudecode
 
-**Personal fork:** I maintain this fork of [Yeachan Heo's oh-my-claudecode](https://github.com/Yeachan-Heo/oh-my-claudecode) for my own Claude-led development workflow with GLM workers and Codex review. [Why this fork exists](#why-i-maintain-this-fork) · [Set it up](#glm-workflow-v1-fork-setup). The upstream project, authors and community links are credited below.
+**Personal fork:** I maintain this fork of [Yeachan Heo's oh-my-claudecode](https://github.com/Yeachan-Heo/oh-my-claudecode) for my own Claude-led development workflow with GLM workers and Codex review. [Why this fork exists](#why-i-maintain-this-fork) · [Set it up](#glm-workflow-v1-fork-setup) · [V1.1 local efficiency](#v11-local-efficiency). The upstream project, authors and community links are credited below.
 
 [![npm version](https://img.shields.io/npm/v/oh-my-claude-sisyphus?color=cb3837)](https://www.npmjs.com/package/oh-my-claude-sisyphus)
 [![npm downloads](https://img.shields.io/npm/dm/oh-my-claude-sisyphus?color=blue)](https://www.npmjs.com/package/oh-my-claude-sisyphus)
@@ -42,6 +42,8 @@ My intended workflow is:
 6. **I publish a coherent result.** I decide when to merge or push the integration branch and run remote CI, rather than triggering that process for every worker commit.
 
 This is the personal workflow V1 is intended to support; live provider authentication and the full setup still need validation. Start with the [setup and first-run guide below](#glm-workflow-v1-fork-setup) and read the [current verification limits](docs/GLM-WORKFLOW-VALIDATION.md). Existing OMC defaults remain available; persistent worker sessions and distributed execution are outside V1.
+
+V1.1 adds an optional balanced mode for this same use case: reusable project context, measured token/cache usage and explicit continuation of a failed task in its original worktree. The aim is to reduce repeated discovery while preserving the information and checks needed for good work. It does not lower model capability or remove review to make the token count look smaller. Give another project the [V1 adoption prompt](docs/GLM-WORKFLOW-V1-HANDOFF.md) if it should stay on the existing V1 baseline.
 
 ## Core Maintainers
 
@@ -458,6 +460,39 @@ If a command fails, interrupt an active run if needed and **preserve the worktre
 For a bug report, include the fork commit (`git rev-parse HEAD` in the OMC checkout), operating system, exact command, expected result, error message and workflow status. Include only relevant artifact excerpts, with credentials removed. Check [troubleshooting](docs/GLM-WORKFLOW.md#troubleshooting) for missing wrappers, scope failures, stale verification and exhausted review budgets.
 
 For the full contract and command walkthrough, read the [GLM workflow guide](docs/GLM-WORKFLOW.md). The [validation report](docs/GLM-WORKFLOW-VALIDATION.md) lists tested behavior and remaining limitations; the [V2 roadmap](docs/GLM-WORKFLOW-V2.md) records deferred features.
+
+### V1.1 local efficiency
+
+V1 remains on [`codex/glm-workflow-v1`](https://github.com/kachiuli/oh-my-claudecode/tree/codex/glm-workflow-v1), pinned at `3e51fcf70545c2bc3ee5a24a9f11844e8a294c57`. V1.1 is on [`codex/glm-workflow-v1.1`](https://github.com/kachiuli/oh-my-claudecode/tree/codex/glm-workflow-v1.1). These are personal workflow revisions; the upstream package version remains 5.4.0, and neither fork revision is published to npm.
+
+Keep your V1 installation available while trying V1.1. After completing the Claude, separate GLM profile and Codex setup above, build a second checkout:
+
+```bash
+cd "$HOME/dev"
+git clone --branch codex/glm-workflow-v1.1 https://github.com/kachiuli/oh-my-claudecode.git oh-my-claudecode-v1.1
+cd oh-my-claudecode-v1.1
+npm ci
+npm run build
+node bridge/cli.cjs team workflow --help
+```
+
+From the **trial project**, invoke that checkout explicitly. Create a new plan and unused integration branch as described above, then:
+
+```bash
+node "$HOME/dev/oh-my-claudecode-v1.1/bridge/cli.cjs" team workflow init --file .omc/plans/feature-x.json --mode balanced --workers 4
+node "$HOME/dev/oh-my-claudecode-v1.1/bridge/cli.cjs" team workflow run feature-x
+node "$HOME/dev/oh-my-claudecode-v1.1/bridge/cli.cjs" team workflow usage feature-x
+```
+
+Use that same absolute CLI path for acceptance, verification, review and all other operations. Omitting `--mode balanced` retains V1 behavior. Existing saved V1 workflows stay in V1 mode; create a new workflow to try balanced mode.
+
+An optional top-level `sharedContext` string in the plan can describe stable project architecture, terminology and testing conventions. Keep it under 16 KiB, omit credentials and changing progress notes, and continue supplying every task's complete scope, contracts, acceptance criteria and tests. Balanced prompts put this shared context before the assignment. Related tasks also receive concise results from accepted dependencies, with artifact references for detail. Each new task still gets its own worktree and conversation.
+
+The `usage` report shows CLI-reported input, output, cache-read and cache-write tokens where available, including failed attempts and retries. Each counter includes measurement coverage. `null` means unknown; partial observations are not a complete bill. Input totals already include cached input, so do not add cache-read tokens again. Compare equivalent tasks using accepted results, test success, repair attempts and review findings as well as tokens. GLM subscription credits and Claude CLI price estimates are not interchangeable, and V1.1 does not claim a measured savings percentage.
+
+Balanced mode requires Claude Code's `--session-id`, `--resume`, `--output-format stream-json` and `--verbose` flags through the wrapper, plus Codex `exec --json`. Check the local help before running; the wrapper must forward arguments unchanged and keep session persistence enabled. Provider event contracts were checked against Claude Code 2.1.258 and Codex CLI 0.153.4; authenticated execution still needs your smoke test. See the [V1.1 guide](docs/GLM-WORKFLOW.md#balanced-mode-v11) for session recovery and measurement limits, and the [V1.1 validation report](docs/GLM-WORKFLOW-V1.1-VALIDATION.md) for test evidence.
+
+The quality gates stay the same: scoped ownership, one verified commit, explicit Claude acceptance, local tests, independent read-only Codex review and bounded remediation. Cache hits remain controlled by the provider. Separate worktrees and provider-generated prompts can reduce shared cache prefixes; a fresh process alone does not prove a cache miss. Cross-task conversation forks and distributed execution are deferred.
 
 ## Team Mode (Recommended)
 

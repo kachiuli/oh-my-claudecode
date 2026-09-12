@@ -1,8 +1,11 @@
 # Claude lead, GLM workers, Codex review
 
-This opt-in V1 assigns planning and integration to the Claude Code lead, bulk
+This opt-in workflow assigns planning and integration to the Claude Code lead, bulk
 implementation to local GLM wrappers, and independent final review to Codex CLI.
 Without this profile, normal OMC routing and provider defaults remain unchanged.
+
+The default behavior is V1. [Balanced mode V1.1](#balanced-mode-v11) adds local
+usage measurement, shared context and guarded same-task session continuation.
 
 Start with the [README setup and first-run instructions](../README.md#glm-workflow-v1-fork-setup)
 to build this fork, sign in the Claude lead, configure the separate GLM profile,
@@ -260,6 +263,103 @@ schedule distributed jobs. Cheap deterministic checks precede AI review and CI.
 
 See [the implementation audit](design/glm-workflow-v1.md) and the short
 [V2 roadmap](GLM-WORKFLOW-V2.md) for extension points and deferred work.
+
+## Balanced mode V1.1
+
+Build the `codex/glm-workflow-v1.1` checkout using the [README instructions](../README.md#v11-local-efficiency).
+The remaining examples abbreviate its absolute CLI invocation as `omc`;
+ensure that command points to the intended built checkout.
+
+```text
+omc team workflow init --file .omc/plans/feature-x.json --mode balanced --workers 4
+omc team workflow run feature-x
+omc team workflow usage feature-x
+```
+
+The optional plan field `sharedContext` is a bounded string, for example
+`"sharedContext": "This project uses one API schema; keep public request types backward compatible."`.
+Use stable project facts, not progress updates. Full task requirements remain in
+every prompt. Accepted dependency handoffs provide bounded summaries and artifact
+references; the worker must inspect source and current contracts whenever more
+detail is needed. Rejected or unfinished handoffs are not shared as accepted work.
+
+### Read usage honestly
+
+Balanced mode requests structured terminal events from the CLIs. Claude final
+`modelUsage`, when supplied, covers all reported models including nested agents;
+fallback `usage` covers the main loop and is marked partial. Codex reports input
+including cached input and output for the turn; an optional cache-write counter
+is retained when provided. Provider failure, malformed data
+or missing counters produces partial/unknown measurements, never invented zeros.
+Each invocation is counted once, including failed work, explicit resumes and
+failed review passes. A repeated session ID does not mean its totals are a
+cumulative lifetime bill. See [Claude usage accounting](https://code.claude.com/docs/en/agent-sdk/cost-tracking)
+and [Codex structured output](https://learn.chatgpt.com/docs/non-interactive-mode#make-output-machine-readable).
+The quality report's `retries` counts additional controller attempts; it does not
+count every internal network retry made by a provider CLI. A temporary Codex
+connection error followed by a successful terminal completion is accepted;
+definitive failed turns still fail the review.
+
+`usage` reports known totals with coverage for each field and separate quality
+outcomes. Provider token counts are not a dollar estimate or a guarantee about
+Z.AI subscription credits. Do not compare a partial GLM observation to complete
+Codex accounting as if they measured identical work. Run comparable scoped tasks
+from equivalent bases, keep model and tests fixed, and consider retries, accepted
+commits and review findings before judging efficiency. There is no automatic
+quality downgrade or automatic claim of savings.
+
+### Continue a failed task deliberately
+
+The lead first inspects the failure, logs and preserved worktree. A balanced
+task can resume only when its prior provider session is confirmed, it is failed,
+its worktree remains clean at the original task base, dependencies are accepted,
+the saved execution identity is unchanged and an attempt remains. The integration
+checkout must also be clean on its expected branch and commit. Obtain its full
+current SHA with `git rev-parse HEAD`, then:
+
+Session continuation also requires an explicit GLM model saved at initialization
+through the existing role or `externalModels.defaults.glmModel` configuration.
+Fresh balanced assignments may inherit wrapper defaults, but those implicit
+defaults cannot establish a fixed model identity for resume. Configure the
+intended model before initializing a workflow you may need to resume.
+
+```text
+omc team workflow resume feature-x backend --expected-head FULL_INTEGRATION_SHA --reason "Inspected transient failure; original worktree is clean"
+```
+
+Replace the SHA and reason with what you actually checked. This consumes one
+attempt from the original budget and runs only that task with `--resume` and its
+explicit UUID. It resends the full task contract and a new result path. A failed
+resume remains visible; it does not silently switch to a fresh conversation.
+The process itself is relaunched; conversation history lives in the same local
+GLM Claude Code profile. Keep that profile's session files, provider settings
+and wrapper intact. Do not pass `--no-session-persistence` in the wrapper.
+The controller checks the saved task/context/model and executable identity plus
+relevant launch environment fingerprints. It cannot discover every settings
+file or credential source referenced internally by a custom wrapper; keep those
+unchanged as well. Status `resumeCandidate` is a hint, not a replacement for the
+resume command's full preflight checks.
+
+Dirty or committed failed work cannot use this recovery shortcut. Inspect and
+preserve that work, then plan a deliberate correction or replacement workflow.
+Never edit workflow state, reset work or erase attempt history just to bypass a
+guard. Session history is never moved to another task or worktree: Claude's
+session lookup can restore the original worktree, and conversation forks do not
+copy its filesystem. See [Claude session behavior](https://code.claude.com/docs/en/sessions).
+
+### What remains unverified or deferred
+
+Real authenticated provider runs and actual cache savings require a local smoke
+test with your accounts. The implementation uses documented structured CLI
+events; it does not set undocumented Z.AI cache controls. Stable application
+prompts can improve prefix reuse, but provider-generated system context and
+worktree paths still affect it. See [Claude caching](https://code.claude.com/docs/en/prompt-caching)
+and [Z.AI caching](https://docs.z.ai/guides/capabilities/cache).
+
+Cross-task conversation reuse, automatic specialization, cache-based scheduling,
+dynamic system-prompt flag tuning and distributed/CI scheduling remain in the
+[roadmap](GLM-WORKFLOW-V2.md). V1.1 preserves the V1 worktree, acceptance and review
+gates. See the [validation report](GLM-WORKFLOW-VALIDATION.md) for tested limits.
 
 ## Credential-free demonstration
 

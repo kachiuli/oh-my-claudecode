@@ -12,6 +12,20 @@ const plan = {
 };
 
 describe('workflow plan boundaries', () => {
+  it('preserves optional shared context without changing existing task contracts', () => {
+    expect(parseWorkflowPlan(plan).sharedContext).toBeUndefined();
+    const parsed = parseWorkflowPlan({ ...plan, sharedContext: 'Architecture and testing conventions.' });
+    expect(parsed.sharedContext).toBe('Architecture and testing conventions.');
+    expect(parsed.tasks).toEqual(parseWorkflowPlan(plan).tasks);
+  });
+
+  it('rejects malformed or oversized shared context, including multibyte text', () => {
+    for (const sharedContext of [null, {}, '', 'x'.repeat(16385), '界'.repeat(5462)]) {
+      expect(() => parseWorkflowPlan({ ...plan, sharedContext })).toThrow(/workflow_/);
+    }
+    expect(parseWorkflowPlan({ ...plan, sharedContext: 'x'.repeat(16384) }).sharedContext).toHaveLength(16384);
+  });
+
   it('rejects overlapping write ownership without a dependency', () => {
     expect(() => parseWorkflowPlan({ ...plan, tasks: [task, { ...task, id: 'b', writeScope: ['feature'] }] }))
       .toThrow(/overlap/);

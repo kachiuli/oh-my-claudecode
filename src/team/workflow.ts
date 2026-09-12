@@ -14,9 +14,10 @@ import { ABSOLUTE_MAX_WORKERS } from './types.js';
 import { resolveRoleAssignment } from './stage-router.js';
 import { buildLaunchArgs, resolveValidatedBinaryPath } from './model-contract.js';
 import { runWorkflowProcess, redactWorkflowText } from './workflow-process.js';
+import { buildWorkflowPrompt, workflowContextFingerprint, workflowPromptFingerprint, workflowSessionFingerprint } from './workflow-prompt.js';
 import { boundedText, safeWorkflowId, parseWorkflowPlan, parseWorkflowTask, matchesScope,
   parseWorkflowHandoff, parseWorkflowFindings, type WorkflowState, type WorkflowOptions, type WorkflowTaskState,
-  type WorkflowFinding } from './workflow-contracts.js';
+  type WorkflowFinding, type WorkflowInvocation, type WorkflowReviewAttempt } from './workflow-contracts.js';
 
 export type { WorkflowState, WorkflowOptions, WorkflowPlan, WorkflowTask, WorkflowHandoff, WorkflowFinding } from './workflow-contracts.js';
 
@@ -103,6 +104,7 @@ export function readWorkflow(cwd: string, name: string): WorkflowState {
   if (!state || state.schemaVersion !== 1 || state.profile !== 'claude-glm-codex' || state.plan?.name !== name
     || realpathSync(state.cwd) !== realpathSync(cwd)) throw new Error('workflow_invalid_state');
   if (!Array.isArray(state.tasks) || !Array.isArray(state.reviews)) throw new Error('workflow_invalid_state');
+  if (state.options.mode !== undefined && !['v1', 'balanced'].includes(state.options.mode)) throw new Error('workflow_invalid_mode');
   parseWorkflowPlan(state.plan, new Set(state.tasks.filter(entry => entry.status === 'rejected').map(entry => entry.task.id)));
   return state;
 }
@@ -126,6 +128,7 @@ export async function initWorkflow(cwd: string, rawPlan: unknown, options: Workf
   if (redactWorkflowText(JSON.stringify({ rawPlan, options })) !== JSON.stringify({ rawPlan, options })) throw new Error('workflow_sensitive_input_rejected');
   cwd = realpathSync(cwd);
   const plan = parseWorkflowPlan(rawPlan);
+  if (options.mode !== undefined && !['v1', 'balanced'].includes(options.mode)) throw new Error('workflow_invalid_mode');
   const path = statePath(cwd, plan.name);
   if (existsSync(teamStateRoot(cwd, plan.name))) throw new Error('workflow_name_already_exists');
   if (!clean(cwd)) throw new Error('workflow_leader_worktree_dirty');
@@ -141,6 +144,7 @@ export async function initWorkflow(cwd: string, rawPlan: unknown, options: Workf
   const config = getGlmConfig(routing);
   const maxWorkers = count(options.maxWorkers, config.maxWorkers, ABSOLUTE_MAX_WORKERS);
   const resolvedOptions: WorkflowState['options'] = {
+    ...(options.mode === undefined ? {} : { mode: options.mode }),
     workers: count(options.workers, Math.min(config.defaultWorkers, maxWorkers), maxWorkers), maxWorkers,
     maxAttempts: count(options.maxAttempts, 2, 5), maxReviewPasses: count(options.maxReviewPasses, 2, 10),
     timeoutMs: count(options.timeoutMs, 600_000, 3_600_000, 100), backoffMs: count(options.backoffMs, 1000, 30_000, 0),
@@ -199,13 +203,33 @@ function validateCommit(state: WorkflowState, entry: WorkflowTaskState): string[
   if (JSON.stringify([...files].sort()) !== JSON.stringify([...(entry.handoff?.changedFiles ?? [])].sort())) throw new Error('workflow_changed_files_mismatch');
   return files;
 }
-async function executeTask(state: WorkflowState, entry: WorkflowTaskState, command: string): Promise<void> {
+function sessionFingerprint(state: WorkflowState, entry: WorkflowTaskState, command: string, worktree: string): string {
+  const executable = realpathSync(command);
+  const info = statSync(executable);
+  const environment = Object.entries(process.env).filter(([key]) => /^(?:ANTHROPIC_|CLAUDE_|CLAUDE_CONFIG_DIR$|OMC_GLM_|OMC_EXTERNAL_MODELS_DEFAULT_GLM_MODEL$)/.test(key)
+    && !['CLAUDE_CODE_ENTRYPOINT', 'CLAUDE_CODE_SESSION_ID'].includes(key)).sort(([a], [b]) => a.localeCompare(b));
+  // Keep secrets out of state; bind their launch configuration together in one opaque digest.
+  const launchIdentity = { executable, size: info.size, modified: info.mtimeMs, environment,
+    ...(/\.(?:c?js|mjs|sh)$/i.test(executable) && info.size <= 1024 * 1024 ? { script: workflowPromptFingerprint(readFileSync(executable, 'utf8')) } : {}) };
+  return workflowPromptFingerprint(JSON.stringify({ launch: launchIdentity,
+    context: workflowSessionFingerprint(state, entry, executable, worktree) }));
+}
+async function executeTask(state: WorkflowState, entry: WorkflowTaskState, command: string, resumeReason?: string): Promise<void> {
   const root = artifactsRoot(state);
+  const balanced = state.options.mode === 'balanced';
+  const resuming = resumeReason !== undefined;
   if (entry.attempts === 0 && entry.task.dependencies.length) {
     entry.task.baseCommit = state.integrationHead;
   }
   while (entry.attempts < state.options.maxAttempts) {
-    entry.attempts++; entry.status = 'running'; entry.claimToken = randomUUID(); entry.updatedAt = now(); save(state);
+    const started = Date.now();
+    entry.attempts++; entry.status = 'running'; entry.claimToken = randomUUID(); entry.updatedAt = now();
+    const invocation: WorkflowInvocation | undefined = balanced ? { attempt: entry.attempts, mode: resuming ? 'resume' : 'fresh',
+      ...(state.options.glmModel ? { model: state.options.glmModel } : {}), startedAt: now(), outcome: 'failed',
+      error: 'workflow_invocation_incomplete', ...(resumeReason === undefined ? {} : { reason: resumeReason }), artifacts: [],
+      telemetry: { provider: 'glm', durationMs: 0, status: 'unknown', scope: 'unknown' } } : undefined;
+    if (invocation) (entry.invocations ??= []).push(invocation);
+    save(state);
     try {
       const worktree = ensureWorkerWorktree(state.plan.name, entry.worker, state.cwd, { mode: 'named', baseRef: entry.task.baseCommit });
       if (!worktree) throw new Error('workflow_worktree_required');
@@ -215,12 +239,34 @@ async function executeTask(state: WorkflowState, entry: WorkflowTaskState, comma
       const prefix = join(root, `${entry.worker}-${entry.attempts}`);
       const resultFile = `${prefix}.result.json`;
       if (existsSync(resultFile)) throw new Error('workflow_result_already_exists');
-      const instructions = 'Implement only your writeScope and follow all contracts and acceptanceCriteria. Run the declared tests. Do not merge, push, modify other branches, spawn nested workers or write leader state. Make exactly one coherent commit on baseCommit and leave your worktree clean. Write resultFile JSON with taskId, outcome (completed|failed), commitSha, changedFiles, tests ({command,args,passed}), interfaceChanges, assumptions, risks, summary. Keep summary <=1000 characters and lists <=30 items. stdout/stderr are artifacts, never the handoff. Do not emit credentials.';
+      const prompt = buildWorkflowPrompt(state, entry, resultFile);
+      if (balanced) {
+        const worktree = realpathSync(entry.worktree);
+        const fingerprint = sessionFingerprint(state, entry, command, worktree);
+        if (resuming && (!entry.session?.confirmed || entry.session.fingerprint !== fingerprint)) throw new Error('workflow_session_identity_changed');
+        entry.session = { id: resuming ? entry.session!.id : randomUUID(), confirmed: false, fingerprint,
+          worktree, branch: entry.branch! };
+        invocation!.promptFingerprint = workflowPromptFingerprint(prompt);
+        invocation!.contextFingerprint = workflowContextFingerprint(state);
+        save(state);
+      }
       const result = await runWorkflowProvider({ command, args: [...buildLaunchArgs('glm', {
         teamName: state.plan.name, workerName: entry.worker, cwd: entry.worktree, model: state.options.glmModel,
-      }), '-p'], cwd: entry.worktree, stdin: JSON.stringify({ kind: 'implementation', task: entry.task, instructions, resultFile }),
+      }), '-p', ...(balanced ? [resuming ? '--resume' : '--session-id', entry.session!.id, '--output-format', 'stream-json', '--verbose'] : [])],
+      cwd: entry.worktree, stdin: prompt, ...(balanced ? { collectUsage: true } : {}),
       timeoutMs: state.options.timeoutMs, artifactPrefix: prefix, provider: 'glm', worker: entry.worker }, resultFile);
+      if (invocation) {
+        invocation.telemetry = result.telemetry ?? { provider: 'glm', durationMs: Date.now() - started, status: 'unknown', scope: 'unknown' };
+        invocation.artifacts = result.artifacts;
+      }
       entry.handoff = { taskId: entry.task.id, outcome: 'failed', changedFiles: [], tests: [], interfaceChanges: [], assumptions: [], risks: [], summary: result.error ?? 'Worker result pending validation', artifacts: result.artifacts };
+      if (balanced) {
+        if (result.telemetry?.sessionId && result.telemetry.sessionId !== entry.session!.id
+          || result.telemetry?.diagnostics?.some(diagnostic => ['session_identity_conflict', 'session_identity_invalid'].includes(diagnostic))) {
+          throw new Error('workflow_session_identity_mismatch');
+        }
+        entry.session!.confirmed = result.telemetry?.sessionId === entry.session!.id;
+      }
       if (!result.passed) throw new Error(`workflow_${result.error}`);
       if (result.outputError) throw result.outputError;
       validateResolvedPath(resultFile, root);
@@ -231,6 +277,7 @@ async function executeTask(state: WorkflowState, entry: WorkflowTaskState, comma
       entry.handoff = { ...safeHandoff, artifacts: [...result.artifacts, createArtifactDescriptorFromPath(resultFile, {
         kind: 'workflow-result', producer: { system: 'omc', component: 'team-workflow', worker: entry.worker }, retention: 'until-completion',
       })] };
+      if (invocation) invocation.artifacts = entry.handoff.artifacts.slice(0, 3);
       if (handoff.outcome !== 'completed' || handoff.tests.some(test => !test.passed)) throw new Error('workflow_worker_reported_failure');
       for (const test of entry.task.tests) if (!handoff.tests.some(result => result.passed && result.command === test.command && JSON.stringify(result.args) === JSON.stringify(test.args))) throw new Error('workflow_worker_test_evidence_missing');
       validateCommit(state, entry);
@@ -246,6 +293,7 @@ async function executeTask(state: WorkflowState, entry: WorkflowTaskState, comma
       const message = error instanceof Error ? error.message : '';
       entry.error = /^workflow_[a-z_]+$/.test(message) ? message : 'workflow_worker_failed';
       entry.status = 'failed';
+      if (resuming || entry.error === 'workflow_session_identity_mismatch') break;
       if (entry.error === 'workflow_timeout' || entry.error === 'workflow_interrupted') break;
       // Any work or moved HEAD is retained for the lead; retry only pristine attempts.
       if (entry.worktree) {
@@ -257,19 +305,37 @@ async function executeTask(state: WorkflowState, entry: WorkflowTaskState, comma
         entry.backoffUntil = new Date(Date.now() + delay).toISOString(); save(state);
         await new Promise(resolve => setTimeout(resolve, delay));
       }
-    } finally { delete entry.claimToken; delete entry.backoffUntil; entry.updatedAt = now(); save(state); }
+    } finally {
+      if (invocation) {
+        invocation.outcome = entry.status === 'completed' ? 'completed' : 'failed';
+        if (entry.error) invocation.error = entry.error; else delete invocation.error;
+        if (!invocation.telemetry.durationMs) invocation.telemetry.durationMs = Date.now() - started;
+      }
+      delete entry.claimToken; delete entry.backoffUntil; entry.updatedAt = now(); save(state);
+    }
+  }
+}
+function protectedWorkflowRefs(cwd: string, name: string): string {
+  return git(cwd, ['for-each-ref', '--format=%(refname) %(objectname)']).split('\n')
+    .filter(ref => !ref.startsWith(`refs/heads/omc-team/${name}/`)).join('\n');
+}
+function failProtectedRefs(entries: WorkflowTaskState[], balanced: boolean): void {
+  for (const entry of entries) if (balanced || entry.status === 'completed') {
+    entry.status = 'failed'; entry.error = 'workflow_worker_modified_protected_refs';
+    if (entry.session) entry.session.confirmed = false;
+    const invocation = entry.invocations?.at(-1);
+    if (invocation) { invocation.outcome = 'failed'; invocation.error = entry.error; }
   }
 }
 export async function runWorkflow(cwd: string, name: string): Promise<WorkflowState> {
   return mutate(cwd, name, async state => {
     assertLeader(state);
-    const protectedRefs = () => git(cwd, ['for-each-ref', '--format=%(refname) %(objectname)']).split('\n')
-      .filter(ref => !ref.startsWith(`refs/heads/omc-team/${name}/`)).join('\n');
-    const refsBefore = protectedRefs();
+    const refsBefore = protectedWorkflowRefs(cwd, name);
     // A killed owner is never silently re-spawned: retained running work requires inspection.
     if (state.tasks.some(entry => entry.status === 'running')) throw new Error('workflow_interrupted_worker_requires_inspection');
     const candidates = state.tasks.filter(entry => ['pending', 'failed'].includes(entry.status) && entry.attempts < state.options.maxAttempts
-      && !['workflow_timeout', 'workflow_interrupted', 'workflow_worker_modified_protected_refs'].includes(entry.error ?? '')
+      && !['workflow_timeout', 'workflow_interrupted', 'workflow_worker_modified_protected_refs', 'workflow_session_identity_mismatch'].includes(entry.error ?? '')
+      && !(state.options.mode === 'balanced' && entry.invocations?.at(-1)?.mode === 'resume' && entry.invocations.at(-1)?.outcome === 'failed')
       && entry.task.dependencies.every(id => getTask(state, id).status === 'accepted'));
     if (!candidates.length) return;
     let command: string;
@@ -281,11 +347,44 @@ export async function runWorkflow(cwd: string, name: string): Promise<WorkflowSt
       }
     }));
     if (pools.some(pool => pool.status === 'rejected')) throw new Error('workflow_worker_persistence_failed');
-    if (protectedRefs() !== refsBefore) {
-      for (const entry of candidates) if (entry.status === 'completed') { entry.status = 'failed'; entry.error = 'workflow_worker_modified_protected_refs'; }
+    if (protectedWorkflowRefs(cwd, name) !== refsBefore) {
+      failProtectedRefs(candidates, state.options.mode === 'balanced');
       throw new Error('workflow_worker_modified_protected_refs');
     }
     state.stage = state.tasks.some(entry => entry.status === 'completed') ? 'integration' : 'implementation';
+  });
+}
+/** Explicit continuation of a verified conversation in the same pristine task worktree. */
+export async function resumeWorkflowTask(cwd: string, name: string, taskId: string, expectedHead: string, reason: string): Promise<WorkflowState> {
+  return mutate(cwd, name, async state => {
+    if (state.options.mode !== 'balanced') throw new Error('workflow_balanced_mode_required');
+    if (assertLeader(state) !== expectedHead) throw new Error('workflow_resume_head_mismatch');
+    if (state.tasks.some(entry => entry.status === 'running')) throw new Error('workflow_interrupted_worker_requires_inspection');
+    const safeReason = redactWorkflowText(boundedText(reason, 1000));
+    const entry = getTask(state, taskId);
+    if (entry.status !== 'failed') throw new Error('workflow_resume_failed_task_required');
+    if (entry.attempts >= state.options.maxAttempts) throw new Error('workflow_attempt_limit_reached');
+    if (!state.options.glmModel) throw new Error('workflow_resume_model_required');
+    if (!entry.task.dependencies.every(id => getTask(state, id).status === 'accepted')) throw new Error('workflow_dependency_not_integrated');
+    if (['workflow_worker_modified_protected_refs', 'workflow_session_identity_mismatch'].includes(entry.error ?? '')) throw new Error('workflow_session_not_resumable');
+    const session = entry.session;
+    if (!session?.confirmed || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(session.id)) throw new Error('workflow_session_not_confirmed');
+    const worktree = realpathSync(assertWorker(state, entry));
+    if (session.worktree !== worktree || session.branch !== entry.branch) throw new Error('workflow_session_identity_changed');
+    if (git(worktree, ['rev-parse', 'HEAD']) !== entry.task.baseCommit) throw new Error('workflow_worker_base_mismatch');
+    let command: string;
+    try { command = resolveGlmExecutable(state.options.glmCommand); } catch { throw new Error('workflow_glm_unavailable_fallback_disabled'); }
+    if (session.fingerprint !== sessionFingerprint(state, entry, command, worktree)) throw new Error('workflow_session_identity_changed');
+    const refs = protectedWorkflowRefs(cwd, name);
+    let executionFailure: { error: unknown } | undefined;
+    try { await executeTask(state, entry, command, safeReason); }
+    catch (error) { executionFailure = { error }; }
+    if (protectedWorkflowRefs(cwd, name) !== refs) {
+      failProtectedRefs([entry], true);
+      throw new Error('workflow_worker_modified_protected_refs');
+    }
+    if (executionFailure) throw executionFailure.error;
+    state.stage = getTask(state, taskId).status === 'completed' ? 'integration' : 'implementation';
   });
 }
 export async function acceptWorkflowTask(cwd: string, name: string, taskId: string): Promise<WorkflowState> {
@@ -342,34 +441,56 @@ export async function reviewWorkflow(cwd: string, name: string): Promise<Workflo
     if (state.reviewPasses >= state.options.maxReviewPasses) throw new Error('workflow_review_limit_reached');
     if (state.reviews.some(review => review.findings.some(finding => !finding.disposition || finding.disposition === 'fix' && !finding.fixedBy))) throw new Error('workflow_findings_require_adjudication_or_fix');
     const command = state.options.codexCommand === 'codex' ? resolveValidatedBinaryPath('codex') : resolveGlmExecutable(state.options.codexCommand);
-    state.reviewPasses++; state.stage = 'review'; save(state);
-    const root = artifactsRoot(state); const prefix = join(root, `review-${state.reviewPasses}`);
-    const resultFile = `${prefix}.result.json`; const schemaFile = `${prefix}.schema.json`;
-    atomicWriteJson(schemaFile, { type: 'object', additionalProperties: false, required: ['findings'], properties: {
-      findings: { type: 'array', maxItems: 50, items: { type: 'object', additionalProperties: false, required: ['severity', 'message', 'file', 'line'], properties: {
-        severity: { type: 'string', enum: ['P0', 'P1', 'P2', 'P3'] }, message: { type: 'string', maxLength: 2000 },
-        file: { type: ['string', 'null'] }, line: { type: ['integer', 'null'] },
-      } } },
-    } });
-    const result = await runWorkflowProvider({ command, args: ['exec', '--sandbox', 'read-only', '--ephemeral',
-      ...(state.options.codexModel ? ['--model', state.options.codexModel] : []), '--output-schema', schemaFile, '--output-last-message', resultFile, '-'],
-      cwd, stdin: JSON.stringify({ kind: 'review', baseCommit: state.plan.baseCommit, head, objective: state.plan.objective,
-        tasks: state.tasks.filter(entry => entry.status === 'accepted').map(entry => ({ id: entry.task.id, contracts: entry.task.contracts, acceptanceCriteria: entry.task.acceptanceCriteria })),
-        instructions: 'Independently inspect the integrated code against baseCommit and acceptance criteria. Read only: do not modify files, commits or refs. Do not inspect worker transcripts. Return the required JSON findings with P0/P1/P2/P3 severities.' }),
-      timeoutMs: state.options.timeoutMs, artifactPrefix: prefix, provider: 'codex' }, resultFile);
+    const balanced = state.options.mode === 'balanced';
+    const started = Date.now();
+    state.reviewPasses++; state.stage = 'review';
+    const attempt: WorkflowReviewAttempt | undefined = balanced ? { pass: state.reviewPasses, head,
+      ...(state.options.codexModel ? { model: state.options.codexModel } : {}), startedAt: now(), outcome: 'failed',
+      error: 'workflow_invocation_incomplete', artifacts: [], telemetry: { provider: 'codex', durationMs: 0, status: 'unknown', scope: 'unknown' } } : undefined;
+    if (attempt) (state.reviewAttempts ??= []).push(attempt);
+    save(state);
     try {
-      if (assertLeader(state) !== head || git(cwd, ['for-each-ref', '--format=%(refname) %(objectname)']) !== refs) throw new Error('changed');
-    } catch { throw new Error('workflow_reviewer_modified_repository'); }
-    if (!result.passed) throw new Error('workflow_review_process_failed');
-    if (result.outputError) throw result.outputError;
-    validateResolvedPath(resultFile, root);
-    const raw = result.output;
-    const findings = parseWorkflowFindings(JSON.parse(redactWorkflowText(JSON.stringify(raw))), state.reviewPasses);
-    atomicWriteJson(resultFile, { findings });
-    state.reviews.push({ pass: state.reviewPasses, head, findings, artifacts: [...result.artifacts, createArtifactDescriptorFromPath(resultFile, {
-      kind: 'workflow-review', producer: { system: 'omc', component: 'team-workflow' }, retention: 'until-completion',
-    })] });
-    state.stage = 'adjudication';
+      const root = artifactsRoot(state); const prefix = join(root, `review-${state.reviewPasses}`);
+      const resultFile = `${prefix}.result.json`; const schemaFile = `${prefix}.schema.json`;
+      atomicWriteJson(schemaFile, { type: 'object', additionalProperties: false, required: ['findings'], properties: {
+        findings: { type: 'array', maxItems: 50, items: { type: 'object', additionalProperties: false, required: ['severity', 'message', 'file', 'line'], properties: {
+          severity: { type: 'string', enum: ['P0', 'P1', 'P2', 'P3'] }, message: { type: 'string', maxLength: 2000 },
+          file: { type: ['string', 'null'] }, line: { type: ['integer', 'null'] },
+        } } },
+      } });
+      const result = await runWorkflowProvider({ command, args: ['exec', '--sandbox', 'read-only', '--ephemeral', ...(balanced ? ['--json'] : []),
+        ...(state.options.codexModel ? ['--model', state.options.codexModel] : []), '--output-schema', schemaFile, '--output-last-message', resultFile, '-'],
+        cwd, stdin: JSON.stringify({ kind: 'review', baseCommit: state.plan.baseCommit, head, objective: state.plan.objective,
+          tasks: state.tasks.filter(entry => entry.status === 'accepted').map(entry => ({ id: entry.task.id, contracts: entry.task.contracts, acceptanceCriteria: entry.task.acceptanceCriteria })),
+          instructions: 'Independently inspect the integrated code against baseCommit and acceptance criteria. Read only: do not modify files, commits or refs. Do not inspect worker transcripts. Return the required JSON findings with P0/P1/P2/P3 severities.' }),
+        timeoutMs: state.options.timeoutMs, artifactPrefix: prefix, provider: 'codex', ...(balanced ? { collectUsage: true } : {}) }, resultFile);
+      if (attempt) {
+        attempt.telemetry = result.telemetry ?? { provider: 'codex', durationMs: Date.now() - started, status: 'unknown', scope: 'unknown' };
+        attempt.artifacts = result.artifacts;
+      }
+      try {
+        if (assertLeader(state) !== head || git(cwd, ['for-each-ref', '--format=%(refname) %(objectname)']) !== refs) throw new Error('changed');
+      } catch { throw new Error('workflow_reviewer_modified_repository'); }
+      if (!result.passed) throw new Error('workflow_review_process_failed');
+      if (result.outputError) throw result.outputError;
+      validateResolvedPath(resultFile, root);
+      const raw = result.output;
+      const findings = parseWorkflowFindings(JSON.parse(redactWorkflowText(JSON.stringify(raw))), state.reviewPasses);
+      atomicWriteJson(resultFile, { findings });
+      state.reviews.push({ pass: state.reviewPasses, head, findings, artifacts: [...result.artifacts, createArtifactDescriptorFromPath(resultFile, {
+        kind: 'workflow-review', producer: { system: 'omc', component: 'team-workflow' }, retention: 'until-completion',
+      })] });
+      state.stage = 'adjudication';
+      if (attempt) { attempt.outcome = 'completed'; delete attempt.error; attempt.artifacts = state.reviews.at(-1)!.artifacts; }
+    } catch (error) {
+      if (attempt) {
+        const message = error instanceof Error ? error.message : '';
+        attempt.error = /^workflow_[a-z_]+$/.test(message) ? message : 'workflow_review_failed';
+      }
+      throw error;
+    } finally {
+      if (attempt && !attempt.telemetry.durationMs) attempt.telemetry.durationMs = Date.now() - started;
+    }
   });
 }
 export async function adjudicateWorkflow(cwd: string, name: string, decisions: Array<{ findingId: string; disposition: 'fix' | 'dismiss'; reason: string }>): Promise<WorkflowState> {
@@ -415,7 +536,7 @@ export async function finishWorkflow(cwd: string, name: string): Promise<Workflo
 }
 export function workflowStatus(cwd: string, name: string): Record<string, unknown> {
   const state = readWorkflow(cwd, name);
-  const result = { name, profile: state.profile, stage: state.stage, workers: state.options.workers, maxWorkers: state.options.maxWorkers,
+  const result = { name, profile: state.profile, mode: state.options.mode ?? 'v1', stage: state.stage, workers: state.options.workers, maxWorkers: state.options.maxWorkers,
     activeWorkers: state.tasks.filter(entry => entry.status === 'running').length, integrationBranch: state.plan.integrationBranch,
     failedTasks: state.tasks.filter(entry => entry.status === 'failed').length,
     verification: state.verification ? { head: state.verification.head, passed: state.verification.passed } : null,
@@ -424,6 +545,10 @@ export function workflowStatus(cwd: string, name: string): Record<string, unknow
     omittedTasks: 0, omittedFindings: 0, stateFile: statePath(cwd, name),
     tasks: state.tasks.map(entry => ({ id: entry.task.id, worker: entry.worker, provider: 'glm', model: state.options.glmModel,
       status: entry.status, attempts: entry.attempts, backoffUntil: entry.backoffUntil, worktree: entry.worktree, branch: entry.branch, updatedAt: entry.updatedAt,
+      ...(entry.session ? { session: { confirmed: entry.session.confirmed,
+        resumeCandidate: entry.status === 'failed' && entry.session.confirmed && Boolean(state.options.glmModel)
+          && entry.attempts < state.options.maxAttempts && !['workflow_worker_modified_protected_refs', 'workflow_session_identity_mismatch'].includes(entry.error ?? ''),
+        requiresExplicitResumeAndWorktreeChecks: true } } : {}),
       error: entry.error?.slice(0, 200), ...(entry.handoff ? { handoff: { taskId: entry.handoff.taskId, outcome: entry.handoff.outcome,
         commitSha: entry.handoff.commitSha, summary: entry.handoff.summary.slice(0, 200),
         changedFiles: entry.handoff.changedFiles.slice(0, 10), testsPassed: entry.handoff.tests.every(test => test.passed),

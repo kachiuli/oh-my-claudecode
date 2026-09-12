@@ -1,5 +1,8 @@
 # GLM workflow V1 implementation and validation report
 
+This report records the V1 baseline. See [local V1.1 validation](GLM-WORKFLOW-V1.1-VALIDATION.md)
+for balanced mode; V1's broader environment limitations still apply.
+
 Date: 2026-09-12. Environment: Windows, Node 24.18.1, Git, Vitest 4.1.11.
 
 ## Source and delivery

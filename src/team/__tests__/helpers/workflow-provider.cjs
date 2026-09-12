@@ -13,6 +13,30 @@ const git = (...args) => execFileSync('git', args, {
 const role = request.kind === 'review' ? 'codex' : 'glm';
 const taskId = request.task?.id ?? 'review';
 const behavior = configuration.tasks?.[taskId] ?? {};
+const structured = role === 'glm' ? process.argv.includes('stream-json') : process.argv.includes('--json');
+const sessionFlag = process.argv.includes('--resume') ? '--resume' : '--session-id';
+const sessionId = behavior.sessionId ?? process.argv[process.argv.indexOf(sessionFlag) + 1];
+function streamEvent(value) {
+  if (structured) process.stdout.write(JSON.stringify(value) + '\n');
+}
+function emitUsage(failed = false) {
+  if (behavior.omitUsage) {
+    streamEvent(role === 'codex' ? { type: 'turn.completed' }
+      : { type: 'result', subtype: failed ? 'error_during_execution' : 'success', is_error: failed,
+        ...(behavior.omitSession ? {} : { session_id: sessionId }) });
+    return;
+  }
+  if (role === 'codex') {
+    streamEvent({ type: 'turn.completed', usage: { input_tokens: 150, cached_input_tokens: 100, output_tokens: 25 } });
+  } else {
+    streamEvent({ type: 'result', subtype: failed ? 'error_during_execution' : 'success', is_error: failed,
+      ...(behavior.omitSession ? {} : { session_id: sessionId }),
+      usage: { input_tokens: 120, output_tokens: 30, cache_read_input_tokens: 80, cache_creation_input_tokens: 20 },
+      modelUsage: { 'glm-test': { inputTokens: 120, outputTokens: 30, cacheReadInputTokens: 80, cacheCreationInputTokens: 20, costUSD: 0.004 } },
+      total_cost_usd: 0.004,
+    });
+  }
+}
 function event(event) {
   fs.appendFileSync(configuration.eventsPath, JSON.stringify({
     role, event, taskId, cwd: process.cwd(), branch: git('branch', '--show-current'),
@@ -22,6 +46,18 @@ function event(event) {
 
 (async () => {
   event('start');
+  if (!behavior.omitSession) {
+    streamEvent(role === 'glm' ? { type: 'system', subtype: 'init', session_id: sessionId }
+      : { type: 'thread.started', thread_id: '8ce7a8a3-f8f4-4132-b701-19d1ef10271a' });
+  }
+  // Stop after the CLI has established a session, before it touches the worktree.
+  if (behavior.pauseBeforeWork) await new Promise(resolve => setTimeout(resolve, 30000));
+  if (behavior.beforeWorkFailure) {
+    emitUsage(true);
+    event('end');
+    process.exitCode = 17;
+    return;
+  }
   if (role === 'glm' && configuration.barrierCount) {
     const deadline = Date.now() + 10000;
     while (fs.readFileSync(configuration.eventsPath, 'utf8').split('\n').filter(line => line && JSON.parse(line).event === 'start').length < configuration.barrierCount) {
@@ -48,6 +84,7 @@ function event(event) {
     } else if (behavior.resultFormat !== 'missing') fs.writeFileSync(resultFile, metadata);
     if (behavior.resultFailure === 'artifact') fs.writeFileSync(resultFile.replace(/\.result\.json$/, '.stdout.log'), 'provider-owned log');
     if (behavior.resultFailure === 'timeout' || behavior.resultFailure === 'interrupted') await new Promise(resolve => setTimeout(resolve, 30000));
+    emitUsage(true);
     event('end');
     process.exitCode = ['linked', 'success'].includes(behavior.resultFailure) ? 0 : 17;
     return;
@@ -65,12 +102,14 @@ function event(event) {
     const outputIndex = process.argv.indexOf('--output-last-message');
     if (outputIndex < 0) throw new Error('Review must use an explicit structured output file.');
     fs.writeFileSync(process.argv[outputIndex + 1], JSON.stringify({ findings }));
+    emitUsage();
     event('end');
     return;
   }
   if (behavior.stderrBytes) process.stderr.write('WORKER_PRIVATE_TRANSCRIPT'.repeat(Math.ceil(behavior.stderrBytes / 25)));
   if (behavior.stdoutBytes) process.stdout.write('WORKER_PRIVATE_TRANSCRIPT'.repeat(Math.ceil(behavior.stdoutBytes / 25)));
   if (behavior.fail) {
+    emitUsage(true);
     event('end');
     process.exitCode = 17;
     return;
@@ -93,6 +132,7 @@ function event(event) {
     summary: behavior.summary ?? `Completed ${taskId}.`,
   };
   fs.writeFileSync(request.resultFile, JSON.stringify(handoff));
+  emitUsage();
   event('end');
 })().catch(error => {
   process.stderr.write(String(error));

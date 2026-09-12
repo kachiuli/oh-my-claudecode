@@ -1,16 +1,19 @@
 import { readFileSync, statSync } from 'node:fs';
 import {
   acceptWorkflowTask, addWorkflowFix, adjudicateWorkflow, cleanupWorkflow, finishWorkflow,
-  initWorkflow, rejectWorkflowTask, reviewWorkflow, runWorkflow,
+  initWorkflow, readWorkflow, rejectWorkflowTask, resumeWorkflowTask, reviewWorkflow, runWorkflow,
   verifyWorkflow, workflowStatus,
 } from '../../team/workflow.js';
 import type { WorkflowOptions } from '../../team/workflow.js';
+import { workflowUsage } from '../../team/workflow-report.js';
 
 export const WORKFLOW_HELP = `Usage: omc team workflow <operation>
 
-  init --file <plan.json> [--workers N] [--max-review-passes N] [--max-attempts N]
+  init --file <plan.json> [--mode v1|balanced] [--workers N] [--max-review-passes N] [--max-attempts N]
   run <name>
   status <name>
+  usage <name>
+  resume <name> <task-id> --expected-head <integration-sha> --reason <reason>
   accept <name> <task-id>
   reject <name> <task-id> --reason <reason>
   verify <name>
@@ -57,20 +60,29 @@ export async function workflowCommand(args: string[], cwd = process.cwd()): Prom
   }
   const { positional, flags } = parseArgs(rest);
   const allowed: Record<string, string[]> = {
-    init: ['--file', '--workers', '--max-review-passes', '--max-attempts'],
-    run: [], status: [], accept: [], reject: ['--reason'], verify: [], review: [],
+    init: ['--file', '--mode', '--workers', '--max-review-passes', '--max-attempts'],
+    run: [], status: [], usage: [], resume: ['--expected-head', '--reason'], accept: [], reject: ['--reason'], verify: [], review: [],
     adjudicate: ['--file'], 'add-fix': ['--file'], finish: [], cleanup: [],
   };
   if (!Object.hasOwn(allowed, operation)) throw new Error('workflow_unknown_operation');
   if ([...flags.keys()].some(flag => !allowed[operation].includes(flag))) {
     throw new Error('workflow_unknown_option');
   }
-  const expected = operation === 'init' ? 0 : ['accept', 'reject'].includes(operation) ? 2 : 1;
+  const expected = operation === 'init' ? 0 : ['accept', 'reject', 'resume'].includes(operation) ? 2 : 1;
   if (positional.length !== expected) throw new Error('workflow_invalid_arguments');
   let name = positional[0];
+  if (operation === 'usage') {
+    console.log(JSON.stringify(workflowUsage(readWorkflow(cwd, name))));
+    return;
+  }
   let cleanup: Awaited<ReturnType<typeof cleanupWorkflow>> | undefined;
   if (operation === 'init') {
     const options: WorkflowOptions = {};
+    const mode = flags.get('--mode');
+    if (mode !== undefined) {
+      if (mode !== 'v1' && mode !== 'balanced') throw new Error('workflow_invalid_mode');
+      options.mode = mode;
+    }
     for (const [flag, key] of [
       ['--workers', 'workers'], ['--max-review-passes', 'maxReviewPasses'],
       ['--max-attempts', 'maxAttempts'],
@@ -86,6 +98,13 @@ export async function workflowCommand(args: string[], cwd = process.cwd()): Prom
     const state = await initWorkflow(cwd, readInputFile(flags.get('--file')), options);
     name = state.plan.name;
   } else if (operation === 'run') await runWorkflow(cwd, name);
+  else if (operation === 'resume') {
+    const reason = flags.get('--reason');
+    const head = flags.get('--expected-head');
+    if (!reason?.trim()) throw new Error('workflow_reason_required');
+    if (!head || !/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/.test(head)) throw new Error('workflow_invalid_sha');
+    await resumeWorkflowTask(cwd, name, positional[1], head, reason);
+  }
   else if (operation === 'accept') await acceptWorkflowTask(cwd, name, positional[1]);
   else if (operation === 'reject') {
     const reason = flags.get('--reason');
@@ -112,7 +131,7 @@ export async function workflowCommand(args: string[], cwd = process.cwd()): Prom
   const verification = status.verification as { passed?: boolean } | null;
   const tasks = status.tasks as Array<{ status?: string }> | undefined;
   if ((operation === 'verify' && verification?.passed === false)
-    || (operation === 'run' && (Number(status.failedTasks ?? 0) > 0 || tasks?.some(task => task.status === 'failed')))) {
+    || (['run', 'resume'].includes(operation) && (Number(status.failedTasks ?? 0) > 0 || tasks?.some(task => task.status === 'failed')))) {
     process.exitCode = 1;
   }
 }
