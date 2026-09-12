@@ -141,7 +141,7 @@ export function parseWorkflowTask(value: unknown): WorkflowTask {
     dependencies: texts(raw.dependencies).map(safeWorkflowId), contracts: texts(raw.contracts),
     acceptanceCriteria: texts(raw.acceptanceCriteria), tests: raw.tests.map(parseWorkflowCommand) };
 }
-export function validateWorkflowTasks(tasks: WorkflowTask[]): void {
+export function validateWorkflowTasks(tasks: WorkflowTask[], rejectedTaskIds: ReadonlySet<string> = new Set()): void {
   const byId = new Map(tasks.map(task => [task.id, task]));
   if (byId.size !== tasks.length) throw new Error('workflow_duplicate_task');
   const dependencySets = new Map<string, Set<string>>();
@@ -168,17 +168,19 @@ export function validateWorkflowTasks(tasks: WorkflowTask[]): void {
   }
   for (let i = 0; i < tasks.length; i++) for (let j = i + 1; j < tasks.length; j++) {
     const a = tasks[i]!; const b = tasks[j]!;
+    // Rejected work remains in the dependency graph and history, but no longer owns its write scope.
+    if (rejectedTaskIds.has(a.id) || rejectedTaskIds.has(b.id)) continue;
     const overlap = a.writeScope.some(path => b.writeScope.some(p => matchesScope(path, [p]) || matchesScope(p, [path])));
     if (overlap && !depends(a, b.id) && !depends(b, a.id)) throw new Error('workflow_overlapping_write_scope');
   }
 }
-export function parseWorkflowPlan(value: unknown): WorkflowPlan {
+export function parseWorkflowPlan(value: unknown, rejectedTaskIds: ReadonlySet<string> = new Set()): WorkflowPlan {
   if (Buffer.byteLength(JSON.stringify(value) ?? '') > 512 * 1024) throw new Error('workflow_plan_too_large');
   const raw = object(value);
   if (!Array.isArray(raw.tasks) || raw.tasks.length < 1 || raw.tasks.length > 100) throw new Error('workflow_invalid_tasks');
   if (!Array.isArray(raw.verification) || !raw.verification.length || raw.verification.length > 30) throw new Error('workflow_verification_required');
   const tasks = raw.tasks.map(parseWorkflowTask);
-  validateWorkflowTasks(tasks);
+  validateWorkflowTasks(tasks, rejectedTaskIds);
   return { name: safeWorkflowId(raw.name), objective: boundedText(raw.objective), baseCommit: workflowSha(raw.baseCommit),
     integrationBranch: boundedText(raw.integrationBranch, 200), tasks, verification: raw.verification.map(parseWorkflowCommand) };
 }

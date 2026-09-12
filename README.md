@@ -194,7 +194,7 @@ The deep interview uses Socratic questioning to clarify your thinking before any
 
 This opt-in workflow keeps **Claude as the lead**, runs **GLM implementation workers in separate Git worktrees**, and asks **Codex for independent review**. Claude supplies the plan, accepts commits and decides what to do with review findings. The controller does not start a Claude lead for you.
 
-**Current readiness:** suitable for a controlled trial, starting in a separate clone of your project. The implementation passed 92 targeted tests, 17 selected GLM regression checks, build, lint and typechecking. Actual authenticated GLM/Codex execution has not been tested. The broader Windows test suite has failures; some match upstream, and others remain unclassified. See the [validation report](docs/GLM-WORKFLOW-VALIDATION.md) before relying on it for daily work.
+**Current readiness:** suitable for a controlled trial, starting in a separate clone of your project. See the [validation report](docs/GLM-WORKFLOW-VALIDATION.md) for exact test results, independent-review fixes and remaining limits. Actual authenticated GLM/Codex execution has not been tested. The broader Windows test suite has failures; some match upstream, and others remain unclassified.
 
 ### 1. Build and select this fork
 

@@ -209,12 +209,12 @@ export const DEFAULT_CONFIG: PluginConfig = buildDefaultConfig();
 /**
  * Configuration file locations
  */
-export function getConfigPaths(): { user: string; project: string } {
+export function getConfigPaths(cwd: string = process.cwd()): { user: string; project: string } {
   const userConfigDir = getConfigDir();
 
   return {
     user: join(userConfigDir, "claude-omc", "config.jsonc"),
-    project: join(process.cwd(), ".claude", "omc.jsonc"),
+    project: join(cwd, ".claude", "omc.jsonc"),
   };
 }
 
@@ -803,8 +803,8 @@ function parseTeamRoleOverridesFromEnv(): Record<string, TeamRoleAssignmentSpec>
   }
 }
 
-export function loadConfig(): PluginConfig {
-  const paths = getConfigPaths();
+export function loadConfig(cwd: string = process.cwd()): PluginConfig {
+  const paths = getConfigPaths(cwd);
 
   // Start with fresh defaults so env-based model overrides are resolved at call time
   let config = buildDefaultConfig();

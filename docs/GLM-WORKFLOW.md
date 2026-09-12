@@ -58,6 +58,10 @@ omc team 4:glm "implement the scoped assignments"
 
 Ordinary `omc team` uses the existing team runtime and requires tmux/psmux.
 GLM selection enables native named worktrees and refuses automatic merging.
+Each team saves its configured GLM worker maximum, including teams that start
+with only Claude workers. Recreate the team to apply a changed maximum. Older
+teams without a saved maximum capture it from the leader's project configuration
+when they first add GLM workers.
 The explicit workflow controller runs local processes without needing tmux.
 If you have explicitly disabled runtime-v2, re-enable it for ordinary GLM teams
 with `OMC_RUNTIME_V2=1`; legacy-v1 GLM launches fail before creating workers.
@@ -210,6 +214,12 @@ Use the current integration commit as the fix task's base. Valid P0/P1 findings
 must be fixed; Claude decides material P2 findings, while P3 does not automatically
 cause work. Dismissals require reasons. Claude may handle tiny high-context or
 architecture-sensitive fixes through an explicit scoped task and acceptance path.
+
+If a proposed fix is wrong, reject its task with a reason and add a replacement
+using a new task ID, the current integration commit and the same unresolved
+finding IDs. The replacement may own the rejected task's files; the rejected
+commit and worktree remain available for inspection. Do not make the replacement
+depend on the rejected task: rejection does not satisfy a dependency.
 
 The default review budget is two passes: initial review and at most one re-review.
 Set `--max-review-passes` at initialization to change it. A failed attempt still

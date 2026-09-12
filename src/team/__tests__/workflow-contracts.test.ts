@@ -40,4 +40,21 @@ describe('workflow plan boundaries', () => {
     expect(() => parseWorkflowPlan({ ...plan, tasks: [{ ...task, dependencies: ['missing'] }] })).toThrow(/dependency/);
     expect(() => parseWorkflowPlan({ ...plan, tasks: [{ ...task, dependencies: ['a'] }] })).toThrow(/cycle/);
   });
+
+  it('releases rejected ownership without removing history or weakening active ownership', () => {
+    const rejected = new Set(['a']);
+    const replacement = { ...task, id: 'replacement' };
+    expect(parseWorkflowPlan({ ...plan, tasks: [task, replacement] }, rejected).tasks.map(entry => entry.id))
+      .toEqual(['a', 'replacement']);
+    expect(() => parseWorkflowPlan({ ...plan, tasks: [task, replacement, { ...task, id: 'other' }] }, rejected))
+      .toThrow('workflow_overlapping_write_scope');
+  });
+
+  it('keeps missing and cyclic dependency validation for rejected historical tasks', () => {
+    const rejected = new Set(['a']);
+    expect(() => parseWorkflowPlan({ ...plan, tasks: [{ ...task, dependencies: ['missing'] }] }, rejected))
+      .toThrow('workflow_missing_dependency');
+    expect(() => parseWorkflowPlan({ ...plan, tasks: [{ ...task, dependencies: ['a'] }] }, rejected))
+      .toThrow('workflow_dependency_cycle');
+  });
 });

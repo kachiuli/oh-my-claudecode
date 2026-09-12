@@ -1,7 +1,7 @@
 /** Opt-in Claude-led workflow. Every integration and finding disposition is an explicit lead action. */
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, statSync, lstatSync, realpathSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { withFileLock } from '../lib/file-lock.js';
 import { loadConfig } from '../config/loader.js';
@@ -34,10 +34,15 @@ function boundedJson(path: string, max = 64 * 1024): unknown {
   if (lstatSync(path).isSymbolicLink() || statSync(path).size > max) throw new Error('workflow_artifact_invalid_or_oversized');
   try { return JSON.parse(readFileSync(path, 'utf8')); } catch { throw new Error('workflow_invalid_json'); }
 }
-function workerResultJson(path: string): unknown {
-  if (lstatSync(path).isSymbolicLink()) throw new Error('workflow_result_symlink_rejected');
+function workerResultJson(path: string, canonicalParent: string): unknown {
+  const parent = dirname(path);
+  if (lstatSync(parent).isSymbolicLink() || realpathSync(parent) !== canonicalParent) throw new Error('workflow_artifact_parent_changed');
+  const info = lstatSync(path);
+  if (info.isSymbolicLink()) throw new Error('workflow_result_symlink_rejected');
+  if (!info.isFile() || info.nlink !== 1) throw new Error('workflow_result_not_regular_file');
+  validateResolvedPath(path, canonicalParent);
   try {
-    if (statSync(path).size > 64 * 1024) throw new Error('workflow_artifact_invalid_or_oversized');
+    if (info.size > 64 * 1024) throw new Error('workflow_artifact_invalid_or_oversized');
     const parsed: unknown = JSON.parse(redactWorkflowText(readFileSync(path, 'utf8')));
     atomicWriteJson(path, parsed);
     return parsed;
@@ -46,6 +51,20 @@ function workerResultJson(path: string): unknown {
     atomicWriteJson(path, { error: 'workflow_invalid_result' });
     throw new Error('workflow_invalid_result');
   }
+}
+async function runWorkflowProvider(input: Parameters<typeof runWorkflowProcess>[0], resultFile: string) {
+  // Capture before launch: an unsuccessful provider can still write or redirect its result path.
+  const canonicalParent = realpathSync(dirname(resultFile));
+  let result: Awaited<ReturnType<typeof runWorkflowProcess>> | undefined;
+  let output: unknown;
+  let outputError: unknown;
+  try { result = await runWorkflowProcess(input); }
+  finally {
+    try { output = workerResultJson(resultFile, canonicalParent); }
+    catch (error) { outputError = error; }
+  }
+  // Return parse failures so callers can retain process artifacts and preserve the original failure precedence.
+  return { ...result, output, outputError };
 }
 function clean(cwd: string): boolean {
   return git(cwd, ['status', '--porcelain', '--untracked-files=all']).split('\n')
@@ -83,8 +102,8 @@ export function readWorkflow(cwd: string, name: string): WorkflowState {
   const state = boundedJson(statePath(cwd, name), 16 * 1024 * 1024) as WorkflowState;
   if (!state || state.schemaVersion !== 1 || state.profile !== 'claude-glm-codex' || state.plan?.name !== name
     || realpathSync(state.cwd) !== realpathSync(cwd)) throw new Error('workflow_invalid_state');
-  parseWorkflowPlan(state.plan);
   if (!Array.isArray(state.tasks) || !Array.isArray(state.reviews)) throw new Error('workflow_invalid_state');
+  parseWorkflowPlan(state.plan, new Set(state.tasks.filter(entry => entry.status === 'rejected').map(entry => entry.task.id)));
   return state;
 }
 async function mutate(cwd: string, name: string, action: (state: WorkflowState) => Promise<void>): Promise<WorkflowState> {
@@ -197,14 +216,15 @@ async function executeTask(state: WorkflowState, entry: WorkflowTaskState, comma
       const resultFile = `${prefix}.result.json`;
       if (existsSync(resultFile)) throw new Error('workflow_result_already_exists');
       const instructions = 'Implement only your writeScope and follow all contracts and acceptanceCriteria. Run the declared tests. Do not merge, push, modify other branches, spawn nested workers or write leader state. Make exactly one coherent commit on baseCommit and leave your worktree clean. Write resultFile JSON with taskId, outcome (completed|failed), commitSha, changedFiles, tests ({command,args,passed}), interfaceChanges, assumptions, risks, summary. Keep summary <=1000 characters and lists <=30 items. stdout/stderr are artifacts, never the handoff. Do not emit credentials.';
-      const result = await runWorkflowProcess({ command, args: [...buildLaunchArgs('glm', {
+      const result = await runWorkflowProvider({ command, args: [...buildLaunchArgs('glm', {
         teamName: state.plan.name, workerName: entry.worker, cwd: entry.worktree, model: state.options.glmModel,
       }), '-p'], cwd: entry.worktree, stdin: JSON.stringify({ kind: 'implementation', task: entry.task, instructions, resultFile }),
-      timeoutMs: state.options.timeoutMs, artifactPrefix: prefix, provider: 'glm', worker: entry.worker });
+      timeoutMs: state.options.timeoutMs, artifactPrefix: prefix, provider: 'glm', worker: entry.worker }, resultFile);
       entry.handoff = { taskId: entry.task.id, outcome: 'failed', changedFiles: [], tests: [], interfaceChanges: [], assumptions: [], risks: [], summary: result.error ?? 'Worker result pending validation', artifacts: result.artifacts };
       if (!result.passed) throw new Error(`workflow_${result.error}`);
+      if (result.outputError) throw result.outputError;
       validateResolvedPath(resultFile, root);
-      const handoff = parseWorkflowHandoff(workerResultJson(resultFile), entry.task.id);
+      const handoff = parseWorkflowHandoff(result.output, entry.task.id);
       // Provider result is untrusted text: never persist credentials returned in a handoff.
       const safeHandoff = parseWorkflowHandoff(JSON.parse(redactWorkflowText(JSON.stringify(handoff))), entry.task.id);
       atomicWriteJson(resultFile, safeHandoff);
@@ -331,18 +351,19 @@ export async function reviewWorkflow(cwd: string, name: string): Promise<Workflo
         file: { type: ['string', 'null'] }, line: { type: ['integer', 'null'] },
       } } },
     } });
-    const result = await runWorkflowProcess({ command, args: ['exec', '--sandbox', 'read-only', '--ephemeral',
+    const result = await runWorkflowProvider({ command, args: ['exec', '--sandbox', 'read-only', '--ephemeral',
       ...(state.options.codexModel ? ['--model', state.options.codexModel] : []), '--output-schema', schemaFile, '--output-last-message', resultFile, '-'],
       cwd, stdin: JSON.stringify({ kind: 'review', baseCommit: state.plan.baseCommit, head, objective: state.plan.objective,
         tasks: state.tasks.filter(entry => entry.status === 'accepted').map(entry => ({ id: entry.task.id, contracts: entry.task.contracts, acceptanceCriteria: entry.task.acceptanceCriteria })),
         instructions: 'Independently inspect the integrated code against baseCommit and acceptance criteria. Read only: do not modify files, commits or refs. Do not inspect worker transcripts. Return the required JSON findings with P0/P1/P2/P3 severities.' }),
-      timeoutMs: state.options.timeoutMs, artifactPrefix: prefix, provider: 'codex' });
+      timeoutMs: state.options.timeoutMs, artifactPrefix: prefix, provider: 'codex' }, resultFile);
     try {
       if (assertLeader(state) !== head || git(cwd, ['for-each-ref', '--format=%(refname) %(objectname)']) !== refs) throw new Error('changed');
     } catch { throw new Error('workflow_reviewer_modified_repository'); }
     if (!result.passed) throw new Error('workflow_review_process_failed');
+    if (result.outputError) throw result.outputError;
     validateResolvedPath(resultFile, root);
-    const raw = workerResultJson(resultFile);
+    const raw = result.output;
     const findings = parseWorkflowFindings(JSON.parse(redactWorkflowText(JSON.stringify(raw))), state.reviewPasses);
     atomicWriteJson(resultFile, { findings });
     state.reviews.push({ pass: state.reviewPasses, head, findings, artifacts: [...result.artifacts, createArtifactDescriptorFromPath(resultFile, {
@@ -377,7 +398,7 @@ export async function addWorkflowFix(cwd: string, name: string, rawTask: unknown
       || state.tasks.some(entry => entry.status !== 'rejected' && entry.findingIds?.some(id => findingIds.includes(id)))) throw new Error('workflow_fix_finding_not_actionable');
     // Fixes follow all integrated ownership so intentional overlap is serialized.
     task.dependencies = [...new Set([...task.dependencies, ...state.tasks.filter(entry => entry.status === 'accepted').map(entry => entry.task.id)])];
-    parseWorkflowPlan({ ...state.plan, tasks: [...state.plan.tasks, task] });
+    parseWorkflowPlan({ ...state.plan, tasks: [...state.plan.tasks, task] }, new Set(state.tasks.filter(entry => entry.status === 'rejected').map(entry => entry.task.id)));
     state.plan.tasks.push(task);
     state.tasks.push({ task, canonicalId: String(state.tasks.length + 1), status: 'pending', attempts: 0, worker: `task-${task.id}`, updatedAt: now(), findingIds });
     delete state.verification; state.stage = 'remediation';

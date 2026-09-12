@@ -3231,7 +3231,9 @@ export async function startTeamV2(config: StartTeamV2Config): Promise<TeamRuntim
   // for the team's lifetime (stickiness per plan AC-10): spawn/scaleUp/restart
   // all read this snapshot and never re-resolve. Config edits mid-lifetime
   // do NOT change routing — user must recreate the team to pick up changes.
-  const pluginCfg: PluginConfig = applyGlmProfile(config.pluginConfig ?? loadConfig());
+  const pluginCfg: PluginConfig = applyGlmProfile(config.pluginConfig ?? loadConfig(leaderCwd));
+  // Pin pool capacity even when GLM workers are only added later by scale-up.
+  const glmMaxWorkers = getGlmConfig(pluginCfg, {}).maxWorkers;
   const resolvedRouting = buildResolvedRoutingSnapshot(pluginCfg);
   let worktreeMode: TeamWorktreeMode = normalizeTeamWorktreeMode(
     process.env.OMC_TEAM_WORKTREE_MODE ?? pluginCfg.team?.ops?.worktreeMode,
@@ -3509,7 +3511,7 @@ export async function startTeamV2(config: StartTeamV2Config): Promise<TeamRuntim
     governance: DEFAULT_TEAM_GOVERNANCE,
     worker_count: config.workerCount,
     max_workers: ABSOLUTE_MAX_WORKERS,
-    ...(effectiveAgentTypes.has('glm') ? { glm_max_workers: getGlmConfig(pluginCfg).maxWorkers } : {}),
+    glm_max_workers: glmMaxWorkers,
     workers: workersInfo,
     created_at: new Date().toISOString(),
     tmux_session: sessionName,

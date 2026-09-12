@@ -180,6 +180,22 @@ describe('runtime-v2 Gemini preflight routing', () => {
     expect(mocks.createTeamSession).not.toHaveBeenCalled();
   });
 
+  it('snapshots the project GLM maximum for a team that starts with only Claude', async () => {
+    cwd = await mkdtemp(join(tmpdir(), 'glm-claude-startup-limit-'));
+    vi.stubEnv('XDG_CONFIG_HOME', join(home, 'config'));
+    vi.stubEnv('APPDATA', join(home, 'config'));
+    await mkdir(join(cwd, '.claude'));
+    await writeFile(join(cwd, '.claude', 'omc.jsonc'), JSON.stringify({
+      team: { glm: { defaultWorkers: 1, maxWorkers: 1 } },
+    }));
+    const { startTeamV2 } = await import('../runtime-v2.js');
+    const runtime = await startTeamV2({ teamName: 'glm-claude-limit', workerCount: 1, agentTypes: ['claude'], tasks: [], cwd });
+    expect(runtime.config.glm_max_workers).toBe(1);
+    const persisted = JSON.parse(await readFile(join(runtime.config.team_state_root!, 'config.json'), 'utf8'));
+    expect(persisted.glm_max_workers).toBe(1);
+    expect(modelContractMocks.resolveValidatedBinaryPath).not.toHaveBeenCalledWith('glm');
+  });
+
   it('rejects GLM auto-merge before repository or pane operations', async () => {
     cwd = await mkdtemp(join(tmpdir(), 'glm-merge-preflight-'));
     const { startTeamV2 } = await import('../runtime-v2.js');

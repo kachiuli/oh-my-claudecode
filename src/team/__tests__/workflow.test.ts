@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -170,6 +170,116 @@ describe('Claude/GLM/Codex workflow with real local fake providers', () => {
     expect(pending.attempts).toBe(0);
     expect(fixture.events()).toEqual([]);
     expect(fixture.git('rev-parse', 'main')).toBe(fixture.baseCommit);
+  });
+
+  it.each([
+    ['glm', 'failure', 'json'], ['glm', 'timeout', 'json'], ['glm', 'interrupted', 'json'], ['glm', 'artifact', 'json'],
+    ['glm', 'failure', 'invalid'], ['glm', 'failure', 'oversized'],
+    ['codex', 'failure', 'json'], ['codex', 'timeout', 'json'], ['codex', 'interrupted', 'json'], ['codex', 'artifact', 'json'],
+  ])('sanitizes %s result metadata after %s with %s output', async (role, resultFailure, resultFormat) => {
+    const secret = 'fake-result-credential-123456';
+    vi.stubEnv('OMC_FIXTURE_API_TOKEN', secret);
+    if (role === 'codex') {
+      await integrateOne();
+      await verifyWorkflow(fixture.cwd, name);
+      // Give successful setup its normal timeout, then bound only the failing reviewer.
+      const path = String(workflowStatus(fixture.cwd, name).stateFile);
+      const state = readWorkflow(fixture.cwd, name);
+      state.options.timeoutMs = 2000;
+      writeFileSync(path, JSON.stringify(state));
+    } else {
+      await initWorkflow(fixture.cwd, plan(), { ...options, maxAttempts: 1, timeoutMs: 2000 });
+    }
+    fixture.configure({ tasks: { [role === 'codex' ? 'review' : 'a']: { resultFailure, resultFormat } } });
+    const root = join(fixture.cwd, '.omc/state/team', name, 'artifacts');
+    const prefix = role === 'codex' ? 'review-1' : 'task-a-1';
+    const resultFile = join(root, `${prefix}.result.json`);
+    const interrupt = resultFailure === 'interrupted' ? setInterval(() => {
+      if (existsSync(resultFile)) { clearInterval(interrupt); process.emit('SIGINT'); }
+    }, 20) : undefined;
+    try {
+      if (role === 'codex') {
+        await expect(reviewWorkflow(fixture.cwd, name)).rejects.toThrow(
+          resultFailure === 'artifact' ? 'workflow_artifact_write_refused' : 'workflow_review_process_failed',
+        );
+      } else {
+        await runWorkflow(fixture.cwd, name);
+        const failed = readWorkflow(fixture.cwd, name).tasks[0]!;
+        expect(failed.status).toBe('failed');
+        expect(failed.error).toBe(resultFailure === 'artifact' ? 'workflow_artifact_write_refused'
+          : ['timeout', 'interrupted'].includes(resultFailure) ? `workflow_${resultFailure}` : 'workflow_process_failed');
+        expect(existsSync(failed.worktree!)).toBe(true);
+      }
+    } finally { clearInterval(interrupt); }
+    const retained = readFileSync(resultFile, 'utf8');
+    expect(retained).not.toContain(secret);
+    expect(Buffer.byteLength(retained)).toBeLessThanOrEqual(64 * 1024);
+    expect(() => JSON.parse(retained)).not.toThrow();
+    expect(readdirSync(root).filter(file => file.includes('.tmp.'))).toEqual([]);
+  }, 20000);
+
+  it('replaces a completed rejected fix while preserving its history and unsatisfied dependencies', async () => {
+    fixture.configure({ findings: [{ severity: 'P1', message: 'Repair feature a.', file: 'feature/a.txt', line: 1 }] });
+    await integrateOne();
+    await verifyWorkflow(fixture.cwd, name);
+    await reviewWorkflow(fixture.cwd, name);
+    const findingId = readWorkflow(fixture.cwd, name).reviews[0]!.findings[0]!.id;
+    await adjudicateWorkflow(fixture.cwd, name, [{ findingId, disposition: 'fix', reason: 'Repair the bug.' }]);
+    const fix = (id: string, dependencies: string[] = []) => task(id, {
+      baseCommit: fixture.git('rev-parse', 'HEAD'), writeScope: ['feature/a.txt'], dependencies,
+    });
+    await addWorkflowFix(fixture.cwd, name, fix('fix-one'), [findingId]);
+    await runWorkflow(fixture.cwd, name);
+    await rejectWorkflowTask(fixture.cwd, name, 'fix-one', 'This repair misses the requirement.');
+    const rejected = readWorkflow(fixture.cwd, name).tasks[1]!;
+    expect(rejected.handoff?.commitSha).toMatch(/^[a-f0-9]{40}$/);
+    await addWorkflowFix(fixture.cwd, name, fix('blocked-fix', ['fix-one']), [findingId]);
+    await runWorkflow(fixture.cwd, name);
+    expect(readWorkflow(fixture.cwd, name).tasks[2]!.status).toBe('pending');
+    expect(fixture.events().some(event => event.taskId === 'blocked-fix')).toBe(false);
+    await expect(acceptWorkflowTask(fixture.cwd, name, 'blocked-fix')).rejects.toThrow();
+    await rejectWorkflowTask(fixture.cwd, name, 'blocked-fix', 'Replace without the rejected prerequisite.');
+    await addWorkflowFix(fixture.cwd, name, fix('fix-two'), [findingId]);
+    expect(readWorkflow(fixture.cwd, name).plan.tasks).toHaveLength(4);
+    await runWorkflow(fixture.cwd, name);
+    await acceptWorkflowTask(fixture.cwd, name, 'fix-two');
+    await verifyWorkflow(fixture.cwd, name);
+    const state = readWorkflow(fixture.cwd, name);
+    expect(state.tasks.map(entry => entry.status)).toEqual(['accepted', 'rejected', 'rejected', 'accepted']);
+    expect(state.reviews[0]!.findings[0]!.fixedBy).toBe('fix-two');
+    expect(state.verification?.passed).toBe(true);
+    expect(readFileSync(join(rejected.worktree!, 'feature/a.txt'), 'utf8')).toBe('fix-one\n');
+    expect(fixture.git('rev-parse', rejected.branch!)).toBe(rejected.handoff!.commitSha);
+    expect(readFileSync(join(fixture.cwd, 'feature/a.txt'), 'utf8')).toBe('fix-two\n');
+  }, 30000);
+
+  it.each(['hardlink', 'parent', 'directory'])('refuses a provider-controlled result %s without modifying protected files', async resultLink => {
+    const protectedRoot = join(fixture.root, 'protected');
+    mkdirSync(protectedRoot);
+    const target = join(protectedRoot, 'task-a-1.result.json');
+    const original = JSON.stringify({ summary: 'Protected unrelated content.' });
+    writeFileSync(target, original);
+    fixture.configure({ tasks: { a: { resultFailure: 'linked', resultLink,
+      resultTarget: resultLink === 'parent' ? protectedRoot : target } } });
+    await initWorkflow(fixture.cwd, plan(), { ...options, maxAttempts: 1 });
+    await runWorkflow(fixture.cwd, name);
+    const failed = readWorkflow(fixture.cwd, name).tasks[0]!;
+    expect(failed.status).toBe('failed');
+    expect(failed.error).toBe(resultLink === 'parent' ? 'workflow_artifact_parent_changed' : 'workflow_result_not_regular_file');
+    expect(readFileSync(target, 'utf8')).toBe(original);
+    expect(readdirSync(protectedRoot)).toEqual(['task-a-1.result.json']);
+  });
+
+  it.each(['invalid', 'missing'])('retains process artifacts when an exit-zero worker returns %s metadata', async resultFormat => {
+    fixture.configure({ tasks: { a: { resultFailure: 'success', resultFormat } } });
+    await initWorkflow(fixture.cwd, plan(), { ...options, maxAttempts: 1 });
+    await runWorkflow(fixture.cwd, name);
+    const failed = readWorkflow(fixture.cwd, name).tasks[0]!;
+    expect(failed.status).toBe('failed');
+    expect(failed.error).toBe(resultFormat === 'invalid' ? 'workflow_invalid_result' : 'workflow_worker_failed');
+    expect(failed.handoff?.outcome).toBe('failed');
+    expect(failed.handoff?.artifacts.map(artifact => artifact.kind)).toEqual(['workflow-stdout', 'workflow-stderr']);
+    for (const artifact of failed.handoff!.artifacts) expect(existsSync(artifact.path)).toBe(true);
   });
 
   it.each(['dirty', 'badBranch'] as const)('preserves the worktree and fails safely after a worker leaves %s state', async behavior => {

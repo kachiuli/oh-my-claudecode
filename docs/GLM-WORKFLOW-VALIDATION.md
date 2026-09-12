@@ -79,7 +79,7 @@ decisions, a GLM correction, one final review, completion and cleanup. Assertion
 cover transcript exclusion, branch/worktree isolation, unchanged main, review
 limit, clean worktree removal and dirty worktree preservation.
 
-Final source checks passed:
+The initial implementation checks passed before the subsequent independent review:
 
 | Check | Result |
 | --- | --- |
@@ -90,7 +90,7 @@ Final source checks passed:
 | Workflow role/model routing | 4 passed |
 | Workflow CLI | 14 passed |
 | Existing artifact descriptor suite | 3 passed |
-| **Final targeted total (seven files)** | **92 passed, zero failed or skipped** |
+| **Initial targeted total (seven files)** | **92 passed, zero failed or skipped** |
 | Selected GLM extensions in existing ask/preflight/scaling/acknowledgement/doctor suites | 17 passed; 179 unrelated tests filtered out |
 | `npm run build` (including TypeScript compilation and CLI/runtime bundles) | Passed |
 | `npm run lint` | Passed |
@@ -98,7 +98,7 @@ Final source checks passed:
 | Built `node bridge/cli.cjs team workflow --help` | Passed |
 | `git diff --cached --check` | Passed |
 
-The final targeted test command was:
+The initial targeted test command was:
 
 ```text
 npx vitest run src/team/__tests__/glm-provider.test.ts src/team/__tests__/workflow.test.ts src/team/__tests__/workflow-contracts.test.ts src/team/__tests__/workflow-process.test.ts src/team/__tests__/workflow-routing.test.ts src/cli/commands/__tests__/team-workflow.test.ts src/__tests__/artifact-descriptor.test.ts --maxWorkers=3 --reporter=json --outputFile=C:/Users/kachi/AppData/Local/Temp/omc-glm-final-tests.json
@@ -111,6 +111,63 @@ the exact-upstream comparison below reproduced each one.
 
 Machine-readable results and command logs are retained locally under
 `.omc/reports/glm-v1/` (ignored execution evidence, not committed source).
+
+### Follow-up independent review and fixes
+
+Independent review of `e99b3dca29d6795685dcb2cd3355ef2582c0228f` reproduced three
+defects, which were corrected in this follow-up:
+
+- Failed GLM and Codex processes could leave credentials in their result JSON.
+  Both now use one result-sanitization path after exits, timeouts, interruptions
+  and process artifact errors. Invalid or oversized metadata becomes a bounded
+  error record. Result links, hardlinks, nonregular files and redirected parent
+  directories are refused without overwriting unrelated files. Original process
+  failures remain visible, and malformed or missing output after a successful
+  process retains the worker's stdout/stderr artifact references.
+- Rejecting a remediation task previously left its file ownership active, so a
+  replacement could not use those files. Rejection now releases ownership while
+  preserving task history, commits, worktrees and dependency validation. A real
+  rejected prerequisite remains unsatisfied; replacement work requires a new ID.
+- A native team that began without GLM could ignore the project's GLM maximum
+  when adding workers. Startup now saves that maximum for every team. Legacy
+  teams resolve missing limits from the leader's project directory and save
+  them on first GLM admission. Later configuration edits do not change a team's
+  saved limit.
+
+The fixes reuse the existing redaction, atomic-write, configuration and team-state
+helpers. No dependencies were added. Separate reviewers re-ran the original
+reproductions and regression checks and approved the corrections. The review
+also caught the malformed-output diagnostic-reference regression above, which
+was fixed before delivery.
+
+Final checks on the corrected source:
+
+| Check | Result |
+| --- | --- |
+| Workflow controller / contracts | 37 / 14 passed |
+| Workflow processes / routing / CLI | 15 / 4 / 14 passed |
+| GLM provider / existing artifact descriptors | 23 / 3 passed |
+| Full native scaling / runtime-v2 preflight suites | 47 / 18 passed |
+| **Final targeted total (nine files)** | **175 passed, zero failed or skipped** |
+| Build, lint and TypeScript checks | Passed |
+| Built workflow CLI help | Passed |
+| Independent standards and specification re-review | Approved; no remaining blockers in these fixes |
+| Diff whitespace check | Passed |
+
+The final consolidated command was:
+
+```text
+npx vitest run src/team/__tests__/glm-provider.test.ts src/team/__tests__/workflow.test.ts src/team/__tests__/workflow-contracts.test.ts src/team/__tests__/workflow-process.test.ts src/team/__tests__/workflow-routing.test.ts src/cli/commands/__tests__/team-workflow.test.ts src/__tests__/artifact-descriptor.test.ts src/team/__tests__/scaling.test.ts src/team/__tests__/runtime-v2.gemini-preflight.test.ts --maxWorkers=3 --reporter=json --outputFile=.omc/reports/glm-v1/review-fixes-final-tests.json
+```
+
+The full configuration-loader suite was also re-run: 50 passed and 16 failed,
+with exactly the same failing test names as the exact-upstream comparison.
+The exact-upstream scaling suite passed all 43 tests. These focused comparisons
+do not resolve the broad-suite release limitation below.
+
+These changes sanitize results from subsequent runs; they do not rewrite result
+files retained by older versions. Inspect old artifacts for credentials before
+sharing them.
 
 ### Upstream comparisons and broad-suite limitation
 

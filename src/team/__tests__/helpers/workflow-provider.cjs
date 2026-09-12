@@ -30,6 +30,28 @@ function event(event) {
     }
   }
   await new Promise(resolve => setTimeout(resolve, behavior.delayMs ?? configuration.delayMs ?? 0));
+  if (behavior.resultFailure) {
+    const outputIndex = process.argv.indexOf('--output-last-message');
+    const resultFile = role === 'codex' ? process.argv[outputIndex + 1] : request.resultFile;
+    const secret = process.env.OMC_FIXTURE_API_TOKEN;
+    const metadata = behavior.resultFormat === 'invalid' ? `invalid JSON ${secret}`
+      : behavior.resultFormat === 'oversized' ? JSON.stringify({ summary: secret.repeat(10000) })
+      : JSON.stringify({ summary: secret });
+    if (behavior.resultTarget) {
+      if (behavior.resultLink === 'parent') {
+        const parent = path.dirname(resultFile);
+        fs.renameSync(parent, `${parent}.preserved`);
+        fs.symlinkSync(behavior.resultTarget, parent, process.platform === 'win32' ? 'junction' : 'dir');
+      } else if (behavior.resultLink === 'hardlink') fs.linkSync(behavior.resultTarget, resultFile);
+      else if (behavior.resultLink === 'directory') fs.mkdirSync(resultFile);
+      else fs.symlinkSync(behavior.resultTarget, resultFile);
+    } else if (behavior.resultFormat !== 'missing') fs.writeFileSync(resultFile, metadata);
+    if (behavior.resultFailure === 'artifact') fs.writeFileSync(resultFile.replace(/\.result\.json$/, '.stdout.log'), 'provider-owned log');
+    if (behavior.resultFailure === 'timeout' || behavior.resultFailure === 'interrupted') await new Promise(resolve => setTimeout(resolve, 30000));
+    event('end');
+    process.exitCode = ['linked', 'success'].includes(behavior.resultFailure) ? 0 : 17;
+    return;
+  }
   if (role === 'codex') {
     if (configuration.mutateReview) fs.appendFileSync('README.md', 'unauthorized review mutation\n');
     if (configuration.mutateReviewRef) git('branch', '-f', 'main', 'HEAD');
