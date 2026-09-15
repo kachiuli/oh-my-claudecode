@@ -14,7 +14,6 @@ import { fileURLToPath } from 'node:url';
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const REPOSITORY_ROOT = resolve(SCRIPT_DIR, '..');
 const MANIFEST_PATH = join(REPOSITORY_ROOT, '.github', 'generated-artifact-authorizations.json');
-const OWNER = 'Yeachan-Heo';
 const DEFAULT_BRANCH = 'main';
 const WORKFLOW_PATH = '.github/workflows/generated-artifact-authorization.yml';
 const API_URL = 'https://api.github.com';
@@ -293,7 +292,7 @@ export function validateAuthorizationManifest(manifest) {
 
   const repository = requiredString(manifest.repository, 'authorization manifest.repository');
   const { owner } = parseRepository(repository);
-  if (manifest.owner !== owner || manifest.owner !== OWNER) {
+  if (manifest.owner !== owner) {
     fail('authorization manifest owner is not the protected repository owner');
   }
   if (!Array.isArray(manifest.authorizations)) fail('authorization manifest.authorizations must be an array');
