@@ -5,15 +5,15 @@
   "provenance": {
     "base": "05c800f40d1ad53b42a78609d2667ef4f726808b",
     "planningHead": "0a91273e61dbbd47eb0af4c02844409251e08398",
-    "head": "1a2b62a18356f1c93626b792dc12fbb4617e4bb4",
-    "sourceSha256": "fa9d963988f2e10968a428edfbc3388ab151072b73ddb99d20a88ba189cc8b3d",
+    "head": "b7dc3be425812f37fa8b07f5c532af16506e624c",
+    "sourceSha256": "f5a0b10748e3b7c1f56ae35bdc4644f129d04509826f0c5d19bce2069a06eb89",
     "generatedAt": null,
     "generator": "scripts/generate-inventory-graph.mjs"
   },
   "base": "05c800f40d1ad53b42a78609d2667ef4f726808b",
   "planningHead": "0a91273e61dbbd47eb0af4c02844409251e08398",
-  "head": "1a2b62a18356f1c93626b792dc12fbb4617e4bb4",
-  "sourceSha256": "fa9d963988f2e10968a428edfbc3388ab151072b73ddb99d20a88ba189cc8b3d",
+  "head": "b7dc3be425812f37fa8b07f5c532af16506e624c",
+  "sourceSha256": "f5a0b10748e3b7c1f56ae35bdc4644f129d04509826f0c5d19bce2069a06eb89",
   "counts": {
     "public": {
       "skills": 39,
@@ -28,8 +28,8 @@
       "toolFiles": 61,
       "libFiles": 42,
       "templateHooks": 22,
-      "srcFiles": 1348,
-      "total": 1370
+      "srcFiles": 1375,
+      "total": 1397
     },
     "generated": {
       "distFiles": 5032,
@@ -37,14 +37,14 @@
       "total": 5041
     },
     "prompt": {
-      "promptLikeFiles": 62
+      "promptLikeFiles": 63
     },
     "skills": 39,
     "commands": 21,
     "hookFiles": 296,
     "workflows": 8,
     "agentDefinitions": 18,
-    "promptLikeFiles": 62
+    "promptLikeFiles": 63
   },
   "public": {
     "skills": [
@@ -714,6 +714,7 @@
       "src/ralphthon/deep-interview-prompt.ts",
       "src/team/__tests__/prompt-sanitization.test.ts",
       "src/team/__tests__/runtime-prompt-mode.test.ts",
+      "src/team/workflow-prompt.ts",
       "templates/hooks/lib/workflow-stage-prompts.mjs",
       "tests/fixtures/prompt-projection/README.md",
       "tests/fixtures/prompt-projection/claude-body.normalized",
@@ -6241,6 +6242,7 @@
       "src/ralphthon/deep-interview-prompt.ts",
       "src/team/__tests__/prompt-sanitization.test.ts",
       "src/team/__tests__/runtime-prompt-mode.test.ts",
+      "src/team/workflow-prompt.ts",
       "templates/hooks/lib/workflow-stage-prompts.mjs",
       "tests/fixtures/prompt-projection/README.md",
       "tests/fixtures/prompt-projection/claude-body.normalized",
@@ -32481,6 +32483,41 @@
         "path": "docs/GETTING-STARTED.md"
       },
       {
+        "id": "docs/GLM-WORKFLOW-V1-HANDOFF.md",
+        "kind": "other",
+        "path": "docs/GLM-WORKFLOW-V1-HANDOFF.md"
+      },
+      {
+        "id": "docs/GLM-WORKFLOW-V1.1-VALIDATION.md",
+        "kind": "other",
+        "path": "docs/GLM-WORKFLOW-V1.1-VALIDATION.md"
+      },
+      {
+        "id": "docs/GLM-WORKFLOW-V1.2-VALIDATION.md",
+        "kind": "other",
+        "path": "docs/GLM-WORKFLOW-V1.2-VALIDATION.md"
+      },
+      {
+        "id": "docs/GLM-WORKFLOW-V1.2.md",
+        "kind": "other",
+        "path": "docs/GLM-WORKFLOW-V1.2.md"
+      },
+      {
+        "id": "docs/GLM-WORKFLOW-V2.md",
+        "kind": "other",
+        "path": "docs/GLM-WORKFLOW-V2.md"
+      },
+      {
+        "id": "docs/GLM-WORKFLOW-VALIDATION.md",
+        "kind": "other",
+        "path": "docs/GLM-WORKFLOW-VALIDATION.md"
+      },
+      {
+        "id": "docs/GLM-WORKFLOW.md",
+        "kind": "other",
+        "path": "docs/GLM-WORKFLOW.md"
+      },
+      {
         "id": "docs/HOOKS.md",
         "kind": "other",
         "path": "docs/HOOKS.md"
@@ -32509,6 +32546,16 @@
         "id": "docs/REFERENCE.md",
         "kind": "other",
         "path": "docs/REFERENCE.md"
+      },
+      {
+        "id": "docs/ROLE-SUBSTITUTION-DESIGN.md",
+        "kind": "other",
+        "path": "docs/ROLE-SUBSTITUTION-DESIGN.md"
+      },
+      {
+        "id": "docs/ROLE-SUBSTITUTION-TEST-PLAN.md",
+        "kind": "other",
+        "path": "docs/ROLE-SUBSTITUTION-TEST-PLAN.md"
       },
       {
         "id": "docs/SYNC-SYSTEM.md",
@@ -32614,6 +32661,16 @@
         "id": "docs/design/TIERED_AGENTS_V2.md",
         "kind": "other",
         "path": "docs/design/TIERED_AGENTS_V2.md"
+      },
+      {
+        "id": "docs/design/glm-workflow-v1.1.md",
+        "kind": "other",
+        "path": "docs/design/glm-workflow-v1.1.md"
+      },
+      {
+        "id": "docs/design/glm-workflow-v1.md",
+        "kind": "other",
+        "path": "docs/design/glm-workflow-v1.md"
       },
       {
         "id": "docs/design/issue-3704-prompt-ssot/README.md",
@@ -32756,6 +32813,11 @@
         "path": "@modelcontextprotocol/sdk/types.js"
       },
       {
+        "id": "external:ajv",
+        "kind": "external",
+        "path": "ajv"
+      },
+      {
         "id": "external:axios",
         "kind": "external",
         "path": "axios"
@@ -32894,6 +32956,11 @@
         "id": "external:node:stream",
         "kind": "external",
         "path": "node:stream"
+      },
+      {
+        "id": "external:node:string_decoder",
+        "kind": "external",
+        "path": "node:string_decoder"
       },
       {
         "id": "external:node:url",
@@ -35986,6 +36053,16 @@
         "path": "src/cli/commands/__tests__/team-role-shorthand.test.ts"
       },
       {
+        "id": "src/cli/commands/__tests__/team-workflow-v12.test.ts",
+        "kind": "src",
+        "path": "src/cli/commands/__tests__/team-workflow-v12.test.ts"
+      },
+      {
+        "id": "src/cli/commands/__tests__/team-workflow.test.ts",
+        "kind": "src",
+        "path": "src/cli/commands/__tests__/team-workflow.test.ts"
+      },
+      {
         "id": "src/cli/commands/__tests__/team.test.ts",
         "kind": "src",
         "path": "src/cli/commands/__tests__/team.test.ts"
@@ -36034,6 +36111,11 @@
         "id": "src/cli/commands/session-search.ts",
         "kind": "src",
         "path": "src/cli/commands/session-search.ts"
+      },
+      {
+        "id": "src/cli/commands/team-workflow.ts",
+        "kind": "src",
+        "path": "src/cli/commands/team-workflow.ts"
       },
       {
         "id": "src/cli/commands/team.ts",
@@ -39561,6 +39643,11 @@
         "path": "src/team/__tests__/git-worktree.test.ts"
       },
       {
+        "id": "src/team/__tests__/glm-provider.test.ts",
+        "kind": "src",
+        "path": "src/team/__tests__/glm-provider.test.ts"
+      },
+      {
         "id": "src/team/__tests__/governance-enforcement.test.ts",
         "kind": "src",
         "path": "src/team/__tests__/governance-enforcement.test.ts"
@@ -39579,6 +39666,26 @@
         "id": "src/team/__tests__/helpers/git-fixture.ts",
         "kind": "src",
         "path": "src/team/__tests__/helpers/git-fixture.ts"
+      },
+      {
+        "id": "src/team/__tests__/helpers/workflow-fixture.ts",
+        "kind": "src",
+        "path": "src/team/__tests__/helpers/workflow-fixture.ts"
+      },
+      {
+        "id": "src/team/__tests__/helpers/workflow-provider.cjs",
+        "kind": "src",
+        "path": "src/team/__tests__/helpers/workflow-provider.cjs"
+      },
+      {
+        "id": "src/team/__tests__/helpers/workflow-role-provider.cjs",
+        "kind": "src",
+        "path": "src/team/__tests__/helpers/workflow-role-provider.cjs"
+      },
+      {
+        "id": "src/team/__tests__/helpers/workflow-v2-fixture.ts",
+        "kind": "src",
+        "path": "src/team/__tests__/helpers/workflow-v2-fixture.ts"
       },
       {
         "id": "src/team/__tests__/idle-nudge.test.ts",
@@ -40041,6 +40148,61 @@
         "path": "src/team/__tests__/worker-restart.test.ts"
       },
       {
+        "id": "src/team/__tests__/workflow-adapter-process.test.ts",
+        "kind": "src",
+        "path": "src/team/__tests__/workflow-adapter-process.test.ts"
+      },
+      {
+        "id": "src/team/__tests__/workflow-adapters.test.ts",
+        "kind": "src",
+        "path": "src/team/__tests__/workflow-adapters.test.ts"
+      },
+      {
+        "id": "src/team/__tests__/workflow-balanced.test.ts",
+        "kind": "src",
+        "path": "src/team/__tests__/workflow-balanced.test.ts"
+      },
+      {
+        "id": "src/team/__tests__/workflow-contracts.test.ts",
+        "kind": "src",
+        "path": "src/team/__tests__/workflow-contracts.test.ts"
+      },
+      {
+        "id": "src/team/__tests__/workflow-process.test.ts",
+        "kind": "src",
+        "path": "src/team/__tests__/workflow-process.test.ts"
+      },
+      {
+        "id": "src/team/__tests__/workflow-report.test.ts",
+        "kind": "src",
+        "path": "src/team/__tests__/workflow-report.test.ts"
+      },
+      {
+        "id": "src/team/__tests__/workflow-review-paths.test.ts",
+        "kind": "src",
+        "path": "src/team/__tests__/workflow-review-paths.test.ts"
+      },
+      {
+        "id": "src/team/__tests__/workflow-routing.test.ts",
+        "kind": "src",
+        "path": "src/team/__tests__/workflow-routing.test.ts"
+      },
+      {
+        "id": "src/team/__tests__/workflow-state-v2.test.ts",
+        "kind": "src",
+        "path": "src/team/__tests__/workflow-state-v2.test.ts"
+      },
+      {
+        "id": "src/team/__tests__/workflow-usage.test.ts",
+        "kind": "src",
+        "path": "src/team/__tests__/workflow-usage.test.ts"
+      },
+      {
+        "id": "src/team/__tests__/workflow.test.ts",
+        "kind": "src",
+        "path": "src/team/__tests__/workflow.test.ts"
+      },
+      {
         "id": "src/team/__tests__/worktree-contract-fields.test.ts",
         "kind": "src",
         "path": "src/team/__tests__/worktree-contract-fields.test.ts"
@@ -40129,6 +40291,11 @@
         "id": "src/team/git-worktree.ts",
         "kind": "src",
         "path": "src/team/git-worktree.ts"
+      },
+      {
+        "id": "src/team/glm-config.ts",
+        "kind": "src",
+        "path": "src/team/glm-config.ts"
       },
       {
         "id": "src/team/governance.ts",
@@ -40419,6 +40586,41 @@
         "id": "src/team/worker-restart.ts",
         "kind": "src",
         "path": "src/team/worker-restart.ts"
+      },
+      {
+        "id": "src/team/workflow-adapters.ts",
+        "kind": "src",
+        "path": "src/team/workflow-adapters.ts"
+      },
+      {
+        "id": "src/team/workflow-contracts.ts",
+        "kind": "src",
+        "path": "src/team/workflow-contracts.ts"
+      },
+      {
+        "id": "src/team/workflow-process.ts",
+        "kind": "src",
+        "path": "src/team/workflow-process.ts"
+      },
+      {
+        "id": "src/team/workflow-prompt.ts",
+        "kind": "src",
+        "path": "src/team/workflow-prompt.ts"
+      },
+      {
+        "id": "src/team/workflow-report.ts",
+        "kind": "src",
+        "path": "src/team/workflow-report.ts"
+      },
+      {
+        "id": "src/team/workflow-usage.ts",
+        "kind": "src",
+        "path": "src/team/workflow-usage.ts"
+      },
+      {
+        "id": "src/team/workflow.ts",
+        "kind": "src",
+        "path": "src/team/workflow.ts"
       },
       {
         "id": "src/tools/AGENTS.md",
@@ -51764,7 +51966,17 @@
       },
       {
         "from": "src/cli/ask.ts",
+        "to": "src/config/loader.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/cli/ask.ts",
         "to": "src/lib/security-config.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/cli/ask.ts",
+        "to": "src/team/glm-config.ts",
         "kind": "imports"
       },
       {
@@ -52003,6 +52215,76 @@
         "kind": "imports"
       },
       {
+        "from": "src/cli/commands/__tests__/team-workflow-v12.test.ts",
+        "to": "external:node:crypto",
+        "kind": "imports"
+      },
+      {
+        "from": "src/cli/commands/__tests__/team-workflow-v12.test.ts",
+        "to": "external:node:fs",
+        "kind": "imports"
+      },
+      {
+        "from": "src/cli/commands/__tests__/team-workflow-v12.test.ts",
+        "to": "external:node:path",
+        "kind": "imports"
+      },
+      {
+        "from": "src/cli/commands/__tests__/team-workflow-v12.test.ts",
+        "to": "external:vitest",
+        "kind": "imports"
+      },
+      {
+        "from": "src/cli/commands/__tests__/team-workflow-v12.test.ts",
+        "to": "src/cli/commands/team-workflow.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/cli/commands/__tests__/team-workflow-v12.test.ts",
+        "to": "src/team/__tests__/helpers/workflow-fixture.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/cli/commands/__tests__/team-workflow-v12.test.ts",
+        "to": "src/team/workflow-adapters.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/cli/commands/__tests__/team-workflow-v12.test.ts",
+        "to": "src/team/workflow-contracts.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/cli/commands/__tests__/team-workflow-v12.test.ts",
+        "to": "src/team/workflow.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/cli/commands/__tests__/team-workflow.test.ts",
+        "to": "external:node:fs",
+        "kind": "imports"
+      },
+      {
+        "from": "src/cli/commands/__tests__/team-workflow.test.ts",
+        "to": "external:node:os",
+        "kind": "imports"
+      },
+      {
+        "from": "src/cli/commands/__tests__/team-workflow.test.ts",
+        "to": "external:node:path",
+        "kind": "imports"
+      },
+      {
+        "from": "src/cli/commands/__tests__/team-workflow.test.ts",
+        "to": "external:vitest",
+        "kind": "imports"
+      },
+      {
+        "from": "src/cli/commands/__tests__/team-workflow.test.ts",
+        "to": "src/cli/commands/team-workflow.ts",
+        "kind": "imports"
+      },
+      {
         "from": "src/cli/commands/__tests__/team.test.ts",
         "to": "external:fs/promises",
         "kind": "imports"
@@ -52218,6 +52500,11 @@
         "kind": "imports"
       },
       {
+        "from": "src/cli/commands/doctor-team-routing.ts",
+        "to": "src/team/glm-config.ts",
+        "kind": "imports"
+      },
+      {
         "from": "src/cli/commands/ralphthon.ts",
         "to": "external:chalk",
         "kind": "imports"
@@ -52278,6 +52565,41 @@
         "kind": "type-imports"
       },
       {
+        "from": "src/cli/commands/team-workflow.ts",
+        "to": "external:node:fs",
+        "kind": "imports"
+      },
+      {
+        "from": "src/cli/commands/team-workflow.ts",
+        "to": "external:node:path",
+        "kind": "imports"
+      },
+      {
+        "from": "src/cli/commands/team-workflow.ts",
+        "to": "src/team/workflow-adapters.ts",
+        "kind": "type-imports"
+      },
+      {
+        "from": "src/cli/commands/team-workflow.ts",
+        "to": "src/team/workflow-contracts.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/cli/commands/team-workflow.ts",
+        "to": "src/team/workflow-report.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/cli/commands/team-workflow.ts",
+        "to": "src/team/workflow.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/cli/commands/team-workflow.ts",
+        "to": "src/team/workflow.ts",
+        "kind": "type-imports"
+      },
+      {
         "from": "src/cli/commands/team.ts",
         "to": "external:node:fs",
         "kind": "imports"
@@ -52290,6 +52612,11 @@
       {
         "from": "src/cli/commands/team.ts",
         "to": "src/agents/utils.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/cli/commands/team.ts",
+        "to": "src/cli/commands/team-workflow.ts",
         "kind": "imports"
       },
       {
@@ -52325,6 +52652,11 @@
       {
         "from": "src/cli/commands/team.ts",
         "to": "src/team/events.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/cli/commands/team.ts",
+        "to": "src/team/glm-config.ts",
         "kind": "imports"
       },
       {
@@ -53076,6 +53408,11 @@
         "from": "src/config/loader.ts",
         "to": "src/shared/types.ts",
         "kind": "type-imports"
+      },
+      {
+        "from": "src/config/loader.ts",
+        "to": "src/team/glm-config.ts",
+        "kind": "imports"
       },
       {
         "from": "src/config/loader.ts",
@@ -69438,6 +69775,66 @@
         "kind": "imports"
       },
       {
+        "from": "src/team/__tests__/glm-provider.test.ts",
+        "to": "external:fs",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/glm-provider.test.ts",
+        "to": "external:os",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/glm-provider.test.ts",
+        "to": "external:path",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/glm-provider.test.ts",
+        "to": "external:vitest",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/glm-provider.test.ts",
+        "to": "src/cli/ask.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/glm-provider.test.ts",
+        "to": "src/cli/commands/team.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/glm-provider.test.ts",
+        "to": "src/config/loader.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/glm-provider.test.ts",
+        "to": "src/team/cli-detection.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/glm-provider.test.ts",
+        "to": "src/team/glm-config.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/glm-provider.test.ts",
+        "to": "src/team/model-contract.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/glm-provider.test.ts",
+        "to": "src/team/runtime.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/glm-provider.test.ts",
+        "to": "src/team/stage-router.ts",
+        "kind": "imports"
+      },
+      {
         "from": "src/team/__tests__/governance-enforcement.test.ts",
         "to": "external:fs/promises",
         "kind": "imports"
@@ -69535,6 +69932,101 @@
       {
         "from": "src/team/__tests__/helpers/git-fixture.ts",
         "to": "src/team/merge-orchestrator.ts",
+        "kind": "type-imports"
+      },
+      {
+        "from": "src/team/__tests__/helpers/workflow-fixture.ts",
+        "to": "external:node:child_process",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/helpers/workflow-fixture.ts",
+        "to": "external:node:fs",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/helpers/workflow-fixture.ts",
+        "to": "external:node:os",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/helpers/workflow-fixture.ts",
+        "to": "external:node:path",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/helpers/workflow-provider.cjs",
+        "to": "external:node:child_process",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/helpers/workflow-provider.cjs",
+        "to": "external:node:fs",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/helpers/workflow-provider.cjs",
+        "to": "external:node:path",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/helpers/workflow-role-provider.cjs",
+        "to": "external:node:child_process",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/helpers/workflow-role-provider.cjs",
+        "to": "external:node:fs",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/helpers/workflow-role-provider.cjs",
+        "to": "external:node:path",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/helpers/workflow-v2-fixture.ts",
+        "to": "external:node:crypto",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/helpers/workflow-v2-fixture.ts",
+        "to": "external:node:fs",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/helpers/workflow-v2-fixture.ts",
+        "to": "external:node:path",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/helpers/workflow-v2-fixture.ts",
+        "to": "external:node:url",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/helpers/workflow-v2-fixture.ts",
+        "to": "src/team/__tests__/helpers/workflow-fixture.ts",
+        "kind": "type-imports"
+      },
+      {
+        "from": "src/team/__tests__/helpers/workflow-v2-fixture.ts",
+        "to": "src/team/workflow-adapters.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/helpers/workflow-v2-fixture.ts",
+        "to": "src/team/workflow-adapters.ts",
+        "kind": "type-imports"
+      },
+      {
+        "from": "src/team/__tests__/helpers/workflow-v2-fixture.ts",
+        "to": "src/team/workflow-contracts.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/helpers/workflow-v2-fixture.ts",
+        "to": "src/team/workflow-contracts.ts",
         "kind": "type-imports"
       },
       {
@@ -70890,6 +71382,11 @@
       {
         "from": "src/team/__tests__/runtime-v2.gemini-preflight.test.ts",
         "to": "external:vitest",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/runtime-v2.gemini-preflight.test.ts",
+        "to": "src/team/git-worktree.ts",
         "kind": "imports"
       },
       {
@@ -72313,6 +72810,316 @@
         "kind": "imports"
       },
       {
+        "from": "src/team/__tests__/workflow-adapter-process.test.ts",
+        "to": "external:node:fs",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-adapter-process.test.ts",
+        "to": "external:node:os",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-adapter-process.test.ts",
+        "to": "external:node:path",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-adapter-process.test.ts",
+        "to": "external:vitest",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-adapter-process.test.ts",
+        "to": "src/team/workflow-adapters.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-adapter-process.test.ts",
+        "to": "src/team/workflow-process.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-adapters.test.ts",
+        "to": "external:node:fs",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-adapters.test.ts",
+        "to": "external:node:path",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-adapters.test.ts",
+        "to": "external:vitest",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-adapters.test.ts",
+        "to": "src/lib/security-config.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-adapters.test.ts",
+        "to": "src/team/__tests__/helpers/workflow-fixture.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-adapters.test.ts",
+        "to": "src/team/__tests__/helpers/workflow-v2-fixture.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-adapters.test.ts",
+        "to": "src/team/workflow-contracts.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-adapters.test.ts",
+        "to": "src/team/workflow-contracts.ts",
+        "kind": "type-imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-adapters.test.ts",
+        "to": "src/team/workflow.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-balanced.test.ts",
+        "to": "external:node:child_process",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-balanced.test.ts",
+        "to": "external:node:fs",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-balanced.test.ts",
+        "to": "external:node:path",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-balanced.test.ts",
+        "to": "external:node:url",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-balanced.test.ts",
+        "to": "external:vitest",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-balanced.test.ts",
+        "to": "src/team/__tests__/helpers/workflow-fixture.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-balanced.test.ts",
+        "to": "src/team/workflow-contracts.ts",
+        "kind": "type-imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-balanced.test.ts",
+        "to": "src/team/workflow.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-contracts.test.ts",
+        "to": "external:vitest",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-contracts.test.ts",
+        "to": "src/team/workflow-contracts.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-process.test.ts",
+        "to": "external:node:fs",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-process.test.ts",
+        "to": "external:node:os",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-process.test.ts",
+        "to": "external:node:path",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-process.test.ts",
+        "to": "external:vitest",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-process.test.ts",
+        "to": "src/team/workflow-process.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-report.test.ts",
+        "to": "external:vitest",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-report.test.ts",
+        "to": "src/team/workflow-contracts.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-report.test.ts",
+        "to": "src/team/workflow-contracts.ts",
+        "kind": "type-imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-report.test.ts",
+        "to": "src/team/workflow-report.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-review-paths.test.ts",
+        "to": "external:ajv",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-review-paths.test.ts",
+        "to": "external:node:fs",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-review-paths.test.ts",
+        "to": "external:node:path",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-review-paths.test.ts",
+        "to": "external:node:url",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-review-paths.test.ts",
+        "to": "external:vitest",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-review-paths.test.ts",
+        "to": "src/team/__tests__/helpers/workflow-fixture.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-review-paths.test.ts",
+        "to": "src/team/workflow.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-routing.test.ts",
+        "to": "external:node:fs",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-routing.test.ts",
+        "to": "external:node:path",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-routing.test.ts",
+        "to": "external:vitest",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-routing.test.ts",
+        "to": "src/config/loader.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-routing.test.ts",
+        "to": "src/shared/types.ts",
+        "kind": "type-imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-routing.test.ts",
+        "to": "src/team/__tests__/helpers/workflow-fixture.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-routing.test.ts",
+        "to": "src/team/workflow.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-state-v2.test.ts",
+        "to": "external:vitest",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-state-v2.test.ts",
+        "to": "src/team/workflow-contracts.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-usage.test.ts",
+        "to": "external:vitest",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-usage.test.ts",
+        "to": "src/team/workflow-usage.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow.test.ts",
+        "to": "external:node:child_process",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow.test.ts",
+        "to": "external:node:fs",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow.test.ts",
+        "to": "external:node:path",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow.test.ts",
+        "to": "external:node:url",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow.test.ts",
+        "to": "external:vitest",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow.test.ts",
+        "to": "src/team/__tests__/helpers/workflow-fixture.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow.test.ts",
+        "to": "src/team/__tests__/helpers/workflow-fixture.ts",
+        "kind": "type-imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow.test.ts",
+        "to": "src/team/git-worktree.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow.test.ts",
+        "to": "src/team/workflow-contracts.ts",
+        "kind": "type-imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow.test.ts",
+        "to": "src/team/workflow.ts",
+        "kind": "imports"
+      },
+      {
         "from": "src/team/__tests__/worktree-contract-fields.test.ts",
         "to": "external:fs/promises",
         "kind": "imports"
@@ -72609,6 +73416,16 @@
       },
       {
         "from": "src/team/cli-detection.ts",
+        "to": "src/team/glm-config.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/cli-detection.ts",
+        "to": "src/team/glm-config.ts",
+        "kind": "type-imports"
+      },
+      {
+        "from": "src/team/cli-detection.ts",
         "to": "src/team/model-contract.ts",
         "kind": "exports"
       },
@@ -72790,6 +73607,36 @@
       {
         "from": "src/team/git-worktree.ts",
         "to": "src/team/tmux-session.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/glm-config.ts",
+        "to": "external:child_process",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/glm-config.ts",
+        "to": "external:fs",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/glm-config.ts",
+        "to": "external:path",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/glm-config.ts",
+        "to": "src/features/delegation-routing/types.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/glm-config.ts",
+        "to": "src/shared/types.ts",
+        "kind": "type-imports"
+      },
+      {
+        "from": "src/team/glm-config.ts",
+        "to": "src/team/types.ts",
         "kind": "imports"
       },
       {
@@ -73574,6 +74421,11 @@
       },
       {
         "from": "src/team/model-contract.ts",
+        "to": "src/config/loader.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/model-contract.ts",
         "to": "src/config/models.ts",
         "kind": "imports"
       },
@@ -73591,6 +74443,11 @@
         "from": "src/team/model-contract.ts",
         "to": "src/shared/types.ts",
         "kind": "type-imports"
+      },
+      {
+        "from": "src/team/model-contract.ts",
+        "to": "src/team/glm-config.ts",
+        "kind": "imports"
       },
       {
         "from": "src/team/model-contract.ts",
@@ -74009,6 +74866,11 @@
       },
       {
         "from": "src/team/runtime-v2.ts",
+        "to": "src/lib/security-config.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/runtime-v2.ts",
         "to": "src/lib/swallowed-error.ts",
         "kind": "imports"
       },
@@ -74071,6 +74933,11 @@
         "from": "src/team/runtime-v2.ts",
         "to": "src/team/git-worktree.ts",
         "kind": "type-imports"
+      },
+      {
+        "from": "src/team/runtime-v2.ts",
+        "to": "src/team/glm-config.ts",
+        "kind": "imports"
       },
       {
         "from": "src/team/runtime-v2.ts",
@@ -74364,6 +75231,11 @@
       },
       {
         "from": "src/team/scaling.ts",
+        "to": "src/config/loader.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/scaling.ts",
         "to": "src/features/delegation-routing/types.ts",
         "kind": "imports"
       },
@@ -74391,6 +75263,11 @@
         "from": "src/team/scaling.ts",
         "to": "src/team/git-worktree.ts",
         "kind": "type-imports"
+      },
+      {
+        "from": "src/team/scaling.ts",
+        "to": "src/team/glm-config.ts",
+        "kind": "imports"
       },
       {
         "from": "src/team/scaling.ts",
@@ -75316,6 +76193,246 @@
         "from": "src/team/worker-restart.ts",
         "to": "src/team/types.ts",
         "kind": "type-imports"
+      },
+      {
+        "from": "src/team/workflow-adapters.ts",
+        "to": "external:node:crypto",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow-adapters.ts",
+        "to": "external:node:fs",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow-adapters.ts",
+        "to": "external:node:path",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow-adapters.ts",
+        "to": "external:node:string_decoder",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow-adapters.ts",
+        "to": "external:node:util",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow-adapters.ts",
+        "to": "src/lib/security-config.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow-adapters.ts",
+        "to": "src/team/workflow-contracts.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow-adapters.ts",
+        "to": "src/team/workflow-contracts.ts",
+        "kind": "type-imports"
+      },
+      {
+        "from": "src/team/workflow-contracts.ts",
+        "to": "external:node:util",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow-contracts.ts",
+        "to": "src/shared/artifact-descriptor.ts",
+        "kind": "type-imports"
+      },
+      {
+        "from": "src/team/workflow-contracts.ts",
+        "to": "src/team/workflow-usage.ts",
+        "kind": "type-imports"
+      },
+      {
+        "from": "src/team/workflow-process.ts",
+        "to": "external:node:child_process",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow-process.ts",
+        "to": "external:node:fs",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow-process.ts",
+        "to": "external:node:path",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow-process.ts",
+        "to": "src/lib/security-config.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow-process.ts",
+        "to": "src/shared/artifact-descriptor.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow-process.ts",
+        "to": "src/shared/artifact-descriptor.ts",
+        "kind": "type-imports"
+      },
+      {
+        "from": "src/team/workflow-process.ts",
+        "to": "src/team/fs-utils.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow-process.ts",
+        "to": "src/team/workflow-usage.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow-process.ts",
+        "to": "src/team/workflow-usage.ts",
+        "kind": "type-imports"
+      },
+      {
+        "from": "src/team/workflow-prompt.ts",
+        "to": "external:node:crypto",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow-prompt.ts",
+        "to": "src/team/workflow-contracts.ts",
+        "kind": "type-imports"
+      },
+      {
+        "from": "src/team/workflow-report.ts",
+        "to": "src/team/workflow-contracts.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow-report.ts",
+        "to": "src/team/workflow-contracts.ts",
+        "kind": "type-imports"
+      },
+      {
+        "from": "src/team/workflow-report.ts",
+        "to": "src/team/workflow-usage.ts",
+        "kind": "type-imports"
+      },
+      {
+        "from": "src/team/workflow-usage.ts",
+        "to": "external:node:string_decoder",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow.ts",
+        "to": "external:node:child_process",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow.ts",
+        "to": "external:node:crypto",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow.ts",
+        "to": "external:node:fs",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow.ts",
+        "to": "external:node:path",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow.ts",
+        "to": "src/config/loader.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow.ts",
+        "to": "src/lib/file-lock.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow.ts",
+        "to": "src/lib/worktree-paths.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow.ts",
+        "to": "src/shared/artifact-descriptor.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow.ts",
+        "to": "src/team/fs-utils.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow.ts",
+        "to": "src/team/git-worktree.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow.ts",
+        "to": "src/team/glm-config.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow.ts",
+        "to": "src/team/model-contract.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow.ts",
+        "to": "src/team/stage-router.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow.ts",
+        "to": "src/team/state-paths.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow.ts",
+        "to": "src/team/types.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow.ts",
+        "to": "src/team/workflow-adapters.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow.ts",
+        "to": "src/team/workflow-adapters.ts",
+        "kind": "type-imports"
+      },
+      {
+        "from": "src/team/workflow.ts",
+        "to": "src/team/workflow-contracts.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow.ts",
+        "to": "src/team/workflow-contracts.ts",
+        "kind": "type-exports"
+      },
+      {
+        "from": "src/team/workflow.ts",
+        "to": "src/team/workflow-contracts.ts",
+        "kind": "type-imports"
+      },
+      {
+        "from": "src/team/workflow.ts",
+        "to": "src/team/workflow-process.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow.ts",
+        "to": "src/team/workflow-prompt.ts",
+        "kind": "imports"
       },
       {
         "from": "src/tools/__tests__/cancel-integration.test.ts",
@@ -78504,12 +79621,12 @@
       }
     ],
     "stats": {
-      "nodeCount": 6966,
-      "edgeCount": 7455,
-      "importEdgeCount": 6140,
+      "nodeCount": 7006,
+      "edgeCount": 7638,
+      "importEdgeCount": 6299,
       "registerEdgeCount": 60
     }
   },
-  "inventorySha256": "5ad3903bbd001ae2d1ce8d943bbbf338edc7231078189389641f989809a1d297",
-  "manifestSha256": "ae711c19652585c095e159cb35f5486e7e7b990c4dc09106b02f93c4076e0ae5"
+  "inventorySha256": "9204f96f164cd799737c5e3d3c706e74072ef5706a55ada43c0333d368850455",
+  "manifestSha256": "8ccdaf8ebc0253c7448625926f34db4d1ea50e4481efb7fa5d4a5d8c733cffe4"
 }
