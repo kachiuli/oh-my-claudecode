@@ -96,7 +96,7 @@ describe('review finding path collection', () => {
       .toThrow('workflow_invalid_scope');
   });
 
-  async function integrate() {
+  async function integrate(codexCommand = provider) {
     await initWorkflow(fixture.cwd, {
       name: 'review-paths', objective: 'Validate review collection', baseCommit: fixture.baseCommit,
       integrationBranch: 'integration/review-paths', verification: [check], tasks: [{
@@ -104,11 +104,33 @@ describe('review finding path collection', () => {
         writeScope: ['feature/a.txt'], readScope: ['README.md'], prohibitedScope: [], dependencies: [],
         contracts: ['Preserve the fixture API.'], acceptanceCriteria: ['The component exists.'], tests: [check],
       }],
-    }, { mode: 'balanced', glmCommand: provider, codexCommand: provider, maxAttempts: 1 });
+    }, { mode: 'balanced', glmCommand: provider, codexCommand, maxAttempts: 1 });
     await runWorkflow(fixture.cwd, 'review-paths');
     await acceptWorkflowTask(fixture.cwd, 'review-paths', 'a');
     await verifyWorkflow(fixture.cwd, 'review-paths');
   }
+
+  it('collects findings through a provider that rejects regex lookarounds at schema admission', async () => {
+    const schemaProvider = join(fixture.root, 'schema-admission-provider.cjs');
+    // Model the observed provider restriction, not an entire provider regex implementation.
+    writeFileSync(schemaProvider, `
+      const { readFileSync } = require('node:fs');
+      const schema = JSON.parse(readFileSync(process.argv[process.argv.indexOf('--output-schema') + 1], 'utf8'));
+      const pattern = schema.properties.findings.items.properties.file.pattern;
+      if (['(?=', '(?!', '(?<=', '(?<!'].some(operator => pattern.includes(operator))) {
+        process.stderr.write('Synthetic HTTP 400 invalid_json_schema: regex lookaround is not supported.');
+        process.exit(1);
+      }
+      require(${JSON.stringify(provider)});
+    `);
+    fixture.configure(finding('feature/a.txt'));
+    await integrate(schemaProvider);
+    const reviewed = await reviewWorkflow(fixture.cwd, 'review-paths');
+    expect(reviewed.reviews[0].findings).toEqual([
+      { id: 'review-1-1', severity: 'P2', message: 'Synthetic finding', file: 'feature/a.txt', line: 1 },
+    ]);
+    expect(reviewed.reviewAttempts?.[0].outcome).toBe('completed');
+  });
 
   it.each(['absolute', 'relative'])('collects six %s findings, preserves raw metadata and permits lead adjudication', async style => {
     const files = ['feature/a.txt', 'README.md', 'docs/audit.md', 'docs/audit.md', 'docs/audit.md', 'docs/audit.md'];
@@ -126,10 +148,17 @@ describe('review finding path collection', () => {
     const request = JSON.parse(fixture.events().find(event => event.role === 'codex')!.prompt);
     expect(request.instructions).toContain('repository-relative POSIX path or null');
     const schema = JSON.parse(readFileSync(artifact.replace('.result.json', '.schema.json'), 'utf8'));
+    expect(schema.properties.findings.items.properties.file.pattern).not.toContain('(?');
+    expect(schema.properties.findings.items.properties.file.pattern).not.toMatch(/\\(?:[1-9]|k[<'])/);
     const validate = new Ajv().compile(schema);
     for (const file of [...files.map(file => `C:/synthetic-repo/${file}`), '/repo/a.ts', '//server/share/a.ts',
-      '\\\\server\\share\\a.ts', 'C:src/a.ts', 'src\\a.ts', '', '../a.ts', 'src/../a.ts', 'src//a.ts']) {
+      '\\\\server\\share\\a.ts', 'C:src/a.ts', 'src\\a.ts', '', 'src//a.ts']) {
       expect(validate(finding(file)), `Schema must reject ${file}`).toBe(false);
+    }
+    // These semantic scope restrictions stay authoritative in the local parser, not provider regex features.
+    for (const file of ['../a.ts', 'src/../a.ts', './a.ts', '.git/config', '.omc/state.json']) {
+      expect(validate(finding(file)), `The coarse schema delegates ${file} to the local scope guard`).toBe(true);
+      expect(() => parseWorkflowReviewFindings(finding(file), 1, fixture.cwd)).toThrow('workflow_invalid_scope');
     }
     expect(validate(finding('src/example.ts'))).toBe(true);
     expect(validate(finding(null))).toBe(true);
@@ -145,6 +174,8 @@ describe('review finding path collection', () => {
     ['outside path', { file: '/outside/a.ts' }, 'workflow_invalid_scope'],
     ['foreign drive', { file: 'Z:/outside/a.ts' }, 'workflow_invalid_scope'],
     ['traversal', { file: '../a.ts' }, 'workflow_invalid_scope'],
+    ['reserved Git scope', { file: '.git/config' }, 'workflow_invalid_scope'],
+    ['reserved workflow scope', { file: '.omc/state.json' }, 'workflow_invalid_scope'],
     ['malformed severity', { severity: 'INVALID' }, 'workflow_invalid_severity'],
   ])('preserves the failed attempt and result for %s', async (_label, override, error) => {
     const findings = [{ ...finding('feature/a.txt').findings[0], ...override }];

@@ -499,7 +499,8 @@ export async function reviewWorkflow(cwd: string, name: string): Promise<Workflo
         findings: { type: 'array', maxItems: 50, items: { type: 'object', additionalProperties: false, required: ['severity', 'message', 'file', 'line'], properties: {
           severity: { type: 'string', enum: ['P0', 'P1', 'P2', 'P3'] }, message: { type: 'string', maxLength: 2000 },
           file: { type: ['string', 'null'], minLength: 1, maxLength: 400,
-            pattern: '^(?!.*(?:^|/)(?:\\.{1,2}|\\.git|\\.omc)(?:/|$))[^\\\\/:*?\\[\\]{}\\r\\n]+(?:/[^\\\\/:*?\\[\\]{}\\r\\n]+)*$' },
+            // Provider regex subsets reject lookarounds; scopePath enforces traversal and reserved scopes locally.
+            pattern: '^[^\\\\/:*?\\[\\]{}\\r\\n]+(/[^\\\\/:*?\\[\\]{}\\r\\n]+)*$' },
           line: { type: ['integer', 'null'] },
         } } },
       } });
