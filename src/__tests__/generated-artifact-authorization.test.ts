@@ -125,7 +125,10 @@ type VerifierModule = {
 
 
 const verifier = (await import(pathToFileURL(VERIFIER_PATH).href)) as unknown as VerifierModule;
-const manifest = JSON.parse(readFileSync(MANIFEST_PATH, 'utf8')) as Manifest;
+// Historical upstream grants are fixtures, never active authorization for this fork.
+const manifest = JSON.parse(readFileSync(
+  join(ROOT, 'src', '__tests__', 'fixtures', 'generated-artifact-authorizations-upstream.json'), 'utf8',
+)) as Manifest;
 const exactAuthorization = (() => {
   const authorization = manifest.authorizations.find(entry => entry.pullNumber === PULL_NUMBER);
   if (!authorization) throw new Error('Missing exact #3537 base-owned authorization fixture');
@@ -214,6 +217,78 @@ function expectDenied(mutate: (input: MutableInput) => void, reason: string) {
   expect(result.allowed).toBe(false);
   expect(result.reason).toContain(reason);
 }
+
+const FORK_REPOSITORY = 'kachiuli/oh-my-claudecode';
+const FORK_OWNER = 'kachiuli';
+
+function forkSourceInput(): MutableInput {
+  const input = authorizedInput();
+  input.manifest = { schemaVersion: 2, repository: FORK_REPOSITORY, owner: FORK_OWNER, authorizations: [] };
+  input.environment.githubRepository = FORK_REPOSITORY;
+  input.environment.githubWorkflowRef = `${FORK_REPOSITORY}/.github/workflows/generated-artifact-authorization.yml@refs/heads/main`;
+  input.repositoryMetadata = { full_name: FORK_REPOSITORY, owner: { login: FORK_OWNER }, default_branch: 'main' };
+  input.event.repository = { full_name: FORK_REPOSITORY, owner: { login: FORK_OWNER } };
+  input.event.pull_request.base.repo.full_name = FORK_REPOSITORY;
+  input.event.pull_request.head.repo.full_name = FORK_REPOSITORY;
+  input.event.pull_request.user.login = FORK_OWNER;
+  input.livePull.base.repo.full_name = FORK_REPOSITORY;
+  input.livePull.head.repo.full_name = FORK_REPOSITORY;
+  input.livePull.user.login = FORK_OWNER;
+  input.commit.author.login = FORK_OWNER;
+  input.commit.committer.login = FORK_OWNER;
+  input.signature.signature.signer.login = FORK_OWNER;
+  input.files = [{ status: 'modified', filename: 'src/index.ts', sha: 'b'.repeat(40) }];
+  input.livePull.changed_files = input.files.length;
+  return input;
+}
+
+describe('fork repository identity from the trusted base policy', () => {
+  it('allows a coherent fork source-only pull request without an inherited grant', () => {
+    expect(verifier.evaluateGeneratedArtifactAuthorization(forkSourceInput())).toEqual({
+      allowed: true,
+      decision: { requiresAuthorization: false, pullNumber: PULL_NUMBER, generatedDelta: { count: 0, sha256: null } },
+    });
+  });
+
+  it('still rejects generated changes without an exact fork authorization', () => {
+    const input = forkSourceInput();
+    input.files[0].filename = 'dist/index.js';
+    expect(verifier.evaluateGeneratedArtifactAuthorization(input)).toEqual({
+      allowed: false, reason: 'generated changes have no base-owned authorization entry',
+    });
+  });
+
+  it('fails closed for mismatched fork policy, event, live and trusted checkout identities', () => {
+    const cases: Array<{ mutate: (input: MutableInput) => void; reason: string }> = [
+      { mutate: input => { input.manifest.owner = 'impostor'; }, reason: 'manifest owner is not the protected repository owner' },
+      { mutate: input => { input.event.repository.full_name = REPOSITORY; }, reason: 'event repository does not match' },
+      { mutate: input => { input.event.repository.owner.login = OWNER; }, reason: 'event repository owner does not match' },
+      { mutate: input => { input.livePull.base.repo.full_name = REPOSITORY; }, reason: 'event identity is stale or ref-confused' },
+      { mutate: input => { input.repositoryMetadata.full_name = REPOSITORY; }, reason: 'live repository metadata repository does not match' },
+      { mutate: input => { input.repositoryMetadata.owner.login = OWNER; }, reason: 'live repository metadata owner does not match' },
+      { mutate: input => { input.repositoryMetadata.default_branch = 'dev'; }, reason: 'default branch is not main' },
+      { mutate: input => { input.environment.githubRepository = REPOSITORY; }, reason: 'runtime repository does not match' },
+      { mutate: input => { input.environment.githubWorkflowRef = `${REPOSITORY}/.github/workflows/generated-artifact-authorization.yml@refs/heads/main`; }, reason: 'runtime GITHUB_WORKFLOW_REF is not' },
+      { mutate: input => { input.environment.githubSha = HEAD_SHA; }, reason: 'runtime GITHUB_SHA does not match' },
+      { mutate: input => { input.checkedOutBaseSha = HEAD_SHA; }, reason: 'checked-out base SHA does not match' },
+      { mutate: input => { input.livePull.head.sha = MAIN_SHA; }, reason: 'event identity is stale or ref-confused' },
+    ];
+    for (const { mutate, reason } of cases) {
+      const input = forkSourceInput();
+      mutate(input);
+      expect(verifier.evaluateGeneratedArtifactAuthorization(input)).toMatchObject({ allowed: false, reason: expect.stringContaining(reason) });
+    }
+  });
+
+  it('ships an empty fork policy while retaining upstream grants only as historical test fixtures', () => {
+    const deployed = JSON.parse(readFileSync(MANIFEST_PATH, 'utf8'));
+    expect(deployed).toEqual({ schemaVersion: 2, repository: FORK_REPOSITORY, owner: FORK_OWNER, authorizations: [] });
+    expect(verifier.validateAuthorizationManifest(deployed)).toEqual(deployed);
+    expect(manifest.repository).toBe(REPOSITORY);
+    expect(manifest.owner).toBe(OWNER);
+    expect(manifest.authorizations.length).toBeGreaterThan(0);
+  });
+});
 
 
 describe('generated-artifact base trust root workflow', () => {
