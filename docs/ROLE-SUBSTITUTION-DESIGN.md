@@ -277,7 +277,7 @@ compatibility tests, not opportunistic JSON edits.
 5. **Adoption:** report commit, source/build/contract hashes, actual tests, live
    limitations, review relation and compatibility evidence to the lead. A changed
    compiled contract hash also needs explicit adoption by pinned consumers such
-   as Shello's handoff helper. Do not silently substitute the new binary for old
+   as a project's handoff helper. Do not silently substitute the new binary for old
    runners. Main/publication/deployment gates are separate.
 
 Planned implementation touches the workflow/config/contracts, provider-process
