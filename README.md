@@ -196,8 +196,9 @@ The deep interview uses Socratic questioning to clarify your thinking before any
 
 **V1.2 local candidate:** [Explicit role substitution and reusable private setup](docs/GLM-WORKFLOW-V1.2.md)
 adds normal Claude implementation/review and records an external Claude or Astra
-lead. Self-review is allowed and labelled honestly. Its
-[authenticated validation is pending](docs/GLM-WORKFLOW-V1.2-VALIDATION.md); integrated local checks pass.
+lead. Self-review is allowed and labelled honestly. Integrated local checks and
+[bounded live Claude worker/review checks pass](docs/GLM-WORKFLOW-V1.2-VALIDATION.md);
+effective read-only enforcement evidence remains partial.
 Use the exact adopted source checkout and absolute built CLI; this is not an npm
 release. The V1/V1.1 walkthrough below keeps its historical defaults.
 

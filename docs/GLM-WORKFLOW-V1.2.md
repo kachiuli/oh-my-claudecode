@@ -1,8 +1,9 @@
 # Workflow V1.2: explicit role substitution
 
-Status: local candidate with passing integrated build, lint and selected
-regressions. The CLI examples below are implemented, but they are not a published
-release or an authenticated compatibility claim. Consult the
+Status: local candidate with passing integrated checks and bounded live normal
+Claude worker/review observations. Effective read-only enforcement evidence
+remains partial. The CLI examples are implemented, not a published release or a
+general authenticated compatibility claim. Consult the
 [V1.2 validation report](GLM-WORKFLOW-V1.2-VALIDATION.md) before selecting a runner.
 The [V1/V1.1 guide](GLM-WORKFLOW.md) and existing saved runs remain supported on
 their original schema and runner pins.

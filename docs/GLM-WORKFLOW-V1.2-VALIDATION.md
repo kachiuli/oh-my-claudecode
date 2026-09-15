@@ -1,6 +1,7 @@
 # Workflow V1.2 validation
 
-Status: **integrated local checks pass; authenticated compatibility and adoption pending**.
+Status: **integrated local checks and bounded live Claude worker/review checks pass;
+read-only enforcement evidence is partial and broader adoption remains pending**.
 This is a new report. Historical [V1](GLM-WORKFLOW-VALIDATION.md) and
 [V1.1](GLM-WORKFLOW-V1.1-VALIDATION.md) observations remain bound to their original
 sources and are not replaced by this document. See the
@@ -84,6 +85,103 @@ arrays, logs, test JSON and before/after source manifests. This report is a safe
 summary; it does not publish private runtime configuration. Documentation status
 was refreshed after checks without changing source or generated binaries.
 
+## Bounded live observations, 2026-09-15
+
+A separately authorized synthetic-source probe ran against source
+`d56c2b9196a99860c5f9c1f0427a79128cfc1f99` and the built CLI/contracts hashes
+listed above. It used native Windows, Node `24.18.1` and Claude Code `2.1.258`.
+The harness exercised the compiled controller and operation adapters; it does
+not independently establish every CLI/private-config entry path.
+The workflow was a new balanced, schema-2 `role-substitution` fixture with one
+worker and one review pass. Exactly **three authenticated Claude calls** ran:
+one worker, one fresh reviewer and one separate restriction challenge. There
+were no automatic retries, hidden provider changes or resets of an old run.
+
+| Check | Observed result | Limit |
+| --- | --- | --- |
+| L01 normal Claude worker | **PASS for the bounded task.** One owned `src/clamp.mjs` commit, exact structured handoff, controller check replay, explicit root acceptance and integrated verification passed. | One task/connection/version; not a general worker, multi-worker or session-continuation certification. |
+| L02 normal Claude reviewer | **PASS for structured review execution.** A fresh restricted invocation returned the real seeded access-control defect and two additional notes; normal parser and adjudication accepted the result. Source and refs remained unchanged. | Successful structured review does not establish effective write/command denial; see L03. No authenticated reviewer capability receipt was promoted. |
+| L03 restriction challenge | **PARTIAL.** Requested command/write tools were absent, the structured response completed and tracked/untracked fixture files plus refs remained unchanged. | No actual runtime denial event was observed. Cooperative refusal and final equality cannot prove that attempted writes or command execution were prevented. |
+| L04 explicit replacement after unavailable command | **PASS for the bounded replacement.** A deliberately absent local executable produced a preserved preflight failure with zero provider calls/attempts; root explicitly selected the normal Claude binding before the one worker call. | This did not simulate an authenticated provider outage or prove cross-provider session reuse. No attempt budget was reset. |
+| L05 external lead | **Observed external-root lead operation.** The authenticated Codex root recorded the bounded plan, explicitly accepted/verified the worker, inspected the review and adjudicated findings. | System context identifies GPT-6; an independently observed exact model slug was unavailable and remains `unknown`. The controller did not launch or certify a Codex implementation adapter. |
+
+The worker commit was `5c1f8874b6b8c13d97cf502b8d352257c167b212`; accepted
+integration was `5c668c86ac00c88256c95897d2e4f3c853c60775`. All six frozen
+clamp cases passed through the actual exact-command controller replay and
+integrated check: below/inside/above bounds, equal bounds, reversed bounds and
+nonfinite input. These cases do not claim coverage of the separately seeded
+access module, nor every argument-validation combination in the implementation.
+
+The reviewer correctly identified the deliberate inverted ownership comparison
+at `src/access.mjs:2`, noted missing access tests, and disclosed that it had not
+executed tests itself. Root recorded **fix / fix / dismiss**: retain the seeded
+defect and missing coverage for correction, and dismiss the execution-limit
+note as a limitation rather than a code defect. The fixture remains in
+`remediation`, with two unresolved findings. It was not finished or presented
+as completed product work. The P0 label describes an intentionally seeded
+synthetic defect, not a discovered production vulnerability.
+
+### Model, usage and profile evidence
+
+All three calls explicitly requested `claude-fable-5-1[1m]` with effort `high`
+on the normal first-party Claude connection. The main-response model observed
+was `claude-fable-5-1`; the request modifier is not independent proof of effective
+context capacity. CLI usage also contained the ancillary key
+`claude-haiku-4-5-20251001`. That key is included in all-model accounting and
+does not, by itself, establish replacement of the requested primary model.
+Effective effort was not independently measured.
+
+| Call | Telemetry | Input, including cached input | Output | Cache read | Cache write |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Worker | measured, all models | 186,728 | 5,400 | 165,543 | 19,336 |
+| Fresh review | measured, all models | 19,005 | 1,947 | 7,868 | 9,290 |
+| Separate challenge | measured, all models | 14,961 | 718 | 12,736 | 1,148 |
+
+These are CLI-reported observations, **not measured savings or billing**. The
+challenge was outside the workflow's worker/review ledger; it is the third
+provider call, not an extra saved workflow review pass. Missing future usage
+must still remain unknown.
+
+The requested review tools were `Read,Glob,Grep`, with restricted/safe mode,
+`dontAsk`, empty strict MCP configuration and no session persistence. The actual
+tool inventory also advertised `StructuredOutput`, the harmless structured-result
+protocol tool. The draft challenge classifier treated any extra tool as unsafe;
+that broad classification does not mean this protocol tool can modify source.
+Actual reviewer/challenge tool-use events were `Read` and `StructuredOutput`.
+Even after accounting for that distinction, **L03 remains partial because the
+denial-event list is empty**. No runtime/adaptor change or authenticated reviewer
+receipt is justified by interpreting the challenge as a full pass.
+
+Protected normal-Claude auth/profile guards stayed unchanged throughout. The
+user-wide `.claude.json` mutable metadata changed during the calls, so this is
+not a claim that every Claude-owned file stayed byte-identical. No profile
+change, copied credential or GLM-route substitution was performed. Fresh review
+provenance remained `unknown`; shared provider/account identity neither proves
+independence nor forbids self-review.
+
+The retained ignored packet is
+`.tmp/workflow-v1.2-live-preparation/runs/claude-v12-20260915`, with launch
+descriptors, attempt/outcome records, raw bounded process evidence, the fixture
+and root decisions. Launch descriptors alone were preparation, not proof of
+execution; the completed process/controller receipts supply the observations.
+The controlled bootstrap used retained synthetic capability receipts. Root then
+explicitly approved a new **worker-only authenticated capability** from the
+observed evidence. Its normal binding preflight passed without a synthetic
+bypass, additional provider call or workflow-state mutation. This local approval
+covers the observed normal-Claude `structured-handoff` operation only; future
+selection still checks current executable/auth identity. It grants no reviewer,
+read-only, session-resume or ancillary-model capability. No authenticated
+reviewer receipt was promoted. Original bootstrap/draft artifacts are preserved;
+credentials and private transcripts are not published in this report.
+
+| Retained outcome under the packet | SHA-256 |
+| --- | --- |
+| `evidence/worker.outcome.json` | `b28c1ab5f2c058ca02714a256bbfa9aecb1ba090958ff48152fe38753f9ded71` |
+| `evidence/accept-verify.outcome.json` | `c77349a420c57ba736698cb0b92bafb9078973f13b3df6ef5d3caa955cfdee05` |
+| `evidence/review.outcome.json` | `45fe741a650596cbebd06364cc7e32028aea7ce72a8702e8f1be41447a8384ee` |
+| `evidence/challenge.outcome.json` | `197bc0e1fbceb6febd0e27cce07b2a773a8657b3712a303a684fa54df1ee5d5a` |
+| `evidence/adjudicate.outcome.json` | `920db01cbb23b5862ac3bc8685427601a281c932743b2c2fbb106be903f2c169` |
+
 ## Remaining acceptance evidence
 
 - Lead adoption of the source-only packet and explicit runner selection. Old
@@ -94,14 +192,15 @@ was refreshed after checks without changing source or generated binaries.
 - Independent/self-review/unknown provenance as observed. Independence is
   preferred, not mandatory; same-session review remains unsupported unless its
   adapter and permission transition are separately established.
-- Bounded authenticated compatibility observations L01–L05, especially the
-  normal Claude reviewer flags, structured terminal envelope and effective
-  read-only restriction challenge. Synthetic fixtures and local help do not
-  substitute for those observations.
+- Actual runtime denial evidence for L03, and any broader route/profile,
+  multi-worker or continuation claims beyond the bounded live observations
+  above. A successful structured review is not an authenticated read-only
+  capability certificate; the synthetic tests and local help cannot close it.
 - Lead adoption decision and any project-specific consumer pin/helper checks.
   No npm release, tag, publication or project-main acceptance is implied.
 
 No authenticated call, provider profile change or old saved-run mutation was
-performed as part of P3 or this P4 packet. The earlier live
-review schema rejection remains a separate preserved incident; a local schema
-correction is not evidence that a later live review succeeded.
+performed as part of the original P3/P4 packets. The separately authorized live
+observations above do not rewrite those reports or the earlier preserved review
+schema incident. This remains a controlled local candidate, not a generally
+release-verified workflow, published version or completed project checkpoint.
