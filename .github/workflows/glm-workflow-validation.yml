@@ -23,7 +23,7 @@ jobs:
         id: checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: 00db09693ccccf19958128a9fa2692e30ffab17e
+          ref: 1065b20f58f7c4692e0a6a708da9f1484dc1be4e
           fetch-depth: 0
           persist-credentials: false
       - name: Install Node.js 24.18.1
@@ -45,7 +45,7 @@ jobs:
 
           const head = cp.execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
 
-          if (head !== '00db09693ccccf19958128a9fa2692e30ffab17e' || process.versions.node !== '24.18.1') throw
+          if (head !== '1065b20f58f7c4692e0a6a708da9f1484dc1be4e' || process.versions.node !== '24.18.1') throw
           Error('OMC_CI_SOURCE_OR_NODE_MISMATCH');
 
           const identity = { schemaVersion: 1, repository: process.env.GITHUB_REPOSITORY, testedSource: head,
@@ -119,7 +119,7 @@ jobs:
             pending: count(results.numPendingTests), todo: count(results.numTodoTests) } : null;
           let sourceUnchanged = false;
 
-          try { sourceUnchanged = identity?.testedSource === '00db09693ccccf19958128a9fa2692e30ffab17e'
+          try { sourceUnchanged = identity?.testedSource === '1065b20f58f7c4692e0a6a708da9f1484dc1be4e'
             && cp.execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim() === identity.testedSource
             && crypto.createHash('sha256').update(fs.readFileSync('package-lock.json')).digest('hex') === identity.lockSha256; }
           catch { issue ||= 'SOURCE_IDENTITY_UNAVAILABLE'; }
@@ -164,7 +164,7 @@ jobs:
         id: checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: 00db09693ccccf19958128a9fa2692e30ffab17e
+          ref: 1065b20f58f7c4692e0a6a708da9f1484dc1be4e
           fetch-depth: 0
           persist-credentials: false
       - name: Install Node.js 24.18.1
@@ -186,7 +186,7 @@ jobs:
 
           const head = cp.execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
 
-          if (head !== '00db09693ccccf19958128a9fa2692e30ffab17e' || process.versions.node !== '24.18.1') throw
+          if (head !== '1065b20f58f7c4692e0a6a708da9f1484dc1be4e' || process.versions.node !== '24.18.1') throw
           Error('OMC_CI_SOURCE_OR_NODE_MISMATCH');
 
           const identity = { schemaVersion: 1, repository: process.env.GITHUB_REPOSITORY, testedSource: head,
@@ -214,7 +214,7 @@ jobs:
       - name: Lint
         id: lint
         run: npm run lint
-      - name: Run the exact 18 workflow, worktree and inventory suites
+      - name: Run the exact 19 workflow, worktree, inventory and policy suites
         id: tests
         run: |-
           npm run test:run -- \
@@ -236,6 +236,7 @@ jobs:
             src/cli/commands/__tests__/doctor-team-routing.test.ts \
             src/team/__tests__/git-worktree.test.ts \
             tests/lint/inventory-graph-drift.test.ts \
+            src/__tests__/generated-artifact-authorization.test.ts \
             --reporter=default --reporter=json --outputFile=test-results/omc-v12-vitest.raw.json
       - name: Record aggregate evidence and reject incomplete checks
         id: report
@@ -280,21 +281,21 @@ jobs:
             pending: count(results.numPendingTests), todo: count(results.numTodoTests) } : null;
           let sourceUnchanged = false;
 
-          try { sourceUnchanged = identity?.testedSource === '00db09693ccccf19958128a9fa2692e30ffab17e'
+          try { sourceUnchanged = identity?.testedSource === '1065b20f58f7c4692e0a6a708da9f1484dc1be4e'
             && cp.execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim() === identity.testedSource
             && crypto.createHash('sha256').update(fs.readFileSync('package-lock.json')).digest('hex') === identity.lockSha256; }
           catch { issue ||= 'SOURCE_IDENTITY_UNAVAILABLE'; }
 
           const complete = totals && Object.values(totals).every(value => value !== null) && totals.tests > 0
             && totals.tests === totals.passed + totals.failed + totals.pending + totals.todo;
-          const scopeComplete = complete && totals.files === 18 && totals.tests === 439 && totals.passed === 439 &&
+          const scopeComplete = complete && totals.files === 19 && totals.tests === 466 && totals.passed === 466 &&
           totals.pending === 0 && totals.todo === 0;
 
           const passed = !issue && sourceUnchanged && Object.values(checks).every(value => value === 'success')
             && results?.success === true && totals?.failed === 0 && scopeComplete;
-          const summary = { schemaVersion: 1, scope: 'Windows exact workflow, CLI, worktree and inventory checks',
+          const summary = { schemaVersion: 1, scope: 'Windows exact workflow, CLI, worktree, inventory and policy checks',
             outcome: passed ? 'PASS' : 'FAIL', identity, sourceAndLockUnchanged: sourceUnchanged, checks, totals, issue,
-            expected: { files: 18, tests: 439, pending: 0, todo: 0 },
+            expected: { files: 19, tests: 466, pending: 0, todo: 0 },
             limitations: ['No authenticated provider or deployment validation.', 'The entire upstream Windows suite is not run.'] };
           fs.mkdirSync('test-results', { recursive: true });
 
