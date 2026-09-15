@@ -576,7 +576,7 @@ export function findGitMetadataDir(start: string): string | null {
   }
 }
 
-function expandPathForCompare(path: string): string | null {
+export function expandPathForCompare(path: string): string | null {
   const normalized = resolve(path);
   try {
     return realpathSync.native(normalized);

@@ -4,6 +4,7 @@ import { existsSync, readFileSync, writeFileSync, statSync, lstatSync, realpathS
 import { dirname, join, resolve, posix, win32 } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { withFileLock } from '../lib/file-lock.js';
+import { expandPathForCompare } from '../lib/worktree-paths.js';
 import { loadConfig } from '../config/loader.js';
 import { createArtifactDescriptorFromPath } from '../shared/artifact-descriptor.js';
 import { TeamPaths, absPath, teamStateRoot } from './state-paths.js';
@@ -252,9 +253,11 @@ function assertWorker(state: WorkflowState, entry: WorkflowTaskState): string {
   if (!entry.worktree || resolve(entry.worktree) !== resolve(expected) || entry.branch !== getBranchName(state.plan.name, entry.worker)) throw new Error('workflow_worker_mapping_mismatch');
   validateResolvedPath(expected, join(teamStateRoot(state.cwd, ''), '..', '..', 'team'));
   if (git(expected, ['branch', '--show-current']) !== entry.branch) throw new Error('workflow_worker_branch_mismatch');
-  if (realpathSync(git(expected, ['rev-parse', '--show-toplevel'])) !== realpathSync(expected)) throw new Error('workflow_worker_mapping_mismatch');
+  // Native resolution expands Windows short names; different directories still compare exactly.
+  const canonicalExpected = expandPathForCompare(expected);
+  if (!canonicalExpected || expandPathForCompare(git(expected, ['rev-parse', '--show-toplevel'])) !== canonicalExpected) throw new Error('workflow_worker_mapping_mismatch');
   const registered = git(state.cwd, ['worktree', 'list', '--porcelain']);
-  if (!registered.replaceAll('\\', '/').split('\n').some(line => line === `worktree ${expected.replaceAll('\\', '/')}`)) throw new Error('workflow_worker_unregistered');
+  if (!registered.split('\n').some(line => line.startsWith('worktree ') && expandPathForCompare(line.slice('worktree '.length)) === canonicalExpected)) throw new Error('workflow_worker_unregistered');
   if (!clean(expected)) throw new Error('workflow_worker_worktree_dirty');
   return expected;
 }

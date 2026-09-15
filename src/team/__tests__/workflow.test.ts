@@ -1,4 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -7,7 +8,7 @@ import {
   readWorkflow, rejectWorkflowTask, reviewWorkflow, runWorkflow, verifyWorkflow, workflowStatus,
 } from '../workflow.js';
 import type { WorkflowOptions, WorkflowPlan, WorkflowTask } from '../workflow-contracts.js';
-import { cleanupTeamWorktrees } from '../git-worktree.js';
+import { cleanupTeamWorktrees, ensureWorkerWorktree } from '../git-worktree.js';
 import { createWorkflowFixture, type FixtureEvent } from './helpers/workflow-fixture.js';
 
 const provider = fileURLToPath(new URL('./helpers/workflow-provider.cjs', import.meta.url));
@@ -60,6 +61,48 @@ describe('Claude/GLM/Codex workflow with real local fake providers', () => {
     await runWorkflow(fixture.cwd, name);
     await acceptWorkflowTask(fixture.cwd, name, 'a');
   }
+
+  it.skipIf(process.platform !== 'win32').each([false, true])('runs and accepts a worker through a Windows short path with existing worktree=%s', async existing => {
+    const shortRoot = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `
+      Add-Type -TypeDefinition 'using System; using System.Text; using System.Runtime.InteropServices; public static class ShortPath { [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] public static extern uint GetShortPathName(string path, StringBuilder output, uint size); }'
+      $buffer = [System.Text.StringBuilder]::new(32768)
+      if ([ShortPath]::GetShortPathName($env:OMC_TEST_SHORT_PATH, $buffer, 32768) -eq 0) { throw 'short_path_unavailable' }
+      $buffer.ToString()
+    `], { encoding: 'utf8', windowsHide: true, env: { ...process.env, OMC_TEST_SHORT_PATH: fixture.cwd } }).trim();
+    expect(shortRoot).toMatch(/~\d/);
+    await initWorkflow(shortRoot, plan(), options);
+    if (existing) ensureWorkerWorktree(name, 'task-a', shortRoot, { mode: 'named', baseRef: fixture.baseCommit });
+    await runWorkflow(shortRoot, name);
+    const completed = readWorkflow(shortRoot, name);
+    expect(completed.tasks[0]?.error).toBeUndefined();
+    expect(completed.tasks[0]).toMatchObject({ status: 'completed', attempts: 1 });
+    expect(fixture.events().filter(event => event.role === 'glm' && event.event === 'start')).toHaveLength(1);
+    expect(existsSync(join(fixture.cwd, 'feature/a.txt'))).toBe(false);
+    await acceptWorkflowTask(shortRoot, name, 'a');
+    expect(readWorkflow(shortRoot, name).tasks[0]?.status).toBe('accepted');
+    expect(readFileSync(join(fixture.cwd, 'feature/a.txt'), 'utf8')).toBe('a\n');
+    expect(fixture.git('rev-parse', 'main')).toBe(fixture.baseCommit);
+  });
+
+  it.each(['different directory', 'missing directory', 'wrong branch'])('refuses acceptance for a completed worker with %s', async mismatch => {
+    await initWorkflow(fixture.cwd, plan(), options);
+    await runWorkflow(fixture.cwd, name);
+    const state = readWorkflow(fixture.cwd, name);
+    expect(state.tasks[0]?.status).toBe('completed');
+    const entry = state.tasks[0]!;
+    if (mismatch === 'wrong branch') {
+      execFileSync('git', ['checkout', '--detach'], { cwd: entry.worktree, stdio: 'pipe', windowsHide: true });
+    } else {
+      entry.worktree = mismatch === 'different directory' ? fixture.cwd : join(fixture.cwd, 'missing');
+      writeFileSync(join(fixture.cwd, '.omc/state/team', name, 'workflow.json'), JSON.stringify(state));
+    }
+    await expect(acceptWorkflowTask(fixture.cwd, name, 'a')).rejects.toThrow(
+      mismatch === 'wrong branch' ? 'workflow_worker_branch_mismatch' : 'workflow_worker_mapping_mismatch',
+    );
+    expect(readWorkflow(fixture.cwd, name).tasks[0]?.status).toBe('completed');
+    expect(existsSync(join(fixture.cwd, 'feature/a.txt'))).toBe(false);
+    expect(fixture.git('rev-parse', 'main')).toBe(fixture.baseCommit);
+  });
 
   it('implements three isolated tasks, integrates only on lead acceptance, and completes one bounded fix/re-review', async () => {
     fixture.configure({ barrierCount: 3, reviewFindings: true, tasks: { a: { stdoutBytes: 300000 } } });
