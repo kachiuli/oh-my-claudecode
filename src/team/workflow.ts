@@ -1,7 +1,7 @@
 /** Opt-in Claude-led workflow. Every integration and finding disposition is an explicit lead action. */
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, statSync, lstatSync, realpathSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, resolve, posix, win32 } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { withFileLock } from '../lib/file-lock.js';
 import { loadConfig } from '../config/loader.js';
@@ -434,6 +434,49 @@ function verificationGate(state: WorkflowState): string {
   if (!state.verification?.passed || state.verification.head !== head) throw new Error('workflow_current_verification_required');
   return head;
 }
+/** Review locations are metadata; retain raw artifacts and validate the relative copy with the normal scope guard. */
+export function parseWorkflowReviewFindings(value: unknown, pass: number, cwd: string): WorkflowFinding[] {
+  const paths = /^[a-z]:[\\/]/i.test(cwd) ? win32 : posix;
+  const inside = (root: string, candidate: string): boolean => {
+    const relative = paths.relative(root, candidate);
+    return !paths.isAbsolute(relative) && relative !== '..' && !relative.startsWith(`..${paths.sep}`);
+  };
+  const relativeFile = (file: string): string => {
+    // POSIX backslashes name literal characters, not separators; converting them could change the referent.
+    if (paths === posix && file.includes('\\')) return file;
+    const slash = file.replaceAll('\\', '/');
+    const absolute = paths === win32 ? /^[a-z]:\//i.test(slash) : slash.startsWith('/');
+    // Do not erase traversal, empty segments or ambiguous UNC/device roots during normalization.
+    if (!absolute || slash.startsWith('//') || (paths === win32 ? slash.slice(3) : slash.slice(1))
+      .split('/').some(part => !part || part === '.' || part === '..')) return file;
+    if (!inside(cwd, file) || !paths.relative(cwd, file)) return file;
+    try {
+      const canonicalRoot = realpathSync(cwd);
+      let ancestor = file;
+      for (;;) {
+        try {
+          if (!inside(canonicalRoot, realpathSync(ancestor))) return file;
+          break;
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return file;
+          // A dangling link must not be mistaken for an ordinary missing/deleted file.
+          try { if (lstatSync(ancestor).isSymbolicLink()) return file; }
+          catch (missing) { if ((missing as NodeJS.ErrnoException).code !== 'ENOENT') return file; }
+          const parent = paths.dirname(ancestor);
+          if (parent === ancestor) return file;
+          ancestor = parent;
+        }
+      }
+    } catch { return file; }
+    return paths.relative(cwd, file).replaceAll('\\', '/');
+  };
+  if (!value || typeof value !== 'object' || !('findings' in value) || !Array.isArray(value.findings)) {
+    return parseWorkflowFindings(value, pass);
+  }
+  return parseWorkflowFindings({ ...value, findings: value.findings.map(finding =>
+    finding && typeof finding === 'object' && typeof finding.file === 'string'
+      ? { ...finding, file: relativeFile(finding.file) } : finding) }, pass);
+}
 export async function reviewWorkflow(cwd: string, name: string): Promise<WorkflowState> {
   return mutate(cwd, name, async state => {
     const head = verificationGate(state);
@@ -455,14 +498,16 @@ export async function reviewWorkflow(cwd: string, name: string): Promise<Workflo
       atomicWriteJson(schemaFile, { type: 'object', additionalProperties: false, required: ['findings'], properties: {
         findings: { type: 'array', maxItems: 50, items: { type: 'object', additionalProperties: false, required: ['severity', 'message', 'file', 'line'], properties: {
           severity: { type: 'string', enum: ['P0', 'P1', 'P2', 'P3'] }, message: { type: 'string', maxLength: 2000 },
-          file: { type: ['string', 'null'] }, line: { type: ['integer', 'null'] },
+          file: { type: ['string', 'null'], minLength: 1, maxLength: 400,
+            pattern: '^(?!.*(?:^|/)(?:\\.{1,2}|\\.git|\\.omc)(?:/|$))[^\\\\/:*?\\[\\]{}\\r\\n]+(?:/[^\\\\/:*?\\[\\]{}\\r\\n]+)*$' },
+          line: { type: ['integer', 'null'] },
         } } },
       } });
       const result = await runWorkflowProvider({ command, args: ['exec', '--sandbox', 'read-only', '--ephemeral', ...(balanced ? ['--json'] : []),
         ...(state.options.codexModel ? ['--model', state.options.codexModel] : []), '--output-schema', schemaFile, '--output-last-message', resultFile, '-'],
         cwd, stdin: JSON.stringify({ kind: 'review', baseCommit: state.plan.baseCommit, head, objective: state.plan.objective,
           tasks: state.tasks.filter(entry => entry.status === 'accepted').map(entry => ({ id: entry.task.id, contracts: entry.task.contracts, acceptanceCriteria: entry.task.acceptanceCriteria })),
-          instructions: 'Independently inspect the integrated code against baseCommit and acceptance criteria. Read only: do not modify files, commits or refs. Do not inspect worker transcripts. Return the required JSON findings with P0/P1/P2/P3 severities.' }),
+          instructions: 'Independently inspect the integrated code against baseCommit and acceptance criteria. Read only: do not modify files, commits or refs. Do not inspect worker transcripts. Return the required JSON findings with P0/P1/P2/P3 severities. Each finding.file must be a repository-relative POSIX path or null, for example src/example.ts; do not return absolute paths or traversal segments.' }),
         timeoutMs: state.options.timeoutMs, artifactPrefix: prefix, provider: 'codex', ...(balanced ? { collectUsage: true } : {}) }, resultFile);
       if (attempt) {
         attempt.telemetry = result.telemetry ?? { provider: 'codex', durationMs: Date.now() - started, status: 'unknown', scope: 'unknown' };
@@ -475,8 +520,7 @@ export async function reviewWorkflow(cwd: string, name: string): Promise<Workflo
       if (result.outputError) throw result.outputError;
       validateResolvedPath(resultFile, root);
       const raw = result.output;
-      const findings = parseWorkflowFindings(JSON.parse(redactWorkflowText(JSON.stringify(raw))), state.reviewPasses);
-      atomicWriteJson(resultFile, { findings });
+      const findings = parseWorkflowReviewFindings(JSON.parse(redactWorkflowText(JSON.stringify(raw))), state.reviewPasses, cwd);
       state.reviews.push({ pass: state.reviewPasses, head, findings, artifacts: [...result.artifacts, createArtifactDescriptorFromPath(resultFile, {
         kind: 'workflow-review', producer: { system: 'omc', component: 'team-workflow' }, retention: 'until-completion',
       })] });
