@@ -1,5 +1,11 @@
 # Claude lead, GLM workers, Codex review
 
+For the new local candidate with explicit Claude/GLM/Codex role substitution,
+see [Workflow V1.2 setup](GLM-WORKFLOW-V1.2.md) and its
+[validation status](GLM-WORKFLOW-V1.2-VALIDATION.md). This guide retains the
+legacy V1/V1.1 commands and defaults; opting into balanced mode alone does not
+migrate a workflow to schema version 2.
+
 This opt-in workflow assigns planning and integration to the Claude Code lead, bulk
 implementation to local GLM wrappers, and independent final review to Codex CLI.
 Without this profile, normal OMC routing and provider defaults remain unchanged.

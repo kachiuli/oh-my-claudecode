@@ -1,5 +1,9 @@
 # After local V1.1: remaining candidates
 
+The current role-substitution candidate is documented in
+[Workflow V1.2 setup](GLM-WORKFLOW-V1.2.md). This page remains a list of further
+design candidates; its filename is not a schema-version-two configuration guide.
+
 Local V1.1 implements opt-in stable shared context, accepted dependency handoffs,
 CLI usage accounting and explicit same-task session continuation at a preserved
 clean base. See the [guide](GLM-WORKFLOW.md#balanced-mode-v11) and

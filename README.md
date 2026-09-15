@@ -2,7 +2,7 @@ English | [한국어](README.ko.md) | [中文](README.zh.md) | [日本語](READM
 
 # oh-my-claudecode
 
-**Personal fork:** I maintain this fork of [Yeachan Heo's oh-my-claudecode](https://github.com/Yeachan-Heo/oh-my-claudecode) for my own Claude-led development workflow with GLM workers and Codex review. [Why this fork exists](#why-i-maintain-this-fork) · [Set it up](#glm-workflow-v1-fork-setup) · [V1.1 local efficiency](#v11-local-efficiency). The upstream project, authors and community links are credited below.
+**Personal fork:** I maintain this fork of [Yeachan Heo's oh-my-claudecode](https://github.com/Yeachan-Heo/oh-my-claudecode) for my own Claude-led development workflow with GLM workers and Codex review. [Why this fork exists](#why-i-maintain-this-fork) · [Set it up](#glm-workflow-v1-fork-setup) · [V1.1 local efficiency](#v11-local-efficiency) · [V1.2 role substitution candidate](docs/GLM-WORKFLOW-V1.2.md). The upstream project, authors and community links are credited below.
 
 [![npm version](https://img.shields.io/npm/v/oh-my-claude-sisyphus?color=cb3837)](https://www.npmjs.com/package/oh-my-claude-sisyphus)
 [![npm downloads](https://img.shields.io/npm/dm/oh-my-claude-sisyphus?color=blue)](https://www.npmjs.com/package/oh-my-claude-sisyphus)
@@ -193,6 +193,13 @@ If you're uncertain about requirements, have a vague idea, or want to micromanag
 The deep interview uses Socratic questioning to clarify your thinking before any code is written. It exposes hidden assumptions and measures clarity across weighted dimensions, ensuring you know exactly what to build before execution begins.
 
 ## GLM workflow V1: fork setup
+
+**V1.2 local candidate:** [Explicit role substitution and reusable private setup](docs/GLM-WORKFLOW-V1.2.md)
+adds normal Claude implementation/review and records an external Claude or Astra
+lead. Self-review is allowed and labelled honestly. Its
+[authenticated validation is pending](docs/GLM-WORKFLOW-V1.2-VALIDATION.md); integrated local checks pass.
+Use the exact adopted source checkout and absolute built CLI; this is not an npm
+release. The V1/V1.1 walkthrough below keeps its historical defaults.
 
 This opt-in workflow keeps **Claude as the lead**, runs **GLM implementation workers in separate Git worktrees**, and asks **Codex for independent review**. Claude supplies the plan, accepts commits and decides what to do with review findings. The controller does not start a Claude lead for you.
 

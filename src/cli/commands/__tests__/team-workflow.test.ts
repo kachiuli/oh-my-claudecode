@@ -1,10 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const api = vi.hoisted(() => ({
   initWorkflow: vi.fn(async () => ({ plan: { name: 'feature' } })),
+  initWorkflowV2: vi.fn(async () => ({ plan: { name: 'feature' } })),
+  substituteWorkflowBinding: vi.fn(),
   runWorkflow: vi.fn(), acceptWorkflowTask: vi.fn(), rejectWorkflowTask: vi.fn(),
   resumeWorkflowTask: vi.fn(), readWorkflow: vi.fn(),
   verifyWorkflow: vi.fn(), reviewWorkflow: vi.fn(), adjudicateWorkflow: vi.fn(),
@@ -17,12 +19,173 @@ import { workflowCommand } from '../team-workflow.js';
 
 describe('team workflow CLI', () => {
   let root: string;
+  let privateRoot: string;
   beforeEach(() => {
     vi.clearAllMocks();
     root = mkdtempSync(join(tmpdir(), 'omc-workflow-cli-'));
+    privateRoot = mkdtempSync(join(tmpdir(), 'omc-workflow-private-'));
+    api.readWorkflow.mockReturnValue({ schemaVersion: 1 });
     vi.spyOn(console, 'log').mockImplementation(() => undefined);
   });
-  afterEach(() => { process.exitCode = 0; vi.restoreAllMocks(); rmSync(root, { recursive: true, force: true }); });
+  afterEach(() => { process.exitCode = 0; vi.restoreAllMocks(); rmSync(root, { recursive: true, force: true }); rmSync(privateRoot, { recursive: true, force: true }); });
+
+  function runtimeFile(overrides: Record<string, unknown> = {}, file = join(privateRoot, 'runtime.json')) {
+    writeFileSync(file, JSON.stringify({ schemaVersion: 1,
+      profiles: { 'normal-claude': { providerRoute: 'claude', environment: { ANTHROPIC_API_KEY: 'synthetic-private-value' }, files: [] } },
+      capabilityEvidence: { 'claude-worker': join(privateRoot, 'worker-capability.json') }, ...overrides }));
+    return file;
+  }
+
+  it('documents explicit V1.2 selection and private runtime without making independence mandatory', async () => {
+    await workflowCommand(['--help'], root);
+    expect(console.log).toHaveBeenCalledWith(expect.stringContaining('--profile claude-glm-codex|role-substitution'));
+    expect(console.log).toHaveBeenCalledWith(expect.stringContaining('Self-review is allowed'));
+    expect(console.log).toHaveBeenCalledWith(expect.stringContaining('--runtime <absolute-private-config.json>'));
+    expect(api.initWorkflow).not.toHaveBeenCalled(); expect(api.initWorkflowV2).not.toHaveBeenCalled();
+  });
+
+  it('explicitly selects a new schema-2 profile and forwards public bindings in balanced mode', async () => {
+    const file = join(root, 'plan.json'); const bindingsFile = join(root, 'roles.json');
+    const bindings = { lead: { id: 'external-lead' }, implementer: { id: 'claude-worker' }, reviewer: { id: 'claude-reviewer' } };
+    writeFileSync(file, JSON.stringify({ name: 'feature' })); writeFileSync(bindingsFile, JSON.stringify(bindings));
+    await workflowCommand(['init', '--file', file, '--profile', 'role-substitution', '--bindings', bindingsFile, '--workers', '2'], root);
+    expect(api.initWorkflowV2).toHaveBeenCalledWith(root, { name: 'feature' }, bindings, { mode: 'balanced', workers: 2 });
+    expect(api.initWorkflow).not.toHaveBeenCalled();
+    expect(api.runWorkflow).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['--profile', 'unknown'], ['--bindings', 'unused'],
+    ['--profile', 'role-substitution'],
+    ['--profile', 'role-substitution', '--bindings', 'unused', '--mode', 'v1'],
+  ])('rejects conflicting or incomplete profile selection %j before initialization', async (...flags) => {
+    await expect(workflowCommand(['init', '--file', 'unused', ...flags], root)).rejects.toThrow(/workflow_/);
+    expect(api.initWorkflow).not.toHaveBeenCalled(); expect(api.initWorkflowV2).not.toHaveBeenCalled();
+  });
+
+  it('permits explicit legacy selection without changing its initialization options', async () => {
+    const file = join(root, 'plan.json'); writeFileSync(file, JSON.stringify({ name: 'feature' }));
+    await workflowCommand(['init', '--file', file, '--profile', 'claude-glm-codex', '--mode', 'balanced'], root);
+    expect(api.initWorkflow).toHaveBeenCalledWith(root, { name: 'feature' }, { mode: 'balanced' });
+    expect(api.initWorkflowV2).not.toHaveBeenCalled();
+  });
+
+  it('forwards an explicit substitution intent without provider dispatch or budget options', async () => {
+    const intent = { role: 'reviewer', binding: { id: 'claude-reviewer' }, expectedHead: 'a'.repeat(40),
+      reason: 'Inspected unavailable route', authorityRef: 'decision-one' };
+    const file = join(root, 'intent.json'); writeFileSync(file, JSON.stringify(intent));
+    await workflowCommand(['substitute', 'feature', '--file', file], root);
+    expect(api.substituteWorkflowBinding).toHaveBeenCalledWith(root, 'feature', intent);
+    expect(api.runWorkflow).not.toHaveBeenCalled(); expect(api.reviewWorkflow).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { role: 'executor' }, { expectedHead: 'not-a-sha' }, { reason: '' }, { authorityRef: '' }, { maxAttempts: 5 },
+  ])('rejects malformed substitution input %j before controller selection', async override => {
+    const file = join(root, 'intent.json'); writeFileSync(file, JSON.stringify({ role: 'reviewer', binding: { id: 'claude-reviewer' },
+      expectedHead: 'a'.repeat(40), reason: 'Inspected', authorityRef: 'decision-one', ...override }));
+    await expect(workflowCommand(['substitute', 'feature', '--file', file], root)).rejects.toThrow(/workflow_/);
+    expect(api.substituteWorkflowBinding).not.toHaveBeenCalled();
+  });
+
+  it('resolves only the selected private profile and receipt without copying values to CLI output', async () => {
+    api.readWorkflow.mockReturnValue({ schemaVersion: 2 });
+    await workflowCommand(['run', 'feature', '--runtime', runtimeFile()], root);
+    const runtime = api.runWorkflow.mock.calls[0][2];
+    expect(runtime.resolveBinding({ id: 'claude-worker', authProfileRef: 'normal-claude' })).toEqual({
+      authProfile: { ref: 'normal-claude', providerRoute: 'claude', environment: { ANTHROPIC_API_KEY: 'synthetic-private-value' }, files: [] },
+      capabilityEvidencePath: join(privateRoot, 'worker-capability.json') });
+    expect(() => runtime.resolveBinding({ id: 'missing', authProfileRef: 'normal-claude' })).toThrow(/workflow_/);
+    expect(JSON.stringify(vi.mocked(console.log).mock.calls)).not.toContain('synthetic-private-value');
+    expect(runtime).not.toHaveProperty('allowSyntheticCapabilities');
+  });
+
+  it('does not require the private files of an unused provider to exist', async () => {
+    api.readWorkflow.mockReturnValue({ schemaVersion: 2 });
+    const config = runtimeFile({ profiles: {
+      'normal-claude': { providerRoute: 'claude', environment: {}, files: [] },
+      'unavailable-glm': { providerRoute: 'glm', environment: {}, files: [join(privateRoot, 'unavailable-glm.json')] },
+    } });
+    await workflowCommand(['run', 'feature', '--runtime', config], root);
+    const runtime = api.runWorkflow.mock.calls[0][2];
+    expect(runtime.resolveBinding({ id: 'claude-worker', authProfileRef: 'normal-claude' }).authProfile.ref).toBe('normal-claude');
+    expect(() => runtime.resolveBinding({ id: 'claude-worker', authProfileRef: 'unavailable-glm' })).toThrow('workflow_auth_profile_unavailable');
+  });
+
+  it('refuses selected private auth files in the project even if the runtime file is outside', async () => {
+    api.readWorkflow.mockReturnValue({ schemaVersion: 2 });
+    const auth = join(root, 'private-auth.json'); writeFileSync(auth, '{}');
+    const config = runtimeFile({ profiles: { 'normal-claude': { providerRoute: 'claude', environment: {}, files: [auth] } } });
+    await workflowCommand(['run', 'feature', '--runtime', config], root);
+    expect(() => api.runWorkflow.mock.calls[0][2].resolveBinding({ id: 'claude-worker', authProfileRef: 'normal-claude' }))
+      .toThrow('workflow_auth_profile_unavailable');
+  });
+
+  it.each(['review', 'resume'] as const)('forwards private runtime and authorship evidence to %s without changing the config file', async operation => {
+    api.readWorkflow.mockReturnValue({ schemaVersion: 2 });
+    const reviewAuthorship = { path: join(privateRoot, 'authors.json'), sha256: 'b'.repeat(64) };
+    const config = runtimeFile({ reviewAuthorship }); const before = readFileSync(config);
+    const head = 'a'.repeat(40);
+    const args = operation === 'review' ? ['review', 'feature'] : ['resume', 'feature', 'task-a', '--expected-head', head, '--reason', 'Inspected'];
+    await workflowCommand([...args, '--runtime', config], root);
+    if (operation === 'review') expect(api.reviewWorkflow).toHaveBeenCalledWith(root, 'feature', expect.objectContaining({ reviewAuthorship }));
+    else expect(api.resumeWorkflowTask).toHaveBeenCalledWith(root, 'feature', 'task-a', head, 'Inspected', expect.objectContaining({ reviewAuthorship }));
+    expect(readFileSync(config)).toEqual(before);
+    expect(JSON.stringify(vi.mocked(console.log).mock.calls)).not.toContain('synthetic-private-value');
+  });
+
+  it('does not load a private runtime as an implicit migration of a legacy workflow', async () => {
+    await expect(workflowCommand(['run', 'feature', '--runtime', join(privateRoot, 'does-not-exist.json')], root))
+      .rejects.toThrow('workflow_role_substitution_profile_required');
+    expect(api.runWorkflow).not.toHaveBeenCalled();
+  });
+
+  it('rejects a private runtime inside the project and either direction of a directory alias', async () => {
+    api.readWorkflow.mockReturnValue({ schemaVersion: 2 });
+    const inside = runtimeFile({}, join(root, 'runtime.json'));
+    const privateAlias = join(privateRoot, 'project-alias'); symlinkSync(root, privateAlias, 'junction');
+    const projectAlias = join(root, 'private-alias'); symlinkSync(privateRoot, projectAlias, 'junction');
+    runtimeFile();
+    for (const file of [inside, join(privateAlias, 'runtime.json'), join(projectAlias, 'runtime.json')]) {
+      await expect(workflowCommand(['run', 'feature', '--runtime', file], root)).rejects.toThrow('workflow_private_runtime_outside_project_required');
+    }
+    expect(api.runWorkflow).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { schemaVersion: 2 }, { allowSyntheticCapabilities: true }, { profiles: [] },
+    { profiles: { 'normal-claude': { providerRoute: 'unknown', environment: {}, files: [] } } },
+    { profiles: { 'normal-claude': { providerRoute: 'claude', environment: { SECRET: { nested: 'synthetic-private-value' } }, files: [] } } },
+    { capabilityEvidence: { 'claude-worker': 'relative.json' } },
+  ])('rejects malformed private configuration %j without exposing its values', async overrides => {
+    api.readWorkflow.mockReturnValue({ schemaVersion: 2 });
+    await expect(workflowCommand(['run', 'feature', '--runtime', runtimeFile(overrides)], root)).rejects.toThrow('workflow_invalid_runtime_config');
+    expect(api.runWorkflow).not.toHaveBeenCalled();
+    expect(JSON.stringify(vi.mocked(console.log).mock.calls)).not.toContain('synthetic-private-value');
+  });
+
+  it('bounds private configuration and hides malformed JSON or relative-path input in a fixed error', async () => {
+    api.readWorkflow.mockReturnValue({ schemaVersion: 2 });
+    const malformed = join(privateRoot, 'malformed.json'); writeFileSync(malformed, '{"token":"synthetic-private-value", broken}');
+    const oversized = join(privateRoot, 'oversized.json'); writeFileSync(oversized, 'x'.repeat(256 * 1024 + 1));
+    for (const file of [malformed, oversized, 'relative-runtime.json']) {
+      const failure = await workflowCommand(['run', 'feature', '--runtime', file], root).catch(error => error);
+      expect(failure.message).toBe('workflow_invalid_runtime_config');
+      expect(String(failure)).not.toContain('synthetic-private-value');
+    }
+    expect(api.runWorkflow).not.toHaveBeenCalled();
+  });
+
+  it('rejects unknown or missing public binding roles before initializing a workflow', async () => {
+    const plan = join(root, 'plan.json'); writeFileSync(plan, JSON.stringify({ name: 'feature' }));
+    const file = join(root, 'roles.json');
+    for (const roles of [{ lead: {}, implementer: {} }, { lead: {}, implementer: {}, reviewer: {}, executor: {} }]) {
+      writeFileSync(file, JSON.stringify(roles));
+      await expect(workflowCommand(['init', '--file', plan, '--profile', 'role-substitution', '--bindings', file], root))
+        .rejects.toThrow('workflow_invalid_bindings');
+    }
+    expect(api.initWorkflowV2).not.toHaveBeenCalled();
+  });
 
   it('passes a file plan and explicit limits to initialization', async () => {
     const file = join(root, 'plan.json');
