@@ -165,6 +165,44 @@ async function stopDisposableProvider(child: ReturnType<typeof spawn>): Promise<
   }
 }
 
+// A started record stays valid only until the supervisor completion file
+// exists, so a provider parent that exits right after spawning its descendant
+// races the live-start observer. Hold the parent on an exit gate that the test
+// releases only after it has observed live start.
+function heldTimerTransitionFixture(name: string): {
+  script: string;
+  descendantPidPath: string;
+  exitGatePath: string;
+} {
+  const descendantPidPath = join(cwd, `${name}-descendant.pid`);
+  const exitGatePath = join(cwd, `${name}-exit-gate`);
+  return {
+    descendantPidPath,
+    exitGatePath,
+    script: [
+      "const fs=require('node:fs'),cp=require('node:child_process')",
+      "const descendant=cp.spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'})",
+      'descendant.unref()',
+      `fs.writeFileSync(${JSON.stringify(descendantPidPath)},String(descendant.pid))`,
+      `const timer=setInterval(()=>{if(fs.existsSync(${JSON.stringify(exitGatePath)})){clearInterval(timer);process.exit(0)}},5)`,
+    ].join(';'),
+  };
+}
+
+// Recover the owned provider group for cleanup when an assertion fails before
+// the test has read it: prefer the published started record, then the group of
+// the descendant the fixture recorded.
+async function recoverOwnedProviderGroup(startedPath: string, descendantPidPath: string): Promise<number | undefined> {
+  const started = await readFile(startedPath, 'utf8')
+    .then(raw => JSON.parse(raw) as { process_group_id?: unknown })
+    .catch(() => null);
+  if (started && Number.isSafeInteger(started.process_group_id)) return started.process_group_id as number;
+  const descendantPid = Number(await readFile(descendantPidPath, 'utf8').catch(() => ''));
+  return Number.isSafeInteger(descendantPid) && descendantPid > 0
+    ? captureOwnedProcessGroup(descendantPid)?.processGroupId
+    : undefined;
+}
+
 describe('worker launch acknowledgement', () => {
   it('round-trips a GLM launch identity through persisted validation', async () => {
     cwd = await createFixture('glm-worker-launch-ack-');
@@ -1510,19 +1548,13 @@ describe('worker launch acknowledgement', () => {
     vi.doMock('node:child_process', () => ({ ...actualChildProcess, spawn: spawnMock }));
     let bootstrap: ReturnType<typeof runWorkerLaunchBootstrap> | undefined;
     const launchAttempt = await attempt();
-    const descendantPidPath = join(cwd, 'timer-transition-descendant.pid');
+    const fixture = heldTimerTransitionFixture('timer-transition');
     let providerGroupId: number | undefined;
     try {
       const workerLaunch = await import('../worker-launch-ack.js');
       bootstrap = workerLaunch.runWorkerLaunchBootstrap(buildWorkerLaunchBootstrapSpec(
         launchAttempt,
-        [process.execPath, '-e', [
-          "const fs=require('node:fs'),cp=require('node:child_process')",
-          "const descendant=cp.spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'})",
-          'descendant.unref()',
-          `fs.writeFileSync(${JSON.stringify(descendantPidPath)},String(descendant.pid))`,
-          'process.exit(0)',
-        ].join(';')],
+        [process.execPath, '-e', fixture.script],
         cwd,
         { releaseAfterSpawn: true },
       ));
@@ -1538,6 +1570,9 @@ describe('worker launch acknowledgement', () => {
         process_group_id: number;
       };
       providerGroupId = started.process_group_id;
+      // Live start is observed; now let the provider parent exit so the
+      // supervisor timer publishes the unreaped terminal under test.
+      await writeFile(fixture.exitGatePath, 'exit', 'utf8');
       await vi.waitFor(async () => {
         const terminal = JSON.parse(await readFile(`${launchAttempt.startedPath}.terminal`, 'utf8'));
         expect(terminal).toMatchObject({
@@ -1561,6 +1596,89 @@ describe('worker launch acknowledgement', () => {
         });
       }, { timeout: 5_000, interval: 20 });
     } finally {
+      await writeFile(fixture.exitGatePath, 'exit', 'utf8').catch(() => undefined);
+      providerGroupId ??= await recoverOwnedProviderGroup(launchAttempt.startedPath, fixture.descendantPidPath);
+      try {
+        if (providerGroupId) process.kill(-providerGroupId, 'SIGKILL');
+      } catch { /* group already absent */ }
+      supervisor?.kill('SIGKILL');
+      await bootstrap?.catch(() => undefined);
+      terminateSpy.mockRestore();
+      vi.doUnmock('node:child_process');
+      vi.resetModules();
+    }
+  });
+
+  it.runIf(process.platform !== 'win32')('keeps live start observable for a delayed observer while the provider parent is held', async () => {
+    vi.resetModules();
+    const actualChildProcess = await vi.importActual<typeof import('node:child_process')>('node:child_process');
+    const dynamicProcessUtils = await import('../../platform/process-utils.js');
+    const terminateSpy = vi.spyOn(dynamicProcessUtils, 'terminateOwnedProcessGroup')
+      .mockResolvedValue('unknown');
+    let supervisor: ReturnType<typeof spawn> | undefined;
+    const spawnMock = vi.fn((
+      command: string,
+      args: string[],
+      options: Parameters<typeof spawn>[2],
+    ) => {
+      const child = actualChildProcess.spawn(command, args, options);
+      supervisor = child;
+      return child;
+    });
+    vi.doMock('node:child_process', () => ({ ...actualChildProcess, spawn: spawnMock }));
+    let bootstrap: ReturnType<typeof runWorkerLaunchBootstrap> | undefined;
+    const launchAttempt = await attempt();
+    const fixture = heldTimerTransitionFixture('delayed-observer');
+    let providerGroupId: number | undefined;
+    try {
+      const workerLaunch = await import('../worker-launch-ack.js');
+      bootstrap = workerLaunch.runWorkerLaunchBootstrap(buildWorkerLaunchBootstrapSpec(
+        launchAttempt,
+        [process.execPath, '-e', fixture.script],
+        cwd,
+        { releaseAfterSpawn: true },
+      ));
+      await expect(awaitWorkerLaunchAcknowledgement(launchAttempt, {
+        timeoutMs: 2_000,
+        pollIntervalMs: 5,
+      })).resolves.toEqual({ ok: true });
+      // Delay the first live-start read until after the point where an
+      // immediately exiting parent would already have written its supervisor
+      // completion file; the held parent must keep the started record valid.
+      await vi.waitFor(async () => {
+        expect(Number(await readFile(fixture.descendantPidPath, 'utf8'))).toBeGreaterThan(0);
+      }, { timeout: 2_000, interval: 5 });
+      await new Promise(resolve => setTimeout(resolve, 250));
+      await expect(awaitWorkerLaunchProviderStarted(launchAttempt, {
+        timeoutMs: 2_000,
+        pollIntervalMs: 5,
+      })).resolves.toBe(true);
+      expect(existsSync(`${launchAttempt.startedPath}.terminal`)).toBe(false);
+      const started = JSON.parse(await readFile(launchAttempt.startedPath, 'utf8')) as {
+        pid: number;
+        process_group_id: number;
+      };
+      providerGroupId = started.process_group_id;
+      expect(isProcessAlive(started.pid)).toBe(true);
+      // Releasing the parent ends live start: the production guard still
+      // rejects the exited provider rather than the fixture having relaxed it.
+      await writeFile(fixture.exitGatePath, 'exit', 'utf8');
+      await vi.waitFor(async () => {
+        const terminal = JSON.parse(await readFile(`${launchAttempt.startedPath}.terminal`, 'utf8'));
+        expect(terminal).toMatchObject({
+          outcome: 'cleanup_unverified',
+          cleanup_verified: false,
+          child_reaped: false,
+          process_group_id: providerGroupId,
+        });
+      }, { timeout: 5_000, interval: 20 });
+      await expect(awaitWorkerLaunchProviderStarted(launchAttempt, {
+        timeoutMs: 100,
+        pollIntervalMs: 5,
+      })).resolves.toBe(false);
+    } finally {
+      await writeFile(fixture.exitGatePath, 'exit', 'utf8').catch(() => undefined);
+      providerGroupId ??= await recoverOwnedProviderGroup(launchAttempt.startedPath, fixture.descendantPidPath);
       try {
         if (providerGroupId) process.kill(-providerGroupId, 'SIGKILL');
       } catch { /* group already absent */ }
