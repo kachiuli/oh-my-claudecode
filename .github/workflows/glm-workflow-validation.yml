@@ -1,0 +1,316 @@
+# Dedicated build/test workflow. Configuration lives on the CI branch; tested runtime stays pinned.
+# No provider setup, credentials, release, deployment or automatic sibling cancellation.
+name: OMC V1.2 pinned runtime validation
+'on':
+  push:
+    branches:
+      - codex/glm-workflow-ci
+  workflow_dispatch: null
+permissions:
+  contents: read
+defaults:
+  run:
+    shell: bash
+env:
+  CI: 'true'
+jobs:
+  ubuntu:
+    name: Ubuntu full runtime validation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out the immutable runtime source
+        id: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 1b731b267956c3595d6e3c4a22f78efa11f643e6
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install Node.js 24.18.1
+        id: node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24.18.1
+          package-manager-cache: false
+      - name: Verify and record exact source identity
+        id: source
+        run: >-
+          node <<'NODE'
+
+          const fs = require('node:fs');
+
+          const cp = require('node:child_process');
+
+          const crypto = require('node:crypto');
+
+          const head = cp.execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+
+          if (head !== '1b731b267956c3595d6e3c4a22f78efa11f643e6' || process.versions.node !== '24.18.1') throw
+          Error('OMC_CI_SOURCE_OR_NODE_MISMATCH');
+
+          const identity = { schemaVersion: 1, repository: process.env.GITHUB_REPOSITORY, testedSource: head,
+            workflowSource: process.env.GITHUB_SHA, workflowDefinitionSource: process.env.GITHUB_WORKFLOW_SHA,
+            event: process.env.GITHUB_EVENT_NAME, runId: process.env.GITHUB_RUN_ID, runAttempt: process.env.GITHUB_RUN_ATTEMPT,
+            job: process.env.GITHUB_JOB, runnerOS: process.env.RUNNER_OS, node: process.versions.node,
+            lockSha256: crypto.createHash('sha256').update(fs.readFileSync('package-lock.json')).digest('hex') };
+          fs.mkdirSync('test-results', { recursive: true });
+
+          fs.writeFileSync('test-results/omc-v12-identity.json', JSON.stringify(identity, null, 2) + '\n', { flag: 'wx'
+          });
+
+          console.log(JSON.stringify(identity));
+
+          NODE
+      - name: Install locked dependencies
+        id: install
+        run: npm ci
+      - name: Build from source
+        id: build
+        run: npm run build
+      - name: Type check
+        id: typecheck
+        run: node node_modules/typescript/bin/tsc --noEmit
+      - name: Lint
+        id: lint
+        run: npm run lint
+      - name: Run the full existing functional suite
+        id: tests
+        run: npm test -- --run --reporter=default --reporter=json --outputFile=test-results/omc-v12-vitest.raw.json
+      - name: Record aggregate evidence and reject incomplete checks
+        id: report
+        if: always()
+        env:
+          STEP_CHECKOUT: ${{ steps.checkout.outcome }}
+          STEP_NODE: ${{ steps.node.outcome }}
+          STEP_SOURCE: ${{ steps.source.outcome }}
+          STEP_INSTALL: ${{ steps.install.outcome }}
+          STEP_BUILD: ${{ steps.build.outcome }}
+          STEP_TYPECHECK: ${{ steps.typecheck.outcome }}
+          STEP_LINT: ${{ steps.lint.outcome }}
+          STEP_TESTS: ${{ steps.tests.outcome }}
+        run: >-
+          node <<'NODE'
+
+          const fs = require('node:fs');
+
+          const cp = require('node:child_process');
+
+          const crypto = require('node:crypto');
+
+          const names = ['checkout', 'node', 'source', 'install', 'build', 'typecheck', 'lint', 'tests'];
+
+          const checks = Object.fromEntries(names.map(name => [name, process.env['STEP_' + name.toUpperCase()] ||
+          'unknown']));
+
+          let identity = null, results = null, issue = null;
+
+          try { identity = JSON.parse(fs.readFileSync('test-results/omc-v12-identity.json', 'utf8')); }
+
+          catch { issue = 'MISSING_OR_INVALID_IDENTITY'; }
+
+          try { results = JSON.parse(fs.readFileSync('test-results/omc-v12-vitest.raw.json', 'utf8')); }
+
+          catch { issue ||= 'MISSING_OR_INVALID_TEST_REPORT'; }
+
+          const count = value => Number.isSafeInteger(value) && value >= 0 ? value : null;
+
+          const totals = results ? { files: Array.isArray(results.testResults) ? results.testResults.length : null,
+            tests: count(results.numTotalTests), passed: count(results.numPassedTests), failed: count(results.numFailedTests),
+            pending: count(results.numPendingTests), todo: count(results.numTodoTests) } : null;
+          let sourceUnchanged = false;
+
+          try { sourceUnchanged = identity?.testedSource === '1b731b267956c3595d6e3c4a22f78efa11f643e6'
+            && cp.execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim() === identity.testedSource
+            && crypto.createHash('sha256').update(fs.readFileSync('package-lock.json')).digest('hex') === identity.lockSha256; }
+          catch { issue ||= 'SOURCE_IDENTITY_UNAVAILABLE'; }
+
+          const complete = totals && Object.values(totals).every(value => value !== null) && totals.tests > 0
+            && totals.tests === totals.passed + totals.failed + totals.pending + totals.todo;
+          const scopeComplete = complete;
+
+          const passed = !issue && sourceUnchanged && Object.values(checks).every(value => value === 'success')
+            && results?.success === true && totals?.failed === 0 && scopeComplete;
+          const summary = { schemaVersion: 1, scope: 'Ubuntu full existing npm test scope; package script excludes
+          tests/perf',
+            outcome: passed ? 'PASS' : 'FAIL', identity, sourceAndLockUnchanged: sourceUnchanged, checks, totals, issue,
+            expected: null,
+            limitations: ['No authenticated provider or deployment validation.', 'Platform-specific skips, if any, remain visible in the aggregate counts.'] };
+          fs.mkdirSync('test-results', { recursive: true });
+
+          fs.writeFileSync('test-results/omc-v12-summary.json', JSON.stringify(summary, null, 2) + '\n');
+
+          console.log(JSON.stringify(summary));
+
+          if (!passed) process.exitCode = 1;
+
+          NODE
+      - name: Upload only source identity and aggregate evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: omc-v12-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |-
+            test-results/omc-v12-identity.json
+            test-results/omc-v12-summary.json
+          if-no-files-found: error
+          include-hidden-files: false
+          retention-days: 7
+  windows:
+    name: Windows V1.2 workflow and CLI validation
+    runs-on: windows-2022
+    timeout-minutes: 30
+    steps:
+      - name: Check out the immutable runtime source
+        id: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 1b731b267956c3595d6e3c4a22f78efa11f643e6
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install Node.js 24.18.1
+        id: node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24.18.1
+          package-manager-cache: false
+      - name: Verify and record exact source identity
+        id: source
+        run: >-
+          node <<'NODE'
+
+          const fs = require('node:fs');
+
+          const cp = require('node:child_process');
+
+          const crypto = require('node:crypto');
+
+          const head = cp.execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+
+          if (head !== '1b731b267956c3595d6e3c4a22f78efa11f643e6' || process.versions.node !== '24.18.1') throw
+          Error('OMC_CI_SOURCE_OR_NODE_MISMATCH');
+
+          const identity = { schemaVersion: 1, repository: process.env.GITHUB_REPOSITORY, testedSource: head,
+            workflowSource: process.env.GITHUB_SHA, workflowDefinitionSource: process.env.GITHUB_WORKFLOW_SHA,
+            event: process.env.GITHUB_EVENT_NAME, runId: process.env.GITHUB_RUN_ID, runAttempt: process.env.GITHUB_RUN_ATTEMPT,
+            job: process.env.GITHUB_JOB, runnerOS: process.env.RUNNER_OS, node: process.versions.node,
+            lockSha256: crypto.createHash('sha256').update(fs.readFileSync('package-lock.json')).digest('hex') };
+          fs.mkdirSync('test-results', { recursive: true });
+
+          fs.writeFileSync('test-results/omc-v12-identity.json', JSON.stringify(identity, null, 2) + '\n', { flag: 'wx'
+          });
+
+          console.log(JSON.stringify(identity));
+
+          NODE
+      - name: Install locked dependencies
+        id: install
+        run: npm ci
+      - name: Build from source
+        id: build
+        run: npm run build
+      - name: Type check
+        id: typecheck
+        run: node node_modules/typescript/bin/tsc --noEmit
+      - name: Lint
+        id: lint
+        run: npm run lint
+      - name: Run the exact 16 P4 workflow and CLI suites
+        id: tests
+        run: |-
+          npm run test:run -- \
+            src/team/__tests__/workflow.test.ts \
+            src/team/__tests__/workflow-contracts.test.ts \
+            src/team/__tests__/workflow-balanced.test.ts \
+            src/team/__tests__/workflow-process.test.ts \
+            src/team/__tests__/workflow-routing.test.ts \
+            src/team/__tests__/workflow-report.test.ts \
+            src/team/__tests__/workflow-usage.test.ts \
+            src/team/__tests__/workflow-review-paths.test.ts \
+            src/team/__tests__/workflow-state-v2.test.ts \
+            src/team/__tests__/workflow-adapters.test.ts \
+            src/team/__tests__/workflow-adapter-process.test.ts \
+            src/cli/commands/__tests__/team-workflow.test.ts \
+            src/cli/commands/__tests__/team-workflow-v12.test.ts \
+            src/cli/commands/__tests__/team.test.ts \
+            src/cli/commands/__tests__/team-role-shorthand.test.ts \
+            src/cli/commands/__tests__/doctor-team-routing.test.ts \
+            --reporter=default --reporter=json --outputFile=test-results/omc-v12-vitest.raw.json
+      - name: Record aggregate evidence and reject incomplete checks
+        id: report
+        if: always()
+        env:
+          STEP_CHECKOUT: ${{ steps.checkout.outcome }}
+          STEP_NODE: ${{ steps.node.outcome }}
+          STEP_SOURCE: ${{ steps.source.outcome }}
+          STEP_INSTALL: ${{ steps.install.outcome }}
+          STEP_BUILD: ${{ steps.build.outcome }}
+          STEP_TYPECHECK: ${{ steps.typecheck.outcome }}
+          STEP_LINT: ${{ steps.lint.outcome }}
+          STEP_TESTS: ${{ steps.tests.outcome }}
+        run: >-
+          node <<'NODE'
+
+          const fs = require('node:fs');
+
+          const cp = require('node:child_process');
+
+          const crypto = require('node:crypto');
+
+          const names = ['checkout', 'node', 'source', 'install', 'build', 'typecheck', 'lint', 'tests'];
+
+          const checks = Object.fromEntries(names.map(name => [name, process.env['STEP_' + name.toUpperCase()] ||
+          'unknown']));
+
+          let identity = null, results = null, issue = null;
+
+          try { identity = JSON.parse(fs.readFileSync('test-results/omc-v12-identity.json', 'utf8')); }
+
+          catch { issue = 'MISSING_OR_INVALID_IDENTITY'; }
+
+          try { results = JSON.parse(fs.readFileSync('test-results/omc-v12-vitest.raw.json', 'utf8')); }
+
+          catch { issue ||= 'MISSING_OR_INVALID_TEST_REPORT'; }
+
+          const count = value => Number.isSafeInteger(value) && value >= 0 ? value : null;
+
+          const totals = results ? { files: Array.isArray(results.testResults) ? results.testResults.length : null,
+            tests: count(results.numTotalTests), passed: count(results.numPassedTests), failed: count(results.numFailedTests),
+            pending: count(results.numPendingTests), todo: count(results.numTodoTests) } : null;
+          let sourceUnchanged = false;
+
+          try { sourceUnchanged = identity?.testedSource === '1b731b267956c3595d6e3c4a22f78efa11f643e6'
+            && cp.execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim() === identity.testedSource
+            && crypto.createHash('sha256').update(fs.readFileSync('package-lock.json')).digest('hex') === identity.lockSha256; }
+          catch { issue ||= 'SOURCE_IDENTITY_UNAVAILABLE'; }
+
+          const complete = totals && Object.values(totals).every(value => value !== null) && totals.tests > 0
+            && totals.tests === totals.passed + totals.failed + totals.pending + totals.todo;
+          const scopeComplete = complete && totals.files === 16 && totals.tests === 396 && totals.passed === 396 &&
+          totals.pending === 0 && totals.todo === 0;
+
+          const passed = !issue && sourceUnchanged && Object.values(checks).every(value => value === 'success')
+            && results?.success === true && totals?.failed === 0 && scopeComplete;
+          const summary = { schemaVersion: 1, scope: 'Windows exact P4 workflow and CLI inventory',
+            outcome: passed ? 'PASS' : 'FAIL', identity, sourceAndLockUnchanged: sourceUnchanged, checks, totals, issue,
+            expected: { files: 16, tests: 396, pending: 0, todo: 0 },
+            limitations: ['No authenticated provider or deployment validation.', 'The entire upstream Windows suite is not run.'] };
+          fs.mkdirSync('test-results', { recursive: true });
+
+          fs.writeFileSync('test-results/omc-v12-summary.json', JSON.stringify(summary, null, 2) + '\n');
+
+          console.log(JSON.stringify(summary));
+
+          if (!passed) process.exitCode = 1;
+
+          NODE
+      - name: Upload only source identity and aggregate evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: omc-v12-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |-
+            test-results/omc-v12-identity.json
+            test-results/omc-v12-summary.json
+          if-no-files-found: error
+          include-hidden-files: false
+          retention-days: 7
