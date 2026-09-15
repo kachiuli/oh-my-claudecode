@@ -1,6 +1,6 @@
 /** Opt-in Claude-led workflow. Every integration and finding disposition is an explicit lead action. */
 import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync, statSync, lstatSync, realpathSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, statSync, lstatSync, realpathSync } from 'node:fs';
 import { dirname, join, resolve, posix, win32 } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { withFileLock } from '../lib/file-lock.js';
@@ -14,14 +14,19 @@ import { ABSOLUTE_MAX_WORKERS } from './types.js';
 import { resolveRoleAssignment } from './stage-router.js';
 import { buildLaunchArgs, resolveValidatedBinaryPath } from './model-contract.js';
 import { runWorkflowProcess, redactWorkflowText } from './workflow-process.js';
+import { createClaudeWorkflowResultDecoder, prepareWorkflowBinding, workflowWorkerArguments, workflowReviewerArguments, workflowReviewProvenance,
+  type PreparedWorkflowBinding, type WorkflowRuntime } from './workflow-adapters.js';
 import { buildWorkflowPrompt, workflowContextFingerprint, workflowPromptFingerprint, workflowSessionFingerprint } from './workflow-prompt.js';
 import { boundedText, safeWorkflowId, parseWorkflowPlan, parseWorkflowTask, matchesScope,
-  parseWorkflowHandoff, parseWorkflowFindings, type WorkflowState, type WorkflowOptions, type WorkflowTaskState,
-  type WorkflowFinding, type WorkflowInvocation, type WorkflowReviewAttempt } from './workflow-contracts.js';
+  parseWorkflowHandoff, parseWorkflowFindings, parseWorkflowBinding, parseWorkflowState, validateWorkflowStateTransition,
+  type WorkflowState as LegacyWorkflowState, type VersionedWorkflowState as WorkflowState, type WorkflowStateV2,
+  parseWorkflowSubstitution, assertWorkflowResumeBinding, type WorkflowRole, type WorkflowRoleBinding, type WorkflowOptions, type WorkflowTaskState,
+  type WorkflowFinding, type WorkflowInvocation, type WorkflowReviewAttempt, type WorkflowReviewAttemptV2 } from './workflow-contracts.js';
 
 export type { WorkflowState, WorkflowOptions, WorkflowPlan, WorkflowTask, WorkflowHandoff, WorkflowFinding } from './workflow-contracts.js';
 
 const now = () => new Date().toISOString();
+const savedSnapshots = new WeakMap<WorkflowState, unknown>();
 function git(cwd: string, args: string[]): string {
   try { return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: 'pipe', timeout: 30_000, windowsHide: true }).trim(); }
   catch { throw new Error('workflow_git_operation_failed'); }
@@ -35,7 +40,7 @@ function boundedJson(path: string, max = 64 * 1024): unknown {
   if (lstatSync(path).isSymbolicLink() || statSync(path).size > max) throw new Error('workflow_artifact_invalid_or_oversized');
   try { return JSON.parse(readFileSync(path, 'utf8')); } catch { throw new Error('workflow_invalid_json'); }
 }
-function workerResultJson(path: string, canonicalParent: string): unknown {
+function workerResultJson(path: string, canonicalParent: string, environment?: NodeJS.ProcessEnv): unknown {
   const parent = dirname(path);
   if (lstatSync(parent).isSymbolicLink() || realpathSync(parent) !== canonicalParent) throw new Error('workflow_artifact_parent_changed');
   const info = lstatSync(path);
@@ -44,7 +49,7 @@ function workerResultJson(path: string, canonicalParent: string): unknown {
   validateResolvedPath(path, canonicalParent);
   try {
     if (info.size > 64 * 1024) throw new Error('workflow_artifact_invalid_or_oversized');
-    const parsed: unknown = JSON.parse(redactWorkflowText(readFileSync(path, 'utf8')));
+    const parsed: unknown = JSON.parse(redactWorkflowText(readFileSync(path, 'utf8'), false, environment));
     atomicWriteJson(path, parsed);
     return parsed;
   } catch {
@@ -53,16 +58,26 @@ function workerResultJson(path: string, canonicalParent: string): unknown {
     throw new Error('workflow_invalid_result');
   }
 }
-async function runWorkflowProvider(input: Parameters<typeof runWorkflowProcess>[0], resultFile: string) {
+async function runWorkflowProvider(input: Parameters<typeof runWorkflowProcess>[0], resultFile: string, claudeStructuredResult = false) {
   // Capture before launch: an unsuccessful provider can still write or redirect its result path.
   const canonicalParent = realpathSync(dirname(resultFile));
   let result: Awaited<ReturnType<typeof runWorkflowProcess>> | undefined;
   let output: unknown;
   let outputError: unknown;
-  try { result = await runWorkflowProcess(input); }
+  const decoder = claudeStructuredResult ? createClaudeWorkflowResultDecoder() : undefined;
+  try {
+    result = await runWorkflowProcess({ ...input, ...(decoder ? { onStdout: decoder.write } : {}) });
+    if (decoder) {
+      try {
+        const decoded = decoder.finish();
+        if (realpathSync(dirname(resultFile)) !== canonicalParent || lstatSync(dirname(resultFile)).isSymbolicLink()) throw new Error('workflow_artifact_parent_changed');
+        writeFileSync(resultFile, redactWorkflowText(JSON.stringify(decoded), false, input.redactionEnvironment ?? input.environment), { flag: 'wx', mode: 0o600 });
+      } catch (error) { outputError = error; }
+    }
+  }
   finally {
-    try { output = workerResultJson(resultFile, canonicalParent); }
-    catch (error) { outputError = error; }
+    try { output = workerResultJson(resultFile, canonicalParent, input.redactionEnvironment ?? input.environment); }
+    catch (error) { outputError ??= error; }
   }
   // Return parse failures so callers can retain process artifacts and preserve the original failure precedence.
   return { ...result, output, outputError };
@@ -86,7 +101,13 @@ function assertMutable(state: WorkflowState): void {
 }
 function save(state: WorkflowState): void {
   state.updatedAt = now();
+  if (state.schemaVersion === 2) {
+    const previous = savedSnapshots.get(state);
+    if (previous) validateWorkflowStateTransition(previous, state);
+    else parseWorkflowState(state);
+  }
   atomicWriteJson(statePath(state.cwd, state.plan.name), state);
+  if (state.schemaVersion === 2) savedSnapshots.set(state, JSON.parse(JSON.stringify(state)));
   // Canonical task projections retain numeric IDs and claim identities; workflow.json owns integration decisions.
   for (const entry of state.tasks) {
     atomicWriteJson(absPath(state.cwd, TeamPaths.taskFile(state.plan.name, entry.canonicalId)), {
@@ -100,8 +121,9 @@ function save(state: WorkflowState): void {
   }
 }
 export function readWorkflow(cwd: string, name: string): WorkflowState {
-  const state = boundedJson(statePath(cwd, name), 16 * 1024 * 1024) as WorkflowState;
-  if (!state || state.schemaVersion !== 1 || state.profile !== 'claude-glm-codex' || state.plan?.name !== name
+  let state = boundedJson(statePath(cwd, name), 16 * 1024 * 1024) as WorkflowState;
+  if (state?.schemaVersion === 2) state = parseWorkflowState(state);
+  if (!state || !((state.schemaVersion === 1 && state.profile === 'claude-glm-codex') || (state.schemaVersion === 2 && state.profile === 'role-substitution')) || state.plan?.name !== name
     || realpathSync(state.cwd) !== realpathSync(cwd)) throw new Error('workflow_invalid_state');
   if (!Array.isArray(state.tasks) || !Array.isArray(state.reviews)) throw new Error('workflow_invalid_state');
   if (state.options.mode !== undefined && !['v1', 'balanced'].includes(state.options.mode)) throw new Error('workflow_invalid_mode');
@@ -113,6 +135,7 @@ async function mutate(cwd: string, name: string, action: (state: WorkflowState) 
   const path = statePath(cwd, name);
   return withFileLock(`${path}.lock`, async () => {
     const state = readWorkflow(cwd, name);
+    if (state.schemaVersion === 2) savedSnapshots.set(state, JSON.parse(JSON.stringify(state)));
     assertMutable(state);
     try { await action(state); } finally { save(state); }
     return state;
@@ -123,7 +146,20 @@ function count(value: number | undefined, fallback: number, max: number, min = 1
   if (!Number.isInteger(result) || result < min || result > max) throw new Error('workflow_invalid_limit');
   return result;
 }
-export async function initWorkflow(cwd: string, rawPlan: unknown, options: WorkflowOptions = {}): Promise<WorkflowState> {
+export async function initWorkflow(cwd: string, rawPlan: unknown, options: WorkflowOptions = {}): Promise<LegacyWorkflowState> {
+  const state = await initializeWorkflow(cwd, rawPlan, options);
+  if (state.schemaVersion !== 1) throw new Error('workflow_invalid_state');
+  return state;
+}
+export async function initWorkflowV2(cwd: string, rawPlan: unknown, bindings: Record<WorkflowRole, unknown>, options: WorkflowOptions = {}): Promise<WorkflowStateV2> {
+  if (options.mode !== undefined && options.mode !== 'balanced') throw new Error('workflow_balanced_mode_required');
+  const selected = Object.freeze({ lead: parseWorkflowBinding(bindings.lead), implementer: parseWorkflowBinding(bindings.implementer), reviewer: parseWorkflowBinding(bindings.reviewer) });
+  for (const role of ['lead', 'implementer', 'reviewer'] as const) if (selected[role].role !== role) throw new Error('workflow_binding_role_mismatch');
+  const state = await initializeWorkflow(cwd, rawPlan, { ...options, mode: 'balanced' }, selected);
+  if (state.schemaVersion !== 2) throw new Error('workflow_invalid_state');
+  return state;
+}
+async function initializeWorkflow(cwd: string, rawPlan: unknown, options: WorkflowOptions, bindings?: Readonly<Record<WorkflowRole, WorkflowRoleBinding>>): Promise<WorkflowState> {
   assertLeadCaller();
   if (redactWorkflowText(JSON.stringify({ rawPlan, options })) !== JSON.stringify({ rawPlan, options })) throw new Error('workflow_sensitive_input_rejected');
   cwd = realpathSync(cwd);
@@ -140,7 +176,7 @@ export async function initWorkflow(cwd: string, rawPlan: unknown, options: Workf
   const routing = applyGlmProfile({ ...loaded, team: { ...loaded.team, profile: 'claude-glm-codex' } });
   const executor = resolveRoleAssignment('executor', routing);
   const reviewer = resolveRoleAssignment('code-reviewer', routing);
-  if (executor.provider !== 'glm' || reviewer.provider !== 'codex') throw new Error('workflow_role_routing_requires_glm_executor_and_codex_reviewer');
+  if (!bindings && (executor.provider !== 'glm' || reviewer.provider !== 'codex')) throw new Error('workflow_role_routing_requires_glm_executor_and_codex_reviewer');
   const config = getGlmConfig(routing);
   const maxWorkers = count(options.maxWorkers, config.maxWorkers, ABSOLUTE_MAX_WORKERS);
   const resolvedOptions: WorkflowState['options'] = {
@@ -160,11 +196,14 @@ export async function initWorkflow(cwd: string, rawPlan: unknown, options: Workf
   if (git(cwd, ['branch', '--show-current']) !== plan.integrationBranch) {
     git(cwd, ['switch', '-c', plan.integrationBranch, plan.baseCommit]);
   } else if (git(cwd, ['rev-parse', 'HEAD']) !== plan.baseCommit) throw new Error('workflow_initial_head_mismatch');
-  const state: WorkflowState = {
+  const legacy: LegacyWorkflowState = {
     schemaVersion: 1, profile: 'claude-glm-codex', plan, cwd, integrationHead: plan.baseCommit, options: resolvedOptions, stage: 'implementation',
     tasks: plan.tasks.map((task, index) => ({ task, canonicalId: String(index + 1), status: 'pending', attempts: 0,
       worker: `task-${task.id}`, updatedAt: now() })), reviewPasses: 0, reviews: [], createdAt: now(), updatedAt: now(),
   };
+  const state: WorkflowState = bindings ? { ...legacy, schemaVersion: 2, profile: 'role-substitution', bindings, substitutions: [],
+    tasks: plan.tasks.map((task, index) => ({ task, canonicalId: String(index + 1), status: 'pending', attempts: 0,
+      worker: `task-${task.id}`, updatedAt: now() })), reviewAttempts: [] } : legacy;
   ensureDirWithMode(teamStateRoot(cwd, plan.name));
   await withFileLock(`${path}.lock`, async () => save(state));
   return state;
@@ -179,6 +218,34 @@ function artifactsRoot(state: WorkflowState): string {
   validateResolvedPath(root, teamStateRoot(state.cwd, state.plan.name));
   ensureDirWithMode(root);
   return root;
+}
+function prepareBinding(state: WorkflowStateV2, binding: WorkflowRoleBinding, runtime?: WorkflowRuntime): PreparedWorkflowBinding {
+  try { return prepareWorkflowBinding(binding, runtime); }
+  catch (error) {
+    const message = error instanceof Error && /^workflow_[a-z_]+$/.test(error.message) ? error.message : 'workflow_preflight_failed';
+    const path = join(artifactsRoot(state), `preflight-${randomUUID()}.json`);
+    writeFileSync(path, JSON.stringify({ kind: 'preflight', bindingId: binding.id, provider: binding.providerRoute, error: message, at: now(), reserved: false }), { flag: 'wx', mode: 0o600 });
+    throw new Error(message);
+  }
+}
+export async function substituteWorkflowBinding(cwd: string, name: string, input: {
+  role: WorkflowRole; binding: unknown; expectedHead: string; reason: string; authorityRef: string; taskId?: string;
+}): Promise<WorkflowState> {
+  return mutate(cwd, name, async state => {
+    if (state.schemaVersion !== 2) throw new Error('workflow_role_substitution_profile_required');
+    if (assertLeader(state) !== input.expectedHead) throw new Error('workflow_substitution_head_mismatch');
+    if (state.tasks.some(entry => entry.status === 'running')) throw new Error('workflow_interrupted_worker_requires_inspection');
+    const binding = parseWorkflowBinding(input.binding);
+    const task = input.taskId === undefined ? undefined : getTask(state, input.taskId);
+    if (task && !['pending', 'failed'].includes(task.status)) throw new Error('workflow_substitution_task_not_pending');
+    const record = parseWorkflowSubstitution({ sequence: state.substitutions.length + 1, role: input.role,
+      from: state.bindings[input.role], to: binding, reason: redactWorkflowText(boundedText(input.reason, 1000)),
+      authorityRef: redactWorkflowText(boundedText(input.authorityRef, 1000)), head: state.integrationHead, at: now(),
+      ...(task ? { taskId: task.task.id, afterAttempt: task.attempts } : {}),
+      ...(input.role === 'reviewer' ? { afterReviewPass: state.reviewPasses } : {}) });
+    state.substitutions = Object.freeze([...state.substitutions, record]);
+    state.bindings = Object.freeze({ ...state.bindings, [input.role]: binding });
+  });
 }
 function assertWorker(state: WorkflowState, entry: WorkflowTaskState): string {
   const expected = getWorktreePath(state.cwd, state.plan.name, entry.worker);
@@ -214,7 +281,7 @@ function sessionFingerprint(state: WorkflowState, entry: WorkflowTaskState, comm
   return workflowPromptFingerprint(JSON.stringify({ launch: launchIdentity,
     context: workflowSessionFingerprint(state, entry, executable, worktree) }));
 }
-async function executeTask(state: WorkflowState, entry: WorkflowTaskState, command: string, resumeReason?: string): Promise<void> {
+async function executeTask(state: WorkflowState, entry: WorkflowTaskState, command: string, resumeReason?: string, prepared?: PreparedWorkflowBinding): Promise<void> {
   const root = artifactsRoot(state);
   const balanced = state.options.mode === 'balanced';
   const resuming = resumeReason !== undefined;
@@ -225,9 +292,10 @@ async function executeTask(state: WorkflowState, entry: WorkflowTaskState, comma
     const started = Date.now();
     entry.attempts++; entry.status = 'running'; entry.claimToken = randomUUID(); entry.updatedAt = now();
     const invocation: WorkflowInvocation | undefined = balanced ? { attempt: entry.attempts, mode: resuming ? 'resume' : 'fresh',
-      ...(state.options.glmModel ? { model: state.options.glmModel } : {}), startedAt: now(), outcome: 'failed',
+      ...(prepared ? { invocationId: randomUUID(), binding: prepared.binding, model: prepared.binding.model }
+        : state.options.glmModel ? { model: state.options.glmModel } : {}), startedAt: now(), outcome: 'failed',
       error: 'workflow_invocation_incomplete', ...(resumeReason === undefined ? {} : { reason: resumeReason }), artifacts: [],
-      telemetry: { provider: 'glm', durationMs: 0, status: 'unknown', scope: 'unknown' } } : undefined;
+      telemetry: { provider: prepared?.binding.providerRoute ?? 'glm', durationMs: 0, status: 'unknown', scope: 'unknown' } } : undefined;
     if (invocation) (entry.invocations ??= []).push(invocation);
     save(state);
     try {
@@ -240,27 +308,31 @@ async function executeTask(state: WorkflowState, entry: WorkflowTaskState, comma
       const resultFile = `${prefix}.result.json`;
       if (existsSync(resultFile)) throw new Error('workflow_result_already_exists');
       const prompt = buildWorkflowPrompt(state, entry, resultFile);
-      if (balanced) {
+      const sessionEnabled = balanced && (!prepared || prepared.binding.capabilities.includes('session-resume'));
+      if (sessionEnabled) {
         const worktree = realpathSync(entry.worktree);
-        const fingerprint = sessionFingerprint(state, entry, command, worktree);
+        const fingerprint = prepared ? workflowPromptFingerprint(JSON.stringify({ binding: prepared.binding, worktree, branch: entry.branch,
+          context: workflowSessionFingerprint(state, entry, command, worktree) })) : sessionFingerprint(state, entry, command, worktree);
         if (resuming && (!entry.session?.confirmed || entry.session.fingerprint !== fingerprint)) throw new Error('workflow_session_identity_changed');
         entry.session = { id: resuming ? entry.session!.id : randomUUID(), confirmed: false, fingerprint,
-          worktree, branch: entry.branch! };
+          worktree, branch: entry.branch!, ...(prepared ? { binding: prepared.binding } : {}) };
         invocation!.promptFingerprint = workflowPromptFingerprint(prompt);
         invocation!.contextFingerprint = workflowContextFingerprint(state);
         save(state);
       }
-      const result = await runWorkflowProvider({ command, args: [...buildLaunchArgs('glm', {
+      const result = await runWorkflowProvider({ command, args: prepared ? workflowWorkerArguments(prepared,
+        sessionEnabled ? { id: entry.session!.id, resume: resuming } : undefined) : [...buildLaunchArgs('glm', {
         teamName: state.plan.name, workerName: entry.worker, cwd: entry.worktree, model: state.options.glmModel,
       }), '-p', ...(balanced ? [resuming ? '--resume' : '--session-id', entry.session!.id, '--output-format', 'stream-json', '--verbose'] : [])],
       cwd: entry.worktree, stdin: prompt, ...(balanced ? { collectUsage: true } : {}),
-      timeoutMs: state.options.timeoutMs, artifactPrefix: prefix, provider: 'glm', worker: entry.worker }, resultFile);
+      timeoutMs: state.options.timeoutMs, artifactPrefix: prefix, provider: prepared?.binding.providerRoute ?? 'glm', worker: entry.worker,
+      ...(prepared ? { environment: prepared.environment, redactionEnvironment: prepared.redactionEnvironment } : {}) }, resultFile);
       if (invocation) {
-        invocation.telemetry = result.telemetry ?? { provider: 'glm', durationMs: Date.now() - started, status: 'unknown', scope: 'unknown' };
+        invocation.telemetry = result.telemetry ?? { provider: prepared?.binding.providerRoute ?? 'glm', durationMs: Date.now() - started, status: 'unknown', scope: 'unknown' };
         invocation.artifacts = result.artifacts;
       }
       entry.handoff = { taskId: entry.task.id, outcome: 'failed', changedFiles: [], tests: [], interfaceChanges: [], assumptions: [], risks: [], summary: result.error ?? 'Worker result pending validation', artifacts: result.artifacts };
-      if (balanced) {
+      if (sessionEnabled) {
         if (result.telemetry?.sessionId && result.telemetry.sessionId !== entry.session!.id
           || result.telemetry?.diagnostics?.some(diagnostic => ['session_identity_conflict', 'session_identity_invalid'].includes(diagnostic))) {
           throw new Error('workflow_session_identity_mismatch');
@@ -293,6 +365,7 @@ async function executeTask(state: WorkflowState, entry: WorkflowTaskState, comma
       const message = error instanceof Error ? error.message : '';
       entry.error = /^workflow_[a-z_]+$/.test(message) ? message : 'workflow_worker_failed';
       entry.status = 'failed';
+      if (state.schemaVersion === 2) break;
       if (resuming || entry.error === 'workflow_session_identity_mismatch') break;
       if (entry.error === 'workflow_timeout' || entry.error === 'workflow_interrupted') break;
       // Any work or moved HEAD is retained for the lead; retry only pristine attempts.
@@ -306,7 +379,7 @@ async function executeTask(state: WorkflowState, entry: WorkflowTaskState, comma
         await new Promise(resolve => setTimeout(resolve, delay));
       }
     } finally {
-      if (invocation) {
+      if (invocation && state.schemaVersion === 1) {
         invocation.outcome = entry.status === 'completed' ? 'completed' : 'failed';
         if (entry.error) invocation.error = entry.error; else delete invocation.error;
         if (!invocation.telemetry.durationMs) invocation.telemetry.durationMs = Date.now() - started;
@@ -319,15 +392,24 @@ function protectedWorkflowRefs(cwd: string, name: string): string {
   return git(cwd, ['for-each-ref', '--format=%(refname) %(objectname)']).split('\n')
     .filter(ref => !ref.startsWith(`refs/heads/omc-team/${name}/`)).join('\n');
 }
-function failProtectedRefs(entries: WorkflowTaskState[], balanced: boolean): void {
+function failProtectedRefs(entries: WorkflowTaskState[], balanced: boolean, onlyIncomplete = false): void {
   for (const entry of entries) if (balanced || entry.status === 'completed') {
     entry.status = 'failed'; entry.error = 'workflow_worker_modified_protected_refs';
     if (entry.session) entry.session.confirmed = false;
     const invocation = entry.invocations?.at(-1);
-    if (invocation) { invocation.outcome = 'failed'; invocation.error = entry.error; }
+    if (invocation && (!onlyIncomplete || invocation.error === 'workflow_invocation_incomplete')) { invocation.outcome = 'failed'; invocation.error = entry.error; }
   }
 }
-export async function runWorkflow(cwd: string, name: string): Promise<WorkflowState> {
+function settleVersionedInvocations(state: WorkflowState, entries: WorkflowTaskState[]): void {
+  if (state.schemaVersion !== 2) return;
+  for (const entry of entries) {
+    const invocation = entry.invocations?.at(-1);
+    if (invocation?.error !== 'workflow_invocation_incomplete') continue;
+    invocation.outcome = entry.status === 'completed' ? 'completed' : 'failed';
+    if (entry.error) invocation.error = entry.error; else delete invocation.error;
+  }
+}
+export async function runWorkflow(cwd: string, name: string, runtime?: WorkflowRuntime): Promise<WorkflowState> {
   return mutate(cwd, name, async state => {
     assertLeader(state);
     const refsBefore = protectedWorkflowRefs(cwd, name);
@@ -337,25 +419,41 @@ export async function runWorkflow(cwd: string, name: string): Promise<WorkflowSt
       && !['workflow_timeout', 'workflow_interrupted', 'workflow_worker_modified_protected_refs', 'workflow_session_identity_mismatch'].includes(entry.error ?? '')
       && !(state.options.mode === 'balanced' && entry.invocations?.at(-1)?.mode === 'resume' && entry.invocations.at(-1)?.outcome === 'failed')
       && entry.task.dependencies.every(id => getTask(state, id).status === 'accepted'));
-    if (!candidates.length) return;
-    let command: string;
-    try { command = resolveGlmExecutable(state.options.glmCommand); } catch { throw new Error('workflow_glm_unavailable_fallback_disabled'); }
+    if (!candidates.length) {
+      if (state.schemaVersion === 2 && state.tasks.some(entry => entry.status === 'failed' && entry.attempts >= state.options.maxAttempts)) throw new Error('workflow_attempt_limit_reached');
+      return;
+    }
+    let command = '';
+    if (state.schemaVersion === 1) {
+      try { command = resolveGlmExecutable(state.options.glmCommand); } catch { throw new Error('workflow_glm_unavailable_fallback_disabled'); }
+    }
     let cursor = 0;
     const pools = await Promise.allSettled(Array.from({ length: Math.min(state.options.workers, candidates.length) }, async () => {
       while (cursor < candidates.length && !state.tasks.some(entry => entry.error === 'workflow_interrupted')) {
-        const entry = candidates[cursor++]!; await executeTask(state, entry, command);
+        const entry = candidates[cursor++]!;
+        const prepared = state.schemaVersion === 2 ? prepareBinding(state, state.bindings.implementer, runtime) : undefined;
+        await executeTask(state, entry, prepared?.command ?? command, undefined, prepared);
       }
     }));
-    if (pools.some(pool => pool.status === 'rejected')) throw new Error('workflow_worker_persistence_failed');
-    if (protectedWorkflowRefs(cwd, name) !== refsBefore) {
-      failProtectedRefs(candidates, state.options.mode === 'balanced');
-      throw new Error('workflow_worker_modified_protected_refs');
+    if (state.schemaVersion === 1 && pools.some(pool => pool.status === 'rejected')) throw new Error('workflow_worker_persistence_failed');
+    try {
+      if (protectedWorkflowRefs(cwd, name) !== refsBefore) {
+        failProtectedRefs(candidates, state.options.mode === 'balanced', state.schemaVersion === 2);
+        throw new Error('workflow_worker_modified_protected_refs');
+      }
+      const rejected = pools.find(pool => pool.status === 'rejected');
+      if (rejected?.status === 'rejected') {
+        if (state.schemaVersion === 2) throw rejected.reason;
+        throw new Error('workflow_worker_persistence_failed');
+      }
+    } finally {
+      settleVersionedInvocations(state, candidates);
     }
     state.stage = state.tasks.some(entry => entry.status === 'completed') ? 'integration' : 'implementation';
   });
 }
 /** Explicit continuation of a verified conversation in the same pristine task worktree. */
-export async function resumeWorkflowTask(cwd: string, name: string, taskId: string, expectedHead: string, reason: string): Promise<WorkflowState> {
+export async function resumeWorkflowTask(cwd: string, name: string, taskId: string, expectedHead: string, reason: string, runtime?: WorkflowRuntime): Promise<WorkflowState> {
   return mutate(cwd, name, async state => {
     if (state.options.mode !== 'balanced') throw new Error('workflow_balanced_mode_required');
     if (assertLeader(state) !== expectedHead) throw new Error('workflow_resume_head_mismatch');
@@ -364,7 +462,7 @@ export async function resumeWorkflowTask(cwd: string, name: string, taskId: stri
     const entry = getTask(state, taskId);
     if (entry.status !== 'failed') throw new Error('workflow_resume_failed_task_required');
     if (entry.attempts >= state.options.maxAttempts) throw new Error('workflow_attempt_limit_reached');
-    if (!state.options.glmModel) throw new Error('workflow_resume_model_required');
+    if (state.schemaVersion === 1 && !state.options.glmModel) throw new Error('workflow_resume_model_required');
     if (!entry.task.dependencies.every(id => getTask(state, id).status === 'accepted')) throw new Error('workflow_dependency_not_integrated');
     if (['workflow_worker_modified_protected_refs', 'workflow_session_identity_mismatch'].includes(entry.error ?? '')) throw new Error('workflow_session_not_resumable');
     const session = entry.session;
@@ -372,17 +470,28 @@ export async function resumeWorkflowTask(cwd: string, name: string, taskId: stri
     const worktree = realpathSync(assertWorker(state, entry));
     if (session.worktree !== worktree || session.branch !== entry.branch) throw new Error('workflow_session_identity_changed');
     if (git(worktree, ['rev-parse', 'HEAD']) !== entry.task.baseCommit) throw new Error('workflow_worker_base_mismatch');
+    const prepared = state.schemaVersion === 2 ? prepareBinding(state, state.bindings.implementer, runtime) : undefined;
     let command: string;
-    try { command = resolveGlmExecutable(state.options.glmCommand); } catch { throw new Error('workflow_glm_unavailable_fallback_disabled'); }
-    if (session.fingerprint !== sessionFingerprint(state, entry, command, worktree)) throw new Error('workflow_session_identity_changed');
+    if (prepared) {
+      if (!('binding' in session)) throw new Error('workflow_session_not_confirmed');
+      assertWorkflowResumeBinding(session.binding, prepared.binding);
+      command = prepared.command;
+    } else {
+      try { command = resolveGlmExecutable(state.options.glmCommand); } catch { throw new Error('workflow_glm_unavailable_fallback_disabled'); }
+    }
+    const fingerprint = prepared ? workflowPromptFingerprint(JSON.stringify({ binding: prepared.binding, worktree, branch: entry.branch,
+      context: workflowSessionFingerprint(state, entry, command, worktree) })) : sessionFingerprint(state, entry, command, worktree);
+    if (session.fingerprint !== fingerprint) throw new Error('workflow_session_identity_changed');
     const refs = protectedWorkflowRefs(cwd, name);
     let executionFailure: { error: unknown } | undefined;
-    try { await executeTask(state, entry, command, safeReason); }
+    try { await executeTask(state, entry, command, safeReason, prepared); }
     catch (error) { executionFailure = { error }; }
-    if (protectedWorkflowRefs(cwd, name) !== refs) {
-      failProtectedRefs([entry], true);
-      throw new Error('workflow_worker_modified_protected_refs');
-    }
+    try {
+      if (protectedWorkflowRefs(cwd, name) !== refs) {
+        failProtectedRefs([entry], true, state.schemaVersion === 2);
+        throw new Error('workflow_worker_modified_protected_refs');
+      }
+    } finally { settleVersionedInvocations(state, [entry]); }
     if (executionFailure) throw executionFailure.error;
     state.stage = getTask(state, taskId).status === 'completed' ? 'integration' : 'implementation';
   });
@@ -477,20 +586,48 @@ export function parseWorkflowReviewFindings(value: unknown, pass: number, cwd: s
     finding && typeof finding === 'object' && typeof finding.file === 'string'
       ? { ...finding, file: relativeFile(finding.file) } : finding) }, pass);
 }
-export async function reviewWorkflow(cwd: string, name: string): Promise<WorkflowState> {
+function reviewContext(state: WorkflowStateV2): { projectInstructions: Array<{ path: string; content: string }>; sourceInventory: string; changes: string } {
+  const affected = [...git(state.cwd, ['diff', '--name-only', '-z', state.plan.baseCommit, state.integrationHead]).split('\0').filter(Boolean),
+    ...state.tasks.flatMap(entry => [...entry.task.writeScope, ...entry.task.readScope])];
+  const paths = new Set(['AGENTS.md', 'CLAUDE.md']);
+  for (const path of affected) {
+    let scope = path;
+    while (scope !== '.') {
+      paths.add(posix.join(scope, 'AGENTS.md')); paths.add(posix.join(scope, 'CLAUDE.md'));
+      scope = posix.dirname(scope);
+    }
+  }
+  const projectInstructions = [...paths].filter(path => existsSync(join(state.cwd, path))).sort().map(path => {
+    const file = join(state.cwd, path); validateResolvedPath(file, state.cwd);
+    if (!lstatSync(file).isFile() || lstatSync(file).isSymbolicLink() || statSync(file).size > 64 * 1024) throw new Error('workflow_review_context_invalid');
+    return { path, content: readFileSync(file, 'utf8') };
+  });
+  const context = { projectInstructions, sourceInventory: git(state.cwd, ['ls-files']),
+    changes: git(state.cwd, ['diff', '--no-ext-diff', '--no-textconv', '--patch', '--binary', state.plan.baseCommit, state.integrationHead]) };
+  if (Buffer.byteLength(JSON.stringify(context)) > 256 * 1024) throw new Error('workflow_review_context_too_large');
+  return context;
+}
+export async function reviewWorkflow(cwd: string, name: string, runtime?: WorkflowRuntime): Promise<WorkflowState> {
   return mutate(cwd, name, async state => {
     const head = verificationGate(state);
     const refs = git(cwd, ['for-each-ref', '--format=%(refname) %(objectname)']);
     if (state.reviewPasses >= state.options.maxReviewPasses) throw new Error('workflow_review_limit_reached');
     if (state.reviews.some(review => review.findings.some(finding => !finding.disposition || finding.disposition === 'fix' && !finding.fixedBy))) throw new Error('workflow_findings_require_adjudication_or_fix');
-    const command = state.options.codexCommand === 'codex' ? resolveValidatedBinaryPath('codex') : resolveGlmExecutable(state.options.codexCommand);
+    const prepared = state.schemaVersion === 2 ? prepareBinding(state, state.bindings.reviewer, runtime) : undefined;
+    const context = state.schemaVersion === 2 ? reviewContext(state) : undefined;
+    const provenance = prepared && runtime ? workflowReviewProvenance(prepared, head, runtime) : undefined;
+    const command = prepared?.command ?? (state.options.codexCommand === 'codex' ? resolveValidatedBinaryPath('codex') : resolveGlmExecutable(state.options.codexCommand));
     const balanced = state.options.mode === 'balanced';
     const started = Date.now();
     state.reviewPasses++; state.stage = 'review';
-    const attempt: WorkflowReviewAttempt | undefined = balanced ? { pass: state.reviewPasses, head,
-      ...(state.options.codexModel ? { model: state.options.codexModel } : {}), startedAt: now(), outcome: 'failed',
-      error: 'workflow_invocation_incomplete', artifacts: [], telemetry: { provider: 'codex', durationMs: 0, status: 'unknown', scope: 'unknown' } } : undefined;
-    if (attempt) (state.reviewAttempts ??= []).push(attempt);
+    const reservation: WorkflowReviewAttempt = { pass: state.reviewPasses, head,
+      ...(prepared ? { model: prepared.binding.model } : state.options.codexModel ? { model: state.options.codexModel } : {}), startedAt: now(), outcome: 'failed',
+      error: 'workflow_invocation_incomplete', artifacts: [], telemetry: { provider: prepared?.binding.providerRoute ?? 'codex', durationMs: 0, status: 'unknown', scope: 'unknown' } };
+    let attempt: WorkflowReviewAttempt | undefined;
+    if (state.schemaVersion === 2 && prepared && provenance) {
+      const bound: WorkflowReviewAttemptV2 = { ...reservation, invocationId: randomUUID(), binding: prepared.binding, provenance };
+      (state.reviewAttempts ??= []).push(bound); attempt = bound;
+    } else if (state.schemaVersion === 1 && balanced) { (state.reviewAttempts ??= []).push(reservation); attempt = reservation; }
     save(state);
     try {
       const root = artifactsRoot(state); const prefix = join(root, `review-${state.reviewPasses}`);
@@ -504,14 +641,20 @@ export async function reviewWorkflow(cwd: string, name: string): Promise<Workflo
           line: { type: ['integer', 'null'] },
         } } },
       } });
-      const result = await runWorkflowProvider({ command, args: ['exec', '--sandbox', 'read-only', '--ephemeral', ...(balanced ? ['--json'] : []),
+      const request = JSON.stringify({ kind: 'review', baseCommit: state.plan.baseCommit, head, objective: state.plan.objective,
+        tasks: state.tasks.filter(entry => entry.status === 'accepted').map(entry => ({ id: entry.task.id, contracts: entry.task.contracts, acceptanceCriteria: entry.task.acceptanceCriteria })),
+        ...(context ? { ...context, sharedContext: state.plan.sharedContext ?? '' } : {}),
+        instructions: state.schemaVersion === 2
+          ? 'Inspect the integrated code against baseCommit and complete acceptance criteria in this fresh read-only context. Self-review is permitted; do not claim independence from model or provider identity. Do not modify files, commits or refs or use command tools. Do not inspect worker transcripts. Return JSON findings with P0/P1/P2/P3 severities; finding.file must be a repository-relative POSIX path or null, for example src/example.ts. Do not return absolute paths or traversal segments.'
+          : 'Independently inspect the integrated code against baseCommit and acceptance criteria. Read only: do not modify files, commits or refs. Do not inspect worker transcripts. Return the required JSON findings with P0/P1/P2/P3 severities. Each finding.file must be a repository-relative POSIX path or null, for example src/example.ts; do not return absolute paths or traversal segments.' });
+      if (prepared && Buffer.byteLength(request) > 384 * 1024) throw new Error('workflow_review_context_too_large');
+      const result = await runWorkflowProvider({ command, args: prepared ? workflowReviewerArguments(prepared, schemaFile, resultFile, boundedJson(schemaFile))
+        : ['exec', '--sandbox', 'read-only', '--ephemeral', ...(balanced ? ['--json'] : []),
         ...(state.options.codexModel ? ['--model', state.options.codexModel] : []), '--output-schema', schemaFile, '--output-last-message', resultFile, '-'],
-        cwd, stdin: JSON.stringify({ kind: 'review', baseCommit: state.plan.baseCommit, head, objective: state.plan.objective,
-          tasks: state.tasks.filter(entry => entry.status === 'accepted').map(entry => ({ id: entry.task.id, contracts: entry.task.contracts, acceptanceCriteria: entry.task.acceptanceCriteria })),
-          instructions: 'Independently inspect the integrated code against baseCommit and acceptance criteria. Read only: do not modify files, commits or refs. Do not inspect worker transcripts. Return the required JSON findings with P0/P1/P2/P3 severities. Each finding.file must be a repository-relative POSIX path or null, for example src/example.ts; do not return absolute paths or traversal segments.' }),
-        timeoutMs: state.options.timeoutMs, artifactPrefix: prefix, provider: 'codex', ...(balanced ? { collectUsage: true } : {}) }, resultFile);
+        cwd, stdin: request, ...(prepared ? { environment: prepared.environment, redactionEnvironment: prepared.redactionEnvironment } : {}),
+        timeoutMs: state.options.timeoutMs, artifactPrefix: prefix, provider: prepared?.binding.providerRoute ?? 'codex', ...(balanced ? { collectUsage: true } : {}) }, resultFile, prepared?.binding.providerRoute === 'claude');
       if (attempt) {
-        attempt.telemetry = result.telemetry ?? { provider: 'codex', durationMs: Date.now() - started, status: 'unknown', scope: 'unknown' };
+        attempt.telemetry = result.telemetry ?? { provider: prepared?.binding.providerRoute ?? 'codex', durationMs: Date.now() - started, status: 'unknown', scope: 'unknown' };
         attempt.artifacts = result.artifacts;
       }
       try {
@@ -581,17 +724,30 @@ export async function finishWorkflow(cwd: string, name: string): Promise<Workflo
 }
 export function workflowStatus(cwd: string, name: string): Record<string, unknown> {
   const state = readWorkflow(cwd, name);
+  const versioned = state.schemaVersion === 2 ? state : undefined;
   const result = { name, profile: state.profile, mode: state.options.mode ?? 'v1', stage: state.stage, workers: state.options.workers, maxWorkers: state.options.maxWorkers,
+    ...(versioned ? { schemaVersion: 2, bindings: versioned.bindings,
+      substitutionCount: versioned.substitutions.length, omittedSubstitutions: Math.max(0, versioned.substitutions.length - 3),
+      substitutions: versioned.substitutions.slice(-3).map(record => ({ sequence: record.sequence, role: record.role, from: record.from.id, to: record.to.id,
+        reason: record.reason.slice(0, 200), authorityRef: record.authorityRef.slice(0, 200), head: record.head, at: record.at, taskId: record.taskId })),
+      reviewRelations: (versioned.reviewAttempts ?? []).slice(-3).map(attempt => ({ pass: attempt.pass, provider: attempt.binding.providerRoute,
+        bindingId: attempt.binding.id, outcome: attempt.outcome, relation: attempt.provenance.relation, context: attempt.provenance.context })) } : {}),
     activeWorkers: state.tasks.filter(entry => entry.status === 'running').length, integrationBranch: state.plan.integrationBranch,
     failedTasks: state.tasks.filter(entry => entry.status === 'failed').length,
     verification: state.verification ? { head: state.verification.head, passed: state.verification.passed } : null,
     reviewPasses: state.reviewPasses, maxReviewPasses: state.options.maxReviewPasses,
     findings: (state.reviews.at(-1)?.findings ?? []).map(finding => ({ ...finding, message: finding.message.slice(0, 300), reason: finding.reason?.slice(0, 200) })),
     omittedTasks: 0, omittedFindings: 0, stateFile: statePath(cwd, name),
-    tasks: state.tasks.map(entry => ({ id: entry.task.id, worker: entry.worker, provider: 'glm', model: state.options.glmModel,
+    tasks: state.tasks.map(entry => {
+      const actual = versioned?.tasks.find(task => task.task.id === entry.task.id)?.invocations?.at(-1)?.binding;
+      return { id: entry.task.id, worker: entry.worker, provider: versioned ? actual?.providerRoute ?? null : 'glm', model: versioned ? actual?.model ?? null : state.options.glmModel,
+      ...(versioned ? { bindingId: actual?.id ?? null, selectedBinding: { id: versioned.bindings.implementer.id,
+        provider: versioned.bindings.implementer.providerRoute, model: versioned.bindings.implementer.model } } : {}),
       status: entry.status, attempts: entry.attempts, backoffUntil: entry.backoffUntil, worktree: entry.worktree, branch: entry.branch, updatedAt: entry.updatedAt,
       ...(entry.session ? { session: { confirmed: entry.session.confirmed,
-        resumeCandidate: entry.status === 'failed' && entry.session.confirmed && Boolean(state.options.glmModel)
+        resumeCandidate: entry.status === 'failed' && entry.session.confirmed && (versioned
+          ? 'binding' in entry.session && JSON.stringify(entry.session.binding) === JSON.stringify(versioned.bindings.implementer)
+          : Boolean(state.options.glmModel))
           && entry.attempts < state.options.maxAttempts && !['workflow_worker_modified_protected_refs', 'workflow_session_identity_mismatch'].includes(entry.error ?? ''),
         requiresExplicitResumeAndWorktreeChecks: true } } : {}),
       error: entry.error?.slice(0, 200), ...(entry.handoff ? { handoff: { taskId: entry.handoff.taskId, outcome: entry.handoff.outcome,
@@ -602,7 +758,7 @@ export function workflowStatus(cwd: string, name: string): Record<string, unknow
         assumptions: entry.handoff.assumptions.slice(0, 3).map(text => text.slice(0, 160)),
         risks: entry.handoff.risks.slice(0, 3).map(text => text.slice(0, 160)), preview: true,
         artifacts: entry.handoff.artifacts.filter(artifact => artifact.kind === 'workflow-result' || entry.status === 'failed').slice(0, 3)
-          .map(artifact => ({ path: artifact.path, kind: artifact.kind })) } } : {}) })) };
+          .map(artifact => ({ path: artifact.path, kind: artifact.kind })) } } : {}) }; }) };
   while (Buffer.byteLength(JSON.stringify(result)) > 16 * 1024 && result.tasks.length) {
     result.tasks.pop(); result.omittedTasks++;
   }

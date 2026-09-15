@@ -47,6 +47,7 @@ describe('balanced workflow with real repositories and provider processes', () =
   }
   function editState(change: (state: WorkflowState) => void) {
     const state = readWorkflow(fixture.cwd, name);
+    if (state.schemaVersion !== 1) throw new Error('Expected the unchanged legacy workflow fixture');
     change(state);
     writeFileSync(String(workflowStatus(fixture.cwd, name).stateFile), JSON.stringify(state));
   }

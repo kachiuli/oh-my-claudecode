@@ -9,13 +9,22 @@ import { createWorkflowUsageCollector, type WorkflowTelemetry } from './workflow
 const MAX_LOG_BYTES = 1024 * 1024;
 
 /** Redact before any captured process data reaches an artifact or caller. */
-export function redactWorkflowText(text: string, caseInsensitive = false): string {
+export function redactWorkflowText(text: string, caseInsensitive = false, privateEnvironment: NodeJS.ProcessEnv = {}): string {
   let redacted = text;
-  for (const [key, value] of Object.entries(process.env)) {
+  const privateRedaction = Object.keys(privateEnvironment).length > 0;
+  if (privateRedaction) redacted = redacted.split('\n').map(line => {
+    let parsed: unknown;
+    try { parsed = JSON.parse(line); } catch { return line; }
+    // Normalize JSON escapes before matching private values; reject unserializable deep metadata safely.
+    try { return JSON.stringify(parsed); } catch { return '[unserializable structured output omitted]'; }
+  }).join('\n');
+  for (const [key, value] of [...Object.entries(process.env), ...Object.entries(privateEnvironment)]) {
     if (/(?:key|token|secret|password|credential|authorization)/i.test(key) && value && value.length >= 4) {
-      redacted = caseInsensitive
-        ? redacted.replace(new RegExp(value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'), '[REDACTED]')
-        : redacted.split(value).join('[REDACTED]');
+      for (const spelling of privateRedaction ? [...new Set([value, JSON.stringify(value).slice(1, -1)])] : [value]) {
+        redacted = caseInsensitive
+          ? redacted.replace(new RegExp(spelling.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'), '[REDACTED]')
+          : redacted.split(spelling).join('[REDACTED]');
+      }
     }
   }
   return redacted.replace(/\b(?:Bearer\s+)[A-Za-z0-9._~+\/-]+/gi, 'Bearer [REDACTED]')
@@ -25,7 +34,7 @@ export function redactWorkflowText(text: string, caseInsensitive = false): strin
 
 export interface WorkflowProcessResult {
   passed: boolean;
-  error?: 'launch_failed' | 'timeout' | 'interrupted' | 'process_failed' | 'throttled';
+  error?: 'launch_failed' | 'timeout' | 'interrupted' | 'process_failed' | 'throttled' | 'protocol_failed';
   artifacts: ArtifactDescriptor[];
   telemetry?: WorkflowTelemetry;
 }
@@ -33,9 +42,14 @@ export interface WorkflowProcessResult {
 /** One-shot execution only; no shell, transcript handoff or env serialization. */
 export async function runWorkflowProcess(input: {
   command: string; args: string[]; cwd: string; stdin?: string; timeoutMs: number; artifactPrefix: string;
-  provider?: 'glm' | 'codex'; worker?: string; collectUsage?: boolean;
+  provider?: WorkflowTelemetry['provider']; worker?: string; collectUsage?: boolean;
+  environment?: NodeJS.ProcessEnv;
+  redactionEnvironment?: NodeJS.ProcessEnv;
+  /** Operation decoder receives raw bounded-protocol chunks only inside the controller. */
+  onStdout?: (chunk: Buffer) => void;
 }): Promise<WorkflowProcessResult> {
-  if (input.provider && isExternalLLMDisabled()) throw new Error('workflow_external_llm_disabled');
+  if (input.provider && input.provider !== 'claude' && isExternalLLMDisabled()) throw new Error('workflow_external_llm_disabled');
+  if (input.provider === 'claude' && !input.environment) throw new Error('workflow_explicit_environment_required');
   if (!input.command || /[\0\r\n]/.test(input.command) || input.args.some(arg => arg.includes('\0'))) throw new Error('workflow_invalid_process_arguments');
   if (process.platform === 'win32' && /\.(cmd|bat|ps1)$/i.test(input.command)) throw new Error('workflow_shell_wrapper_unsupported');
   const artifactParent = dirname(input.artifactPrefix);
@@ -45,7 +59,8 @@ export async function runWorkflowProcess(input: {
   const script = isAbsolute(input.command) && /\.(?:c?js|mjs)$/i.test(input.command);
   const command = script ? process.execPath : input.command;
   const args = script ? [input.command, ...input.args] : input.args;
-  const environment = { ...process.env };
+  const environment = { ...(input.environment ?? process.env) };
+  const redactionEnvironment = { ...input.environment, ...input.redactionEnvironment };
   // Nested Claude session identity must not route the isolated GLM wrapper back to the lead.
   delete environment.CLAUDECODE;
   delete environment.CLAUDE_CODE_ENTRYPOINT;
@@ -74,13 +89,17 @@ export async function runWorkflowProcess(input: {
         const buffer = Buffer.concat(chunks);
         if (!truncated) return buffer;
         let tailSafe = buffer.toString('utf8');
-        for (const [key, value] of Object.entries(process.env)) {
+        if (Object.keys(redactionEnvironment).length) {
+          const lastLine = tailSafe.lastIndexOf('\n') + 1;
+          if (/^\s*[\[{]/.test(tailSafe.slice(lastLine))) tailSafe = tailSafe.slice(0, lastLine);
+        }
+        for (const [key, value] of [...Object.entries(process.env), ...Object.entries(redactionEnvironment)]) {
           if (!/(?:key|token|secret|password|credential|authorization)/i.test(key) || !value || value.length < 4) continue;
           for (let length = Math.min(value.length - 1, tailSafe.length); length > 0; length--) {
             if (tailSafe.endsWith(value.slice(0, length))) { tailSafe = tailSafe.slice(0, -length); break; }
           }
         }
-        return Buffer.from(`${redactWorkflowText(tailSafe).slice(0, MAX_LOG_BYTES - 64)}\n[output truncated]\n`);
+        return Buffer.from(`${redactWorkflowText(tailSafe, false, redactionEnvironment).slice(0, MAX_LOG_BYTES - 64)}\n[output truncated]\n`);
       };
       resolve({ code, error, stdout: captured(stdout, stdoutTruncated), stderr: captured(stderr, stderrTruncated) });
     };
@@ -100,6 +119,10 @@ export async function runWorkflowProcess(input: {
     const timer = setTimeout(() => { error = 'timeout'; terminate(); }, input.timeoutMs);
     child.stdout.on('data', (chunk: Buffer) => {
       usage?.write(chunk);
+      if (!error) {
+        try { input.onStdout?.(chunk); }
+        catch { error = 'protocol_failed'; terminate(); }
+      }
       const kept = chunk.subarray(0, Math.max(0, MAX_LOG_BYTES - stdoutBytes));
       if (kept.length) stdout.push(kept);
       stdoutTruncated ||= kept.length < chunk.length; stdoutBytes += kept.length;
@@ -120,14 +143,14 @@ export async function runWorkflowProcess(input: {
     const path = `${input.artifactPrefix}.${stream}.log`;
     try {
       validateResolvedPath(path, canonicalArtifactParent);
-      return writeTextArtifact({ path, content: redactWorkflowText(result[stream].toString('utf8')), exclusive: true,
+      return writeTextArtifact({ path, content: redactWorkflowText(result[stream].toString('utf8'), false, redactionEnvironment), exclusive: true,
         kind: `workflow-${stream}`, producer: { system: 'omc', component: 'team-workflow', worker: input.worker }, retention: 'until-completion' });
     } catch { throw new Error('workflow_artifact_write_refused'); }
   });
   const telemetry = usage?.finish({ durationMs: performance.now() - startedAt, passed: result.code === 0 && !result.error });
   // UUID shape is not proof that an identity is safe: it can still echo a known credential.
   // Compare without case because the collector canonicalizes UUIDs to lowercase.
-  if (telemetry?.sessionId && redactWorkflowText(telemetry.sessionId, true) !== telemetry.sessionId) {
+  if (telemetry?.sessionId && redactWorkflowText(telemetry.sessionId, true, redactionEnvironment) !== telemetry.sessionId) {
     delete telemetry.sessionId;
     telemetry.diagnostics = [...new Set([...(telemetry.diagnostics ?? []), 'session_identity_invalid'])].sort();
     if (telemetry.status === 'measured') telemetry.status = 'partial';
