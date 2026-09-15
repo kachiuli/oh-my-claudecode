@@ -1,7 +1,7 @@
 import { StringDecoder } from 'node:string_decoder';
 
 export interface WorkflowTelemetry {
-  provider: 'glm' | 'codex';
+  provider: 'glm' | 'codex' | 'claude';
   durationMs: number;
   status: 'measured' | 'partial' | 'unknown';
   scope: 'all-models' | 'main-loop' | 'turn' | 'unknown';
@@ -100,7 +100,7 @@ export function createWorkflowUsageCollector(provider: WorkflowTelemetry['provid
       terminalSignature = signature; counters = nextCounters; scope = nextScope;
     }
     if (terminal !== 'failure') terminal = nextTerminal;
-    if (provider === 'glm' && event.session_id !== undefined) session(event.session_id);
+    if (provider !== 'codex' && event.session_id !== undefined) session(event.session_id);
   }
 
   function consume(text: string): void {
@@ -109,7 +109,7 @@ export function createWorkflowUsageCollector(provider: WorkflowTelemetry['provid
     try { event = record(JSON.parse(text)); }
     catch { diagnostics.add('malformed_event'); return; }
     if (!event) { diagnostics.add('malformed_event'); return; }
-    if (provider === 'glm') {
+    if (provider !== 'codex') {
       if (event.type === 'system' && event.subtype === 'init') session(event.session_id);
       if (event.type !== 'result') return;
       const usage = claudeUsage(event);
@@ -178,7 +178,7 @@ export function createWorkflowUsageCollector(provider: WorkflowTelemetry['provid
         counters = {}; scope = 'unknown'; diagnostics.add('unavailable_failure_usage');
       }
       const known = COUNTERS.some(key => counters[key] !== undefined);
-      const required = provider === 'glm' ? COUNTERS : COUNTERS.slice(0, 3);
+      const required = provider !== 'codex' ? COUNTERS : COUNTERS.slice(0, 3);
       const completeCounts = required.every(key => counters[key] !== undefined);
       return { provider, durationMs: Math.max(0, Math.round(outcome.durationMs)),
         status: !known ? 'unknown' : !failed && completeCounts && scope !== 'main-loop' && diagnostics.size === 0 ? 'measured' : 'partial',

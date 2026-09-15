@@ -4,13 +4,58 @@ import { createWorkflowUsageCollector } from '../workflow-usage.js';
 const sessionId = '12345678-1234-4123-8123-123456789abc';
 const modelUsage = { glm: { inputTokens: 100, outputTokens: 30, cacheReadInputTokens: 80, cacheCreationInputTokens: 20 } };
 const result = { type: 'result', subtype: 'success', session_id: sessionId, modelUsage };
-function collect(events: unknown[], provider: 'glm' | 'codex' = 'glm', passed = true) {
+function collect(events: unknown[], provider: 'glm' | 'codex' | 'claude' = 'glm', passed = true) {
   const collector = createWorkflowUsageCollector(provider);
   collector.write(Buffer.from(events.map(value => JSON.stringify(value)).join('\n')));
   return collector.finish({ durationMs: 12.3, passed });
 }
 
 describe('workflow terminal usage accounting', () => {
+  it('preserves the normal Claude route while reading Claude Code all-model terminal usage', () => {
+    const telemetry = collect([{ type: 'system', subtype: 'init', session_id: sessionId },
+      { ...result, modelUsage: { 'claude-fable-5-1[1m]': modelUsage.glm } }], 'claude');
+    expect(telemetry).toEqual({ provider: 'claude', durationMs: 12, status: 'measured', scope: 'all-models',
+      inputTokens: 200, outputTokens: 30, cacheReadTokens: 80, cacheWriteTokens: 20, sessionId, terminal: 'success' });
+  });
+  const claudeResult = { ...result, modelUsage: { 'claude-fable-5-1[1m]': modelUsage.glm } };
+  const claudeZero = { ...result, modelUsage: { 'claude-fable-5-1[1m]': {
+    inputTokens: 0, outputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 } } };
+  it.each([
+    { name: 'absent usage', events: [{ type: 'result', subtype: 'success', session_id: sessionId }], passed: true,
+      expected: { status: 'unknown', terminal: 'success', diagnostics: ['missing_usage'] }, absent: ['inputTokens'] },
+    { name: 'missing cache counters', events: [{ ...result, modelUsage: { claude: { inputTokens: 5, outputTokens: 2 } } }], passed: true,
+      expected: { status: 'partial', outputTokens: 2, diagnostics: ['missing_usage_fields'] }, absent: ['inputTokens', 'cacheReadTokens', 'cacheWriteTokens'] },
+    { name: 'main-loop fallback', events: [{ type: 'result', subtype: 'success', session_id: sessionId,
+      usage: { input_tokens: 5, output_tokens: 2, cache_read_input_tokens: 3, cache_creation_input_tokens: 1 } }], passed: true,
+      expected: { status: 'partial', scope: 'main-loop', inputTokens: 9, diagnostics: ['main_loop_usage_only'] }, absent: [] },
+    { name: 'measured successful zero', events: [claudeZero], passed: true,
+      expected: { status: 'measured', inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }, absent: ['diagnostics'] },
+    { name: 'unavailable zero-filled failure', events: [{ ...claudeZero, subtype: 'error_during_execution' }], passed: false,
+      expected: { status: 'unknown', terminal: 'failure', diagnostics: ['process_failed', 'unavailable_failure_usage'] }, absent: ['inputTokens', 'outputTokens'] },
+    { name: 'partial nonzero provider failure', events: [{ ...claudeResult, is_error: true }], passed: true,
+      expected: { status: 'partial', inputTokens: 200, terminal: 'failure' }, absent: [] },
+    { name: 'process failure after successful result', events: [claudeResult], passed: false,
+      expected: { status: 'partial', inputTokens: 200, terminal: 'success', diagnostics: ['process_failed'] }, absent: [] },
+    { name: 'conflicting terminal totals', events: [claudeResult, claudeZero], passed: true,
+      expected: { status: 'unknown', scope: 'unknown', diagnostics: ['conflicting_terminal_events'] }, absent: ['inputTokens'] },
+    { name: 'counter overflow', events: [{ ...result, modelUsage: { claude: { ...modelUsage.glm, inputTokens: Number.MAX_SAFE_INTEGER } } }], passed: true,
+      expected: { status: 'partial', outputTokens: 30, diagnostics: ['usage_overflow'] }, absent: ['inputTokens'] },
+  ])('keeps normal Claude $name truthful', ({ events, passed, expected, absent }) => {
+    const telemetry = collect(events, 'claude', passed);
+    expect(telemetry).toMatchObject({ provider: 'claude', ...expected });
+    for (const field of absent) expect(JSON.parse(JSON.stringify(telemetry))).not.toHaveProperty(field);
+  });
+
+  it('preserves an interrupted normal Claude session and refuses conflicting identities without transcript leakage', () => {
+    const init = { type: 'system', subtype: 'init', session_id: sessionId };
+    expect(collect([init], 'claude', false)).toMatchObject({ provider: 'claude', status: 'unknown', sessionId });
+    const telemetry = collect([init, { ...claudeResult, session_id: '87654321-1234-4123-8123-123456789abc',
+      result: 'synthetic private transcript', errors: ['synthetic private error'] }], 'claude');
+    expect(telemetry).toMatchObject({ provider: 'claude', status: 'partial', diagnostics: ['session_identity_conflict'] });
+    expect(telemetry.sessionId).toBeUndefined();
+    expect(JSON.stringify(telemetry)).not.toContain('synthetic private');
+  });
+
   it('prefers all-model totals, includes cache in total input, and never adds assistant usage', () => {
     const telemetry = collect([
       { type: 'system', subtype: 'init', session_id: sessionId },
