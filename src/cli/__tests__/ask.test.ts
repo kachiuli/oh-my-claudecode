@@ -4,7 +4,7 @@ import { mkdtempSync } from 'fs';
 import { join, dirname } from 'path';
 import { tmpdir } from 'os';
 import { spawnSync } from 'child_process';
-import { fileURLToPath } from 'url';
+import { fileURLToPath, pathToFileURL } from 'url';
 import { parseAskArgs, resolveAskAdvisorScriptPath } from '../ask.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -1302,6 +1302,57 @@ describe('run-provider-advisor script contract', () => {
     } finally {
       rmSync(wd, { recursive: true, force: true });
     }
+  });
+});
+
+describe('GLM advisor', () => {
+  it('redacts secrets from stored GLM prompts and provider output', () => {
+    const wd = mkdtempSync(join(tmpdir(), 'omc-glm-advisor-redact-'));
+    try {
+      const prelude = writeSpawnSyncCapturePrelude(wd);
+      writeFileSync(prelude, readFileSync(prelude, 'utf8').replace("'FAKE_PROVIDER_OK'", "process.env.FAKE_GLM_SECRET"));
+      const secret = 'test-credential-123456789';
+      const result = runAdvisorScriptWithPrelude(pathToFileURL(prelude).href, ['glm', `inspect ${secret} Bearer abcdef123456 api_key=abcdef987654`], wd, {
+        OMC_GLM_COMMAND: 'claude-glm', FAKE_GLM_SECRET: secret,
+      });
+      expect(result.status, result.stderr).toBe(0);
+      const artifact = readFileSync(result.stdout.trim(), 'utf8');
+      expect(artifact).toContain('[REDACTED]');
+      expect(artifact).not.toContain(secret);
+      expect(artifact).not.toContain('abcdef123456');
+      expect(artifact).not.toContain('abcdef987654');
+    } finally { rmSync(wd, { recursive: true, force: true }); }
+  });
+  it('launches the configured executable shell-free and pipes untrusted prompts', () => {
+    const wd = mkdtempSync(join(tmpdir(), 'omc-glm-advisor-'));
+    try {
+      const capturePath = join(wd, 'capture.json');
+      const command = join(wd, 'wrapper with spaces.exe');
+      const prompt = '--untrusted $(echo should-not-run)\nsecond line';
+      const result = runAdvisorScriptWithPrelude(pathToFileURL(writeSpawnSyncCapturePrelude(wd)).href, ['glm', prompt], wd, {
+        SPAWN_CAPTURE_PATH: capturePath, OMC_GLM_COMMAND: command, OMC_GLM_DEFAULT_MODEL: 'glm-custom',
+      });
+      expect(result.status, result.stderr).toBe(0);
+      const calls = JSON.parse(readFileSync(capturePath, 'utf8')) as Array<{ command: string; args: string[]; options: { shell: boolean; input: string | null } }>;
+      expect(calls).toHaveLength(2);
+      expect(calls.every(call => call.command === command && call.options.shell === false)).toBe(true);
+      expect(calls[1].args).toEqual(['-p', '--model', 'glm-custom']);
+      expect(calls[1].options.input).toBe(prompt);
+      expect(result.stdout).not.toContain('FAKE_PROVIDER_OK');
+      expect(result.stdout).toContain('.md');
+    } finally { rmSync(wd, { recursive: true, force: true }); }
+  });
+
+  it('rejects shell command configuration before any provider launch', () => {
+    const wd = mkdtempSync(join(tmpdir(), 'omc-glm-advisor-reject-'));
+    try {
+      const capturePath = join(wd, 'capture.json');
+      const result = runAdvisorScriptWithPrelude(pathToFileURL(writeSpawnSyncCapturePrelude(wd)).href, ['glm', 'inspect'], wd, {
+        SPAWN_CAPTURE_PATH: capturePath, OMC_GLM_COMMAND: 'claude-glm && claude',
+      });
+      expect(result.status).toBe(1);
+      expect(JSON.parse(readFileSync(capturePath, 'utf8'))).toEqual([]);
+    } finally { rmSync(wd, { recursive: true, force: true }); }
   });
 });
 

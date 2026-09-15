@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, existsSync, writeFileSync, mkdirSync, readFileSync, symlinkSync } from 'fs';
+import { mkdtempSync, rmSync, existsSync, writeFileSync, mkdirSync, readFileSync, symlinkSync, realpathSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { execFileSync } from 'child_process';
@@ -24,6 +24,7 @@ describe('git-worktree', () => {
     execFileSync('git', ['init'], { cwd: repoDir, stdio: 'pipe' });
     execFileSync('git', ['config', 'user.email', 'test@test.com'], { cwd: repoDir, stdio: 'pipe' });
     execFileSync('git', ['config', 'user.name', 'Test'], { cwd: repoDir, stdio: 'pipe' });
+    execFileSync('git', ['config', 'core.autocrlf', 'false'], { cwd: repoDir, stdio: 'pipe' });
     writeFileSync(join(repoDir, 'README.md'), '# Test\n');
     writeFileSync(join(repoDir, 'AGENTS.md'), 'original instructions');
     execFileSync('git', ['add', '.'], { cwd: repoDir, stdio: 'pipe' });
@@ -42,7 +43,7 @@ describe('git-worktree', () => {
     it('creates worktree at correct path', () => {
       const info = createWorkerWorktree(teamName, 'worker1', repoDir);
 
-      expect(info.path).toContain(`.omc/team/${teamName}/worktrees/worker1`);
+      expect(info.path).toBe(join(repoDir, '.omc', 'team', teamName, 'worktrees', 'worker1'));
       expect(info.branch).toBe(`omc-team/${teamName}/worker1`);
       expect(info.workerName).toBe('worker1');
       expect(info.teamName).toBe(teamName);
@@ -83,7 +84,7 @@ describe('git-worktree', () => {
         requireCleanLeader: false,
       });
 
-      expect(info?.path).toContain(`.omc/team/${teamName}/worktrees/worker-detached`);
+      expect(info?.path).toBe(join(repoDir, '.omc', 'team', teamName, 'worktrees', 'worker-detached'));
       expect(info?.detached).toBe(true);
       expect(info?.created).toBe(true);
       expect(info?.reused).toBe(false);
@@ -145,7 +146,9 @@ describe('git-worktree', () => {
       expect(existsSync(info.path)).toBe(true);
       expect(listTeamWorktrees(teamName, repoDir).map(w => w.workerName)).toContain(workerName);
       const worktreeList = execFileSync('git', ['worktree', 'list', '--porcelain'], { cwd: repoDir, encoding: 'utf-8' });
-      expect(worktreeList).toContain(info.path);
+      const registeredPaths = worktreeList.split('\n').filter(line => line.startsWith('worktree '))
+        .map(line => realpathSync.native(line.slice('worktree '.length)));
+      expect(registeredPaths).toContain(realpathSync.native(info.path));
 
       execFileSync('git', ['worktree', 'unlock', info.path], { cwd: repoDir, stdio: 'pipe' });
     });

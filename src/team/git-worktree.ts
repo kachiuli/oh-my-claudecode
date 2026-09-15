@@ -20,7 +20,7 @@ import { atomicWriteJson, ensureDirWithMode, validateResolvedPath } from './fs-u
 import { validateWorktreeRemovalTarget } from '../lib/worktree-cleanup-safety.js';
 import { sanitizeName } from './tmux-session.js';
 import { withFileLockSync } from '../lib/file-lock.js';
-import { getOmcRoot } from '../lib/worktree-paths.js';
+import { expandPathForCompare, getOmcRoot } from '../lib/worktree-paths.js';
 
 export type TeamWorktreeMode = 'disabled' | 'detached' | 'named';
 
@@ -121,11 +121,7 @@ function assertCleanLeaderWorktree(repoRoot: string): void {
 }
 
 function canonicalPathForComparison(path: string): string {
-  try {
-    return realpathSync(path);
-  } catch {
-    return resolve(path);
-  }
+  return expandPathForCompare(path) ?? resolve(path);
 }
 
 function getRegisteredWorktreeBranch(repoRoot: string, wtPath: string): string | undefined {

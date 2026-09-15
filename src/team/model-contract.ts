@@ -6,8 +6,10 @@ import { isBedrock, isVertexAI, isProviderSpecificModelId } from '../config/mode
 import { isExternalLLMDisabled } from '../lib/security-config.js';
 import type { WorkerLaunchDescriptor } from './types.js';
 import type { ExternalModelsDefaults } from '../shared/types.js';
+import { getGlmConfig, resolveGlmExecutable } from './glm-config.js';
+import { loadConfig } from '../config/loader.js';
 
-export type CliAgentType = 'claude' | 'codex' | 'gemini' | 'cursor' | 'grok' | 'antigravity';
+export type CliAgentType = 'claude' | 'codex' | 'gemini' | 'cursor' | 'grok' | 'antigravity' | 'glm';
 
 export interface CliAgentContract {
   agentType: CliAgentType;
@@ -183,6 +185,17 @@ export function shouldUseClaudeBareMode(env: NodeJS.ProcessEnv = process.env): b
 }
 
 const CONTRACTS: Record<CliAgentType, CliAgentContract> = {
+  glm: {
+    agentType: 'glm',
+    binary: 'claude-glm',
+    installInstructions: 'Configure a local claude-glm executable and a separate Claude Code GLM profile.',
+    supportsPromptMode: true,
+    promptModeFlag: '-p',
+    buildLaunchArgs(model?: string, extraFlags: string[] = []): string[] {
+      return ['--dangerously-skip-permissions', ...(model ? ['--model', model] : []), ...extraFlags];
+    },
+    parseOutput(rawOutput: string): string { return rawOutput.trim(); },
+  },
   claude: {
     agentType: 'claude',
     binary: 'claude',
@@ -327,7 +340,7 @@ export function getContract(agentType: CliAgentType): CliAgentContract {
       `Only Claude workers are allowed in the current security configuration.`
     );
   }
-  return contract;
+  return agentType === 'glm' ? { ...contract, binary: getGlmConfig(loadConfig()).command } : contract;
 }
 
 function validateBinaryRef(binary: string): void {
@@ -361,6 +374,12 @@ function resolveBinaryPath(binary: string): string {
 export function isCliAvailable(agentType: CliAgentType): boolean {
   const contract = getContract(agentType);
   try {
+    if (agentType === 'glm') {
+      const result = spawnSync(resolveGlmExecutable(contract.binary), ['--version'], {
+        timeout: 5000, shell: false, windowsHide: true, stdio: 'ignore',
+      });
+      return result.status === 0;
+    }
     const resolvedBinary = resolveBinaryPath(contract.binary);
     if (process.platform === 'win32' && /\.(cmd|bat)$/i.test(resolvedBinary)) {
       const comspec = process.env.COMSPEC || 'cmd.exe';
@@ -393,6 +412,7 @@ export function validateCliAvailable(agentType: CliAgentType): void {
 
 export function resolveValidatedBinaryPath(agentType: CliAgentType): string {
   const contract = getContract(agentType);
+  if (agentType === 'glm') return resolveGlmExecutable(contract.binary);
   return resolveCliBinaryPath(contract.binary);
 }
 
@@ -485,6 +505,8 @@ const WORKER_MODEL_ENV_ALLOWLIST = [
   'OMC_GROK_DEFAULT_MODEL',
   'OMC_EXTERNAL_MODELS_DEFAULT_ANTIGRAVITY_MODEL',
   'OMC_ANTIGRAVITY_DEFAULT_MODEL',
+  'OMC_EXTERNAL_MODELS_DEFAULT_GLM_MODEL',
+  'OMC_GLM_DEFAULT_MODEL',
 ] as const;
 
 export function getWorkerEnv(
@@ -589,6 +611,7 @@ export function resolveDefaultWorkerModel(
 ): string | undefined {
   if (agentType === 'claude') return resolveClaudeWorkerModel(env);
   const providerConfigKeys: Record<Exclude<CliAgentType, 'claude'>, keyof ExternalModelsDefaults> = {
+    glm: 'glmModel',
     codex: 'codexModel',
     gemini: 'geminiModel',
     antigravity: 'antigravityModel',
@@ -615,7 +638,7 @@ export function resolveDefaultWorkerModel(
 export function normalizeExternalModelsDefaults(defaults?: ExternalModelsDefaults): ExternalModelsDefaults | undefined {
   if (!defaults || typeof defaults !== 'object') return undefined;
   const normalized: ExternalModelsDefaults = {};
-  for (const key of ['codexModel', 'geminiModel', 'grokModel', 'antigravityModel', 'cursorModel'] as const) {
+  for (const key of ['codexModel', 'geminiModel', 'grokModel', 'antigravityModel', 'cursorModel', 'glmModel'] as const) {
     const value = defaults[key];
     if (typeof value === 'string' && value.trim()) normalized[key] = value.trim();
   }
@@ -634,6 +657,7 @@ export function resolveExternalModelsDefaults(
   for (const [provider, key] of [
     ['CODEX', 'codexModel'], ['GEMINI', 'geminiModel'], ['GROK', 'grokModel'],
     ['CURSOR', 'cursorModel'], ['ANTIGRAVITY', 'antigravityModel'],
+    ['GLM', 'glmModel'],
   ] as const) {
     if (normalized[key]) continue;
     const value = [env[`OMC_EXTERNAL_MODELS_DEFAULT_${provider}_MODEL`], env[`OMC_${provider}_DEFAULT_MODEL`]]

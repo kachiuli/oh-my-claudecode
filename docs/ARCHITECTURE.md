@@ -2,6 +2,11 @@
 
 > How oh-my-claudecode orchestrates multi-agent workflows.
 
+The opt-in [Claude/GLM/Codex profile](GLM-WORKFLOW.md) extends existing provider
+contracts and role routing with a one-shot workflow controller beside runtime-v2.
+It reuses native worktrees and canonical team paths while keeping commit acceptance
+and review decisions under the lead's control. [Design audit](design/glm-workflow-v1.md).
+
 ## Overview
 
 oh-my-claudecode enables Claude Code to orchestrate specialized agents through a skill-based routing system. It is built on four interlocking systems: **Hooks** detect lifecycle events, **Skills** inject behaviors, **Agents** execute specialized work, and **State** tracks progress across context resets.

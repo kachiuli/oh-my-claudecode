@@ -30,6 +30,7 @@ import {
 } from "./models.js";
 import { normalizeDelegationRole } from "../features/delegation-routing/types.js";
 import { isDeprecatedMcpProvider } from "../features/delegation-routing/index.js";
+import { applyGlmProfile, getGlmConfig } from '../team/glm-config.js';
 
 /**
  * Default configuration.
@@ -208,12 +209,12 @@ export const DEFAULT_CONFIG: PluginConfig = buildDefaultConfig();
 /**
  * Configuration file locations
  */
-export function getConfigPaths(): { user: string; project: string } {
+export function getConfigPaths(cwd: string = process.cwd()): { user: string; project: string } {
   const userConfigDir = getConfigDir();
 
   return {
     user: join(userConfigDir, "claude-omc", "config.jsonc"),
-    project: join(process.cwd(), ".claude", "omc.jsonc"),
+    project: join(cwd, ".claude", "omc.jsonc"),
   };
 }
 
@@ -361,6 +362,8 @@ export function loadEnvConfig(): Partial<PluginConfig> {
 
   // External models configuration from environment
   const externalModelsDefaults: ExternalModelsConfig["defaults"] = {};
+  const glmModel = process.env.OMC_EXTERNAL_MODELS_DEFAULT_GLM_MODEL ?? process.env.OMC_GLM_DEFAULT_MODEL;
+  if (glmModel !== undefined) externalModelsDefaults.glmModel = glmModel;
 
   if (process.env.OMC_EXTERNAL_MODELS_DEFAULT_PROVIDER) {
     const provider = process.env.OMC_EXTERNAL_MODELS_DEFAULT_PROVIDER;
@@ -505,10 +508,11 @@ function warnOnDeprecatedDelegationRouting(config: PluginConfig): void {
 const CANONICAL_TEAM_ROLE_SET = new Set<string>(CANONICAL_TEAM_ROLES);
 const KNOWN_AGENT_NAME_SET = new Set<string>(KNOWN_AGENT_NAMES);
 // /team CLI workers — codex/gemini/grok/cursor here are CLI integrations, NOT the deprecated MCP delegationRouting providers.
-const TEAM_ROLE_PROVIDERS = new Set(["claude", "codex", "gemini", "grok", "cursor", "antigravity"]);
+const TEAM_ROLE_PROVIDERS = new Set(["claude", "codex", "gemini", "grok", "cursor", "antigravity", "glm"]);
 const TEAM_ROLE_TIERS = new Set(["HIGH", "MEDIUM", "LOW"]);
 
 export function validateTeamConfig(config: PluginConfig): void {
+  if (config.team?.glm !== undefined || config.team?.profile !== undefined) getGlmConfig(config);
   const team = (config as Record<string, unknown>).team as
     | Record<string, unknown>
     | undefined;
@@ -604,6 +608,7 @@ const AUTOPILOT_TEAM_AGENT_TYPES = new Set([
   "grok",
   "cursor",
   "antigravity",
+  "glm",
 ]);
 
 const AUTOPILOT_WORKFLOW_NAME = /^[a-z][a-z0-9-]{0,62}$/;
@@ -798,8 +803,8 @@ function parseTeamRoleOverridesFromEnv(): Record<string, TeamRoleAssignmentSpec>
   }
 }
 
-export function loadConfig(): PluginConfig {
-  const paths = getConfigPaths();
+export function loadConfig(cwd: string = process.cwd()): PluginConfig {
+  const paths = getConfigPaths(cwd);
 
   // Start with fresh defaults so env-based model overrides are resolved at call time
   let config = buildDefaultConfig();
@@ -826,6 +831,7 @@ export function loadConfig(): PluginConfig {
   // profile inputs and therefore cannot define or replace profiles.
   const envConfig = loadEnvConfig();
   config = deepMerge(config, envConfig);
+  config = applyGlmProfile(config);
 
   // Auto-enable forceInherit for non-standard providers (issues #1201, #1025)
   // Only auto-enable if user hasn't explicitly set it via config or env var.
@@ -1218,6 +1224,7 @@ export function generateConfigSchema(): object {
                 type: "string",
                 description: "Default Cursor model (ids from `cursor-agent --list-models`)",
               },
+              glmModel: { type: "string", description: "Optional GLM model override; otherwise the wrapper profile chooses" },
             },
           },
           rolePreferences: {
@@ -1377,7 +1384,7 @@ export function generateConfigSchema(): object {
                 type: "array",
                 items: {
                   type: "string",
-                  enum: ["claude", "codex", "gemini", "grok", "cursor", "antigravity"],
+                  enum: ["claude", "codex", "gemini", "grok", "cursor", "antigravity", "glm"],
                 },
                 description:
                   "Preferred CLI worker types for executor-style autopilot team execution tasks",
@@ -1390,13 +1397,24 @@ export function generateConfigSchema(): object {
         type: "object",
         description: "/team runtime configuration",
         properties: {
+          profile: { type: "string", enum: ["claude-glm-codex"] },
+          glm: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              command: { type: "string" },
+              fallback: { type: "boolean", enum: [false] },
+              defaultWorkers: { type: "integer", minimum: 1, maximum: 20 },
+              maxWorkers: { type: "integer", minimum: 1, maximum: 20 },
+            },
+          },
           ops: {
             type: "object",
             properties: {
               maxAgents: { type: "integer", minimum: 1 },
               defaultAgentType: {
                 type: "string",
-                enum: ["claude", "codex", "gemini", "grok", "cursor", "antigravity"],
+                enum: ["claude", "codex", "gemini", "grok", "cursor", "antigravity", "glm"],
                 default: "claude",
               },
               monitorIntervalMs: { type: "integer", minimum: 1 },
@@ -1410,7 +1428,7 @@ export function generateConfigSchema(): object {
             additionalProperties: {
               type: "object",
               properties: {
-                provider: { type: "string", enum: ["claude", "codex", "gemini", "grok", "cursor", "antigravity"] },
+                provider: { type: "string", enum: ["claude", "codex", "gemini", "grok", "cursor", "antigravity", "glm"] },
                 model: { type: "string" },
                 agent: { type: "string" },
               },

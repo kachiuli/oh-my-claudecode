@@ -122,6 +122,8 @@ import { createSwallowedErrorLogger } from '../lib/swallowed-error.js';
 import type { CanonicalTeamRole, PluginConfig, RoleAssignment, TeamRoleAssignmentSpec } from '../shared/types.js';
 import { CANONICAL_TEAM_ROLES } from '../shared/types.js';
 import { loadConfig } from '../config/loader.js';
+import { applyGlmProfile, getGlmConfig, resolveGlmExecutable } from './glm-config.js';
+import { isExternalLLMDisabled } from '../lib/security-config.js';
 import { buildResolvedRoutingSnapshot, getRoleRoutingSpec } from './stage-router.js';
 import { routeTaskToRole } from './role-router.js';
 import { normalizeDelegationRole } from '../features/delegation-routing/types.js';
@@ -934,6 +936,7 @@ const WORKER_STARTUP_EVIDENCE_POLICIES: Readonly<Record<CliAgentType, WorkerStar
   cursor: { initialBudgetMs: 30_000, finalRecheckBudgetMs: 1_000, resubmitAttempts: 0, resubmitBudgetMs: 0, engagedPaneRecheckBudgetMs: 30_000 },
   grok: { initialBudgetMs: 30_000, finalRecheckBudgetMs: 1_000, resubmitAttempts: 0, resubmitBudgetMs: 0, engagedPaneRecheckBudgetMs: 0 },
   antigravity: { initialBudgetMs: 30_000, finalRecheckBudgetMs: 1_000, resubmitAttempts: 0, resubmitBudgetMs: 0, engagedPaneRecheckBudgetMs: 0 },
+  glm: { initialBudgetMs: 30_000, finalRecheckBudgetMs: 1_000, resubmitAttempts: 0, resubmitBudgetMs: 0, engagedPaneRecheckBudgetMs: 0 },
 };
 
 const ENGAGED_PANE_RECHECK_TIMEOUT_ENV = 'OMC_TEAM_ENGAGED_PANE_RECHECK_MS';
@@ -3228,7 +3231,9 @@ export async function startTeamV2(config: StartTeamV2Config): Promise<TeamRuntim
   // for the team's lifetime (stickiness per plan AC-10): spawn/scaleUp/restart
   // all read this snapshot and never re-resolve. Config edits mid-lifetime
   // do NOT change routing — user must recreate the team to pick up changes.
-  const pluginCfg: PluginConfig = config.pluginConfig ?? loadConfig();
+  const pluginCfg: PluginConfig = applyGlmProfile(config.pluginConfig ?? loadConfig(leaderCwd));
+  // Pin pool capacity even when GLM workers are only added later by scale-up.
+  const glmMaxWorkers = getGlmConfig(pluginCfg, {}).maxWorkers;
   const resolvedRouting = buildResolvedRoutingSnapshot(pluginCfg);
   let worktreeMode: TeamWorktreeMode = normalizeTeamWorktreeMode(
     process.env.OMC_TEAM_WORKTREE_MODE ?? pluginCfg.team?.ops?.worktreeMode,
@@ -3238,6 +3243,9 @@ export async function startTeamV2(config: StartTeamV2Config): Promise<TeamRuntim
   // worker has a real branch the orchestrator can merge from.
   let autoMergeLeaderBranch: string | undefined;
   if (config.autoMerge) {
+    if (config.agentTypes.includes('glm') || pluginCfg.team?.profile === 'claude-glm-codex') {
+      throw new Error('GLM workers require explicit lead integration; auto-merge is disabled');
+    }
     if (!isRuntimeV2Enabled()) {
       throw new Error('auto-merge requires OMC_RUNTIME_V2=1 (this feature is v2-only).');
     }
@@ -3251,8 +3259,6 @@ export async function startTeamV2(config: StartTeamV2Config): Promise<TeamRuntim
       worktreeMode = 'named';
     }
   }
-
-  const workspaceMode = worktreeMode === 'disabled' ? 'single' as const : 'worktree' as const;
 
   const agentTypes = config.agentTypes as CliAgentType[];
   const workerNames = Array.from({ length: config.workerCount }, (_, index) => `worker-${index + 1}`);
@@ -3332,7 +3338,18 @@ export async function startTeamV2(config: StartTeamV2Config): Promise<TeamRuntim
   }
   for (const agentType of effectiveAgentTypes) {
     try {
-      resolvedBinaryPaths[agentType] = resolvePreflightBinaryPath(agentType).path;
+      if (agentType === 'glm') {
+        if (isExternalLLMDisabled()) throw new Error('GLM is blocked by disableExternalLLM security policy');
+        if (config.autoMerge) throw new Error('GLM workers require explicit lead integration; auto-merge is disabled');
+        // Selecting GLM opts into isolated implementation, including direct N:glm use.
+        worktreeMode = 'named';
+        const glm = getGlmConfig(pluginCfg);
+        const count = [...startupAssignments.values()].filter(assignment => assignment.agentType === 'glm').length;
+        if (count > glm.maxWorkers) throw new Error(`GLM worker count exceeds configured maxWorkers (${glm.maxWorkers}); queue additional tasks within the worker pool`);
+        resolvedBinaryPaths[agentType] = resolveGlmExecutable(glm.command);
+      } else {
+        resolvedBinaryPaths[agentType] = resolvePreflightBinaryPath(agentType).path;
+      }
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       missingBinaryReasons.push({ agentType, reason });
@@ -3494,6 +3511,7 @@ export async function startTeamV2(config: StartTeamV2Config): Promise<TeamRuntim
     governance: DEFAULT_TEAM_GOVERNANCE,
     worker_count: config.workerCount,
     max_workers: ABSOLUTE_MAX_WORKERS,
+    glm_max_workers: glmMaxWorkers,
     workers: workersInfo,
     created_at: new Date().toISOString(),
     tmux_session: sessionName,
@@ -3510,7 +3528,7 @@ export async function startTeamV2(config: StartTeamV2Config): Promise<TeamRuntim
       .map(role => normalizeDelegationRole(role))
       .filter((role): role is CanonicalTeamRole => (CANONICAL_TEAM_ROLES as readonly string[]).includes(role)),
     external_models_defaults: externalModelsDefaults,
-    workspace_mode: workspaceMode,
+    workspace_mode: worktreeMode === 'disabled' ? 'single' : 'worktree',
     worktree_mode: worktreeMode,
     service_descriptor: config.autoMerge
       ? { schema_version: 1, service_generation: 1, service_attempt_id: randomUUID(), auto_merge_enabled: true,

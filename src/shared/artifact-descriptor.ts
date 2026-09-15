@@ -53,6 +53,8 @@ export interface CreateArtifactDescriptorOptions {
 export interface WriteTextArtifactOptions extends CreateArtifactDescriptorOptions {
   path: string;
   content: string;
+  /** Refuse existing files/links at untrusted artifact boundaries. Existing callers retain overwrite behavior. */
+  exclusive?: boolean;
 }
 
 export interface CreateArtifactHandoffOptions {
@@ -92,7 +94,7 @@ export function createArtifactDescriptorFromPath(
 
 export function writeTextArtifact(options: WriteTextArtifactOptions): ArtifactDescriptor {
   mkdirSync(dirname(options.path), { recursive: true });
-  writeFileSync(options.path, options.content, { encoding: 'utf-8', mode: 0o600 });
+  writeFileSync(options.path, options.content, { encoding: 'utf-8', mode: 0o600, flag: options.exclusive ? 'wx' : 'w' });
 
   return createArtifactDescriptorFromPath(options.path, options);
 }

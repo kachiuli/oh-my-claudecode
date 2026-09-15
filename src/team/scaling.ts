@@ -11,6 +11,8 @@
  */
 
 import { join, resolve } from 'path';
+import { getGlmConfig } from './glm-config.js';
+import { loadConfig } from '../config/loader.js';
 import { mkdir, readFile, rm } from 'fs/promises';
 import { existsSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
@@ -69,7 +71,7 @@ import { loadWorkerLaunchAttempt, retireAndCleanupCurrentWorkerLaunchAttempt } f
 // ── Environment gate ──────────────────────────────────────────────────────────
 
 const OMC_TEAM_SCALING_ENABLED_ENV = 'OMC_TEAM_SCALING_ENABLED';
-const CLI_AGENT_TYPES = new Set<CliAgentType>(['claude', 'codex', 'gemini', 'grok', 'cursor', 'antigravity']);
+const CLI_AGENT_TYPES = new Set<CliAgentType>(['claude', 'codex', 'gemini', 'grok', 'cursor', 'antigravity', 'glm']);
 
 export function isScalingEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   const raw = env[OMC_TEAM_SCALING_ENABLED_ENV];
@@ -555,6 +557,18 @@ export async function scaleUpOwned(
       }
 
       let launchBinary: string;
+      if (workerAgentType === 'glm') {
+        if (config.service_descriptor?.auto_merge_enabled) {
+          return await rollbackScaleUp('GLM workers require explicit lead integration; auto-merge is disabled');
+        }
+        // Older teams lack a GLM snapshot. Resolve it from the leader's project
+        // once, then persist it with the worker reservation like routing limits.
+        const glmLimit = config.glm_max_workers ?? getGlmConfig(loadConfig(leaderCwd), env).maxWorkers;
+        if (config.workers.filter(worker => worker.worker_cli === 'glm').length >= glmLimit) {
+          return await rollbackScaleUp(`GLM worker limit reached (${glmLimit}); queue tasks within the existing pool`);
+        }
+        config = { ...config, glm_max_workers: glmLimit };
+      }
       try {
         assertHeadlessSupported(workerAgentType);
         clearResolvedPathCache();
@@ -569,18 +583,20 @@ export async function scaleUpOwned(
       const workerDirPath = absPath(leaderCwd, TeamPaths.workerDir(sanitized, workerName));
       await mkdir(workerDirPath, { recursive: true });
       let worktree: ReturnType<typeof ensureWorkerWorktree> = null;
-      if (worktreeMode !== 'disabled') {
+      const effectiveWorktreeMode = workerAgentType === 'glm' ? 'named' : worktreeMode;
+      if (effectiveWorktreeMode !== 'disabled') {
         const pending = { workerName, created: true,
           path: join(getOmcRoot(leaderCwd), 'team', sanitized, 'worktrees', workerName) };
         pendingWorktrees.push(pending);
         worktree = ensureWorkerWorktree(sanitized, workerName, leaderCwd, {
-          mode: worktreeMode,
+          mode: effectiveWorktreeMode,
           requireCleanLeader: true,
         });
         if (worktree) {
           pending.created = worktree.created;
           pending.path = worktree.path;
         }
+        if (workerAgentType === 'glm' && !worktree) throw new Error('GLM worker worktree required');
       }
       const workerCwd = worktree?.path ?? leaderCwd;
       let launchArgs: string[];

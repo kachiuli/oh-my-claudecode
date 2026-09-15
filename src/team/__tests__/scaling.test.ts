@@ -237,6 +237,7 @@ describe('scaleUp duplicate worker guard', () => {
   });
 
   afterEach(async () => {
+    vi.unstubAllEnvs();
     if (cwd) await rm(cwd, { recursive: true, force: true });
   });
 
@@ -256,6 +257,93 @@ describe('scaleUp duplicate worker guard', () => {
     expect(tmuxUtilsMocks.tmuxSpawn).toHaveBeenCalledWith([
       'split-window', '-v', '-t', '%1', '-d', '-P', '-F', '#{pane_id}', '-c', resolve(cwd),
     ]);
+  });
+
+  it('isolates GLM scale-up even when the existing team shares a workspace', async () => {
+    config = makeConfig({ worktree_mode: 'disabled', next_worker_index: 2 });
+    const worktreePath = join(cwd, '.omc', 'team', 'demo-team', 'worktrees', 'worker-2');
+    await mkdir(worktreePath, { recursive: true });
+    gitWorktreeMocks.ensureWorkerWorktree.mockReturnValue({ path: worktreePath, branch: 'omc-team/demo-team/worker-2', detached: false, created: true });
+    const result = await scaleUp('demo-team', 1, 'glm', [{ subject: 'demo', description: 'demo task' }], cwd,
+      { OMC_TEAM_SCALING_ENABLED: '1', OMC_TEAM_SKIP_READY_WAIT: '1' });
+    expect(result).toMatchObject({ ok: true });
+    expect(gitWorktreeMocks.ensureWorkerWorktree).toHaveBeenCalledWith('demo-team', 'worker-2', resolve(cwd), expect.objectContaining({ mode: 'named' }));
+    expect(config.workers.find(worker => worker.name === 'worker-2')).toMatchObject({ worker_cli: 'glm', working_dir: worktreePath });
+    gitWorktreeMocks.ensureWorkerWorktree.mockReset();
+  });
+
+  it('enforces the project GLM limit when a legacy Claude team first adds GLM workers', async () => {
+    vi.stubEnv('XDG_CONFIG_HOME', join(cwd, 'user-config'));
+    vi.stubEnv('APPDATA', join(cwd, 'user-config'));
+    await mkdir(join(cwd, '.claude'));
+    await writeFile(join(cwd, '.claude', 'omc.jsonc'), JSON.stringify({
+      team: { glm: { defaultWorkers: 1, maxWorkers: 1 } },
+    }));
+    expect(resolve(cwd)).not.toBe(process.cwd());
+    config = makeConfig({ next_worker_index: 2 });
+    gitWorktreeMocks.ensureWorkerWorktree.mockImplementation((_team: string, worker: string) => {
+      const worktreePath = join(cwd, '.omc', 'team', 'demo-team', 'worktrees', worker);
+      mkdirSync(worktreePath, { recursive: true });
+      return { path: worktreePath, branch: `omc-team/demo-team/${worker}`, detached: false, created: true };
+    });
+    gitWorktreeMocks.removeWorkerWorktree.mockImplementation((_team: string, worker: string) => {
+      rmSync(join(cwd, '.omc', 'team', 'demo-team', 'worktrees', worker), { recursive: true, force: true });
+    });
+    tmuxSessionMocks.getWorkerLiveness.mockResolvedValue('dead');
+    try {
+      const result = await scaleUp('demo-team', 2, 'glm', [], cwd,
+        { OMC_TEAM_SCALING_ENABLED: '1', OMC_TEAM_SKIP_READY_WAIT: '1' });
+      expect(result).toEqual({ ok: false, error: 'GLM worker limit reached (1); queue tasks within the existing pool' });
+      expect(config.workers.map(worker => worker.name)).toEqual(['worker-1']);
+      expect(config.active_scale_up).toBeUndefined();
+      expect(tmuxSessionMocks.spawnOwnedWorkerInPane).toHaveBeenCalledTimes(1);
+      expect(gitWorktreeMocks.removeWorkerWorktree).toHaveBeenCalledWith('demo-team', 'worker-2', resolve(cwd));
+    } finally {
+      gitWorktreeMocks.ensureWorkerWorktree.mockReset();
+      gitWorktreeMocks.removeWorkerWorktree.mockReset();
+      tmuxSessionMocks.getWorkerLiveness.mockReset();
+    }
+  });
+
+  it('persists the first GLM limit and keeps it authoritative after project config changes', async () => {
+    vi.stubEnv('XDG_CONFIG_HOME', join(cwd, 'user-config'));
+    vi.stubEnv('APPDATA', join(cwd, 'user-config'));
+    await mkdir(join(cwd, '.claude'));
+    const configPath = join(cwd, '.claude', 'omc.jsonc');
+    await writeFile(configPath, JSON.stringify({ team: { glm: { defaultWorkers: 1, maxWorkers: 1 } } }));
+    config = makeConfig({ next_worker_index: 2 });
+    const worktreePath = join(cwd, '.omc', 'team', 'demo-team', 'worktrees', 'worker-2');
+    await mkdir(worktreePath, { recursive: true });
+    gitWorktreeMocks.ensureWorkerWorktree.mockReturnValue({ path: worktreePath, branch: 'omc-team/demo-team/worker-2', detached: false, created: true });
+    try {
+      const first = await scaleUp('demo-team', 1, 'glm', [], cwd,
+        { OMC_TEAM_SCALING_ENABLED: '1', OMC_TEAM_SKIP_READY_WAIT: '1' });
+      expect(first).toMatchObject({ ok: true });
+      expect(config.glm_max_workers).toBe(1);
+      await writeFile(configPath, JSON.stringify({ team: { glm: { defaultWorkers: 1, maxWorkers: 6 } } }));
+      const second = await scaleUp('demo-team', 1, 'glm', [], cwd,
+        { OMC_TEAM_SCALING_ENABLED: '1', OMC_TEAM_SKIP_READY_WAIT: '1' });
+      expect(second).toEqual({ ok: false, error: 'GLM worker limit reached (1); queue tasks within the existing pool' });
+      expect(config.workers.map(worker => worker.name)).toEqual(['worker-1', 'worker-2']);
+      expect(tmuxSessionMocks.spawnOwnedWorkerInPane).toHaveBeenCalledTimes(1);
+    } finally {
+      gitWorktreeMocks.ensureWorkerWorktree.mockReset();
+    }
+  });
+
+  it('rejects invalid project GLM limits without creating worker resources for legacy teams', async () => {
+    vi.stubEnv('XDG_CONFIG_HOME', join(cwd, 'user-config'));
+    vi.stubEnv('APPDATA', join(cwd, 'user-config'));
+    await mkdir(join(cwd, '.claude'));
+    await writeFile(join(cwd, '.claude', 'omc.jsonc'), JSON.stringify({
+      team: { glm: { defaultWorkers: 1, maxWorkers: 0 } },
+    }));
+    const result = await scaleUp('demo-team', 1, 'glm', [], cwd,
+      { OMC_TEAM_SCALING_ENABLED: '1', OMC_TEAM_SKIP_READY_WAIT: '1' });
+    expect(result).toMatchObject({ ok: false, error: expect.stringContaining('team.glm worker counts must be integers') });
+    expect(gitWorktreeMocks.ensureWorkerWorktree).not.toHaveBeenCalled();
+    expect(tmuxSessionMocks.spawnOwnedWorkerInPane).not.toHaveBeenCalled();
+    expect(config.active_scale_up).toBeUndefined();
   });
 
   it.each(['claude', 'codex', 'gemini', 'antigravity', 'grok', 'cursor'] as const)(
