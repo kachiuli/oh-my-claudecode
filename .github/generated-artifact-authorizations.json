@@ -2,5 +2,410 @@
   "schemaVersion": 2,
   "repository": "kachiuli/oh-my-claudecode",
   "owner": "kachiuli",
-  "authorizations": []
+  "authorizations": [
+    {
+      "pullNumber": 6,
+      "targetRef": "main",
+      "mergeBaseSha": "b0e93d57c264dab85a6605061d1c3e0ca73e0c06",
+      "headSha": "af403dbf12e0322c2882a418dda88bf6c8beac84",
+      "owner": "kachiuli",
+      "expiresAt": "2026-09-27T22:45:57.610Z",
+      "generatedDelta": {
+        "count": 65,
+        "sha256": "62371345976fcb62b210e93ad72d0a3115d93d539bd3bf415b45379712d09410"
+      },
+      "generatedFiles": [
+        {
+          "status": "modified",
+          "filename": "bridge/cli.cjs",
+          "sha": "0079d9ea8ecfed686d2ee32f7e6c4ca006ff1fef",
+          "previousFilename": null
+        },
+        {
+          "status": "modified",
+          "filename": "bridge/mcp-server.cjs",
+          "sha": "c10e2d35130c2a6fcffd7cc065ff269af03d4a37",
+          "previousFilename": null
+        },
+        {
+          "status": "modified",
+          "filename": "bridge/runtime-cli.cjs",
+          "sha": "f2666783324752894e5b951094e3fbf444b4f799",
+          "previousFilename": null
+        },
+        {
+          "status": "modified",
+          "filename": "bridge/team-mcp.cjs",
+          "sha": "0f7693163dbd379b39fdb7ae565ec21360798b3b",
+          "previousFilename": null
+        },
+        {
+          "status": "modified",
+          "filename": "bridge/team.js",
+          "sha": "23d8db20644b736592fec58c33a6e83ea269fb5c",
+          "previousFilename": null
+        },
+        {
+          "status": "modified",
+          "filename": "dist/cli/ask.d.ts",
+          "sha": "b10df4874d77bf64fe31bdda26bd4bc322af040c",
+          "previousFilename": null
+        },
+        {
+          "status": "modified",
+          "filename": "dist/cli/ask.js",
+          "sha": "c8b06e5333d343f6c8c22a8e335b9c20284061e2",
+          "previousFilename": null
+        },
+        {
+          "status": "modified",
+          "filename": "dist/cli/commands/doctor-team-routing.js",
+          "sha": "b0e2a7b22508cc5ac2ec5f652d798f47eb2a12a8",
+          "previousFilename": null
+        },
+        {
+          "status": "added",
+          "filename": "dist/cli/commands/orchestrator.js",
+          "sha": "cfc35a296e045817dcd0911d25e25a9821b8979a",
+          "previousFilename": null
+        },
+        {
+          "status": "added",
+          "filename": "dist/cli/commands/team-workflow.js",
+          "sha": "3703040ae2a82a53d468377adae6a6e5d5e315e2",
+          "previousFilename": null
+        },
+        {
+          "status": "modified",
+          "filename": "dist/cli/commands/team.d.ts",
+          "sha": "c4201994efdb15ac954106d776fbba88bf4a26f2",
+          "previousFilename": null
+        },
+        {
+          "status": "modified",
+          "filename": "dist/cli/commands/team.js",
+          "sha": "0803ef02a9464d87a0b5f23cb092ff5536ec321c",
+          "previousFilename": null
+        },
+        {
+          "status": "modified",
+          "filename": "dist/cli/index.js",
+          "sha": "74477ceb03212fbb3dac20cb7e9ab12097bad3a0",
+          "previousFilename": null
+        },
+        {
+          "status": "modified",
+          "filename": "dist/cli/launch.d.ts",
+          "sha": "35e98c5ea933d3df7f33795c365297994dcad815",
+          "previousFilename": null
+        },
+        {
+          "status": "modified",
+          "filename": "dist/cli/launch.js",
+          "sha": "2f3362622b729826b18568f1569f8f0b077060c8",
+          "previousFilename": null
+        },
+        {
+          "status": "added",
+          "filename": "dist/cli/project-launch.js",
+          "sha": "11b60554b6c9606aa0697dc8b06462e611d572f6",
+          "previousFilename": null
+        },
+        {
+          "status": "modified",
+          "filename": "dist/cli/team.js",
+          "sha": "2e4170a77c3d046877c04e1f4485c7a2a4b24f54",
+          "previousFilename": null
+        },
+        {
+          "status": "modified",
+          "filename": "dist/config/loader.d.ts",
+          "sha": "47ff611703666f9c3fe5dc0a896de3c176beabe2",
+          "previousFilename": null
+        },
+        {
+          "status": "modified",
+          "filename": "dist/config/loader.js",
+          "sha": "fa1ef7922c08972e95c86c8e1bbbd9e3a5116842",
+          "previousFilename": null
+        },
+        {
+          "status": "modified",
+          "filename": "dist/graph/schema.d.ts",
+          "sha": "93cfacc6b9eddaf4b52fddf0a3eee002d7684204",
+          "previousFilename": null
+        },
+        {
+          "status": "modified",
+          "filename": "dist/hooks/autopilot/adapters/execution-adapter.js",
+          "sha": "0c05c23995ae766a1710e6df66472cbf6b72b52e",
+          "previousFilename": null
+        },
+        {
+          "status": "modified",
+          "filename": "dist/hooks/autopilot/pipeline-types.d.ts",
+          "sha": "7f0928a77fbd799d7778bf5036a50a2e069f1099",
+          "previousFilename": null
+        },
+        {
+          "status": "modified",
+          "filename": "dist/hooks/bridge.js",
+          "sha": "1606a69dd4bdf3b17d930b04ac99e5dfb96ab3d5",
+          "previousFilename": null
+        },
+        {
+          "status": "added",
+          "filename": "dist/hosts/adapters.js",
+          "sha": "b60e2e0eaf0d42937c5d6af8b25c8f50bbdfdfa8",
+          "previousFilename": null
+        },
+        {
+          "status": "added",
+          "filename": "dist/hosts/asset-ownership.js",
+          "sha": "9e75b7b0e53f738b559b6d03085e1d79665d7d6d",
+          "previousFilename": null
+        },
+        {
+          "status": "added",
+          "filename": "dist/hosts/codex-config.js",
+          "sha": "82a08e1c15cbb8f0d15d882b89ca41c6b907a5d9",
+          "previousFilename": null
+        },
+        {
+          "status": "added",
+          "filename": "dist/hosts/hooks.js",
+          "sha": "282b3cbc3f8ef1fa377f4bfaaa23dfb2db3146af",
+          "previousFilename": null
+        },
+        {
+          "status": "added",
+          "filename": "dist/hosts/project-ignore.js",
+          "sha": "f6adbe57507643adbd13a25db88018371d6abc31",
+          "previousFilename": null
+        },
+        {
+          "status": "added",
+          "filename": "dist/hosts/project-setup.js",
+          "sha": "bbc058f56f41a02a4e07f7bab90a1355a49f780b",
+          "previousFilename": null
+        },
+        {
+          "status": "modified",
+          "filename": "dist/lib/worktree-paths.d.ts",
+          "sha": "6dc402ecf3c46bda7804ea9d839419ea44528405",
+          "previousFilename": null
+        },
+        {
+          "status": "modified",
+          "filename": "dist/lib/worktree-paths.js",
+          "sha": "a33817bb4798007cc37430763be0a6a2b3748a3b",
+          "previousFilename": null
+        },
+        {
+          "status": "added",
+          "filename": "dist/orchestration/selection.js",
+          "sha": "62f3673675ab6afa4f3faaa6f3d73e9dc870b37f",
+          "previousFilename": null
+        },
+        {
+          "status": "added",
+          "filename": "dist/orchestration/state.js",
+          "sha": "54db2947f6644eb51a6750d8a0d4c0d8d258c4d9",
+          "previousFilename": null
+        },
+        {
+          "status": "modified",
+          "filename": "dist/shared/artifact-descriptor.d.ts",
+          "sha": "d0f47abe163d6e04bbd77346bd4d911caba93264",
+          "previousFilename": null
+        },
+        {
+          "status": "modified",
+          "filename": "dist/shared/artifact-descriptor.js",
+          "sha": "32d71734a3387369f0c62ceb9063d8b8232f3d5f",
+          "previousFilename": null
+        },
+        {
+          "status": "modified",
+          "filename": "dist/shared/types.d.ts",
+          "sha": "00c32cf1d803fecc24207c8fad4caaa54f0a820a",
+          "previousFilename": null
+        },
+        {
+          "status": "modified",
+          "filename": "dist/team/capabilities.js",
+          "sha": "93810c11f0c8a61e0fe19fac66a7718af4240831",
+          "previousFilename": null
+        },
+        {
+          "status": "modified",
+          "filename": "dist/team/cli-detection.d.ts",
+          "sha": "30ab15cb0880f9682090bd0837c89403562b0ada",
+          "previousFilename": null
+        },
+        {
+          "status": "modified",
+          "filename": "dist/team/cli-detection.js",
+          "sha": "88f62fc2fb222eefc784785c6649e1428793b3f3",
+          "previousFilename": null
+        },
+        {
+          "status": "modified",
+          "filename": "dist/team/git-worktree.js",
+          "sha": "0d165c9be7441ce86c2620dfb6bdbb9eae720699",
+          "previousFilename": null
+        },
+        {
+          "status": "added",
+          "filename": "dist/team/glm-config.d.ts",
+          "sha": "b1df5cd377a19791cb1ce41dedb9869e0989935e",
+          "previousFilename": null
+        },
+        {
+          "status": "added",
+          "filename": "dist/team/glm-config.js",
+          "sha": "68438277cc61542852ab43905f644c72d636b2fc",
+          "previousFilename": null
+        },
+        {
+          "status": "modified",
+          "filename": "dist/team/model-contract.d.ts",
+          "sha": "2e1b4b2a4458c3877e5dde306e04e4211608ce5c",
+          "previousFilename": null
+        },
+        {
+          "status": "modified",
+          "filename": "dist/team/model-contract.js",
+          "sha": "e070a92aba7d0447fb11052400c48e3870aaff71",
+          "previousFilename": null
+        },
+        {
+          "status": "modified",
+          "filename": "dist/team/monitor.js",
+          "sha": "8bcb4e59ef65a1b15eef3c6207e949f1486b7b5f",
+          "previousFilename": null
+        },
+        {
+          "status": "modified",
+          "filename": "dist/team/pane-readiness.js",
+          "sha": "5ccfbeffb246824bc6a2a2b6ce44bf88de23d9f0",
+          "previousFilename": null
+        },
+        {
+          "status": "modified",
+          "filename": "dist/team/runtime-v2.js",
+          "sha": "88a0e4b17dff7aed372848d5fbec1b89a55f5c3e",
+          "previousFilename": null
+        },
+        {
+          "status": "modified",
+          "filename": "dist/team/runtime.js",
+          "sha": "f3089dfda72bebbfc3d50203db6ee0c85b6344dc",
+          "previousFilename": null
+        },
+        {
+          "status": "modified",
+          "filename": "dist/team/scaling.js",
+          "sha": "de8eb067368097df27cae61583d3b061a30e5b26",
+          "previousFilename": null
+        },
+        {
+          "status": "modified",
+          "filename": "dist/team/stage-router.js",
+          "sha": "7210f8a27ce3a4fc543139da434c117a795a15b2",
+          "previousFilename": null
+        },
+        {
+          "status": "modified",
+          "filename": "dist/team/team-status.d.ts",
+          "sha": "d8ed7fe0b62b7279cc8e10487aaf8c70d7f837ce",
+          "previousFilename": null
+        },
+        {
+          "status": "modified",
+          "filename": "dist/team/types.d.ts",
+          "sha": "3457e6ab84bf8be65afb52562d79d6ce41587876",
+          "previousFilename": null
+        },
+        {
+          "status": "modified",
+          "filename": "dist/team/unified-team.js",
+          "sha": "d59545e341f1161822b5ce5a4fe93c291d80a32e",
+          "previousFilename": null
+        },
+        {
+          "status": "modified",
+          "filename": "dist/team/worker-bootstrap.js",
+          "sha": "890a75a1c13d4fbaf97d4c3109a7756bf772518b",
+          "previousFilename": null
+        },
+        {
+          "status": "modified",
+          "filename": "dist/team/worker-commit-cadence.d.ts",
+          "sha": "e8c07abcd26835dc65908a2b097519925bf669da",
+          "previousFilename": null
+        },
+        {
+          "status": "modified",
+          "filename": "dist/team/worker-launch-ack.js",
+          "sha": "d7e5babc39936d278624ed03c40e36440004d683",
+          "previousFilename": null
+        },
+        {
+          "status": "added",
+          "filename": "dist/team/workflow-adapters.js",
+          "sha": "136b3f4a6859c9649ac019dc102e9fb29bc323ee",
+          "previousFilename": null
+        },
+        {
+          "status": "added",
+          "filename": "dist/team/workflow-contracts.js",
+          "sha": "44f0cb9cf907ad4851dddc2b7aa6a5c520499480",
+          "previousFilename": null
+        },
+        {
+          "status": "added",
+          "filename": "dist/team/workflow-process.js",
+          "sha": "b85a0230acd69528e1abb41a1a7398e831417371",
+          "previousFilename": null
+        },
+        {
+          "status": "added",
+          "filename": "dist/team/workflow-prompt.js",
+          "sha": "a4317199c69c070a0c93bb6576cd7910d4a030ca",
+          "previousFilename": null
+        },
+        {
+          "status": "added",
+          "filename": "dist/team/workflow-publication.js",
+          "sha": "ae3805e5e4077c5e176f7d3252b36ec3b74589d0",
+          "previousFilename": null
+        },
+        {
+          "status": "added",
+          "filename": "dist/team/workflow-ref-audit.js",
+          "sha": "d1199cb69a21cad82433fa7ab4e521604b442b22",
+          "previousFilename": null
+        },
+        {
+          "status": "added",
+          "filename": "dist/team/workflow-report.js",
+          "sha": "202be87bb70c3ef3437d867df1139ad109328c88",
+          "previousFilename": null
+        },
+        {
+          "status": "added",
+          "filename": "dist/team/workflow-usage.js",
+          "sha": "4c5b299929a06b35a24e84746b0f7d51f548bc66",
+          "previousFilename": null
+        },
+        {
+          "status": "added",
+          "filename": "dist/team/workflow.js",
+          "sha": "aa173d02321a5ca2023574f127dd1687b445343d",
+          "previousFilename": null
+        }
+      ]
+    }
+  ]
 }
