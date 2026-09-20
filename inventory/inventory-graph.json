@@ -5,15 +5,15 @@
   "provenance": {
     "base": "05c800f40d1ad53b42a78609d2667ef4f726808b",
     "planningHead": "0a91273e61dbbd47eb0af4c02844409251e08398",
-    "head": "e810e25aa41e59fe67673a6bdfad4694b083648d",
-    "sourceSha256": "851e288fd4fed0c3ef14bb0a8aba3d25986c293134e72afe254c491269581c3f",
+    "head": "23dc1204485d5b58cdfb714b847d5cff8b9ba82a",
+    "sourceSha256": "12fd49cf5779e94442cb80a42d7e3ad6d0890878a3dacc2a0c7b213e9c4810ef",
     "generatedAt": null,
     "generator": "scripts/generate-inventory-graph.mjs"
   },
   "base": "05c800f40d1ad53b42a78609d2667ef4f726808b",
   "planningHead": "0a91273e61dbbd47eb0af4c02844409251e08398",
-  "head": "e810e25aa41e59fe67673a6bdfad4694b083648d",
-  "sourceSha256": "851e288fd4fed0c3ef14bb0a8aba3d25986c293134e72afe254c491269581c3f",
+  "head": "23dc1204485d5b58cdfb714b847d5cff8b9ba82a",
+  "sourceSha256": "12fd49cf5779e94442cb80a42d7e3ad6d0890878a3dacc2a0c7b213e9c4810ef",
   "counts": {
     "public": {
       "skills": 39,
@@ -32,9 +32,9 @@
       "total": 1416
     },
     "generated": {
-      "distFiles": 5074,
+      "distFiles": 5054,
       "bridgeFiles": 9,
-      "total": 5083
+      "total": 5063
     },
     "prompt": {
       "promptLikeFiles": 63
@@ -2216,7 +2216,6 @@
       "dist/cli/commands/doctor-team-routing.d.ts.map",
       "dist/cli/commands/doctor-team-routing.js",
       "dist/cli/commands/doctor-team-routing.js.map",
-      "dist/cli/commands/orchestrator.d.ts",
       "dist/cli/commands/orchestrator.js",
       "dist/cli/commands/ralphthon.d.ts",
       "dist/cli/commands/ralphthon.d.ts.map",
@@ -2230,7 +2229,6 @@
       "dist/cli/commands/session-search.d.ts.map",
       "dist/cli/commands/session-search.js",
       "dist/cli/commands/session-search.js.map",
-      "dist/cli/commands/team-workflow.d.ts",
       "dist/cli/commands/team-workflow.js",
       "dist/cli/commands/team.d.ts",
       "dist/cli/commands/team.d.ts.map",
@@ -2270,7 +2268,6 @@
       "dist/cli/lookout.d.ts.map",
       "dist/cli/lookout.js",
       "dist/cli/lookout.js.map",
-      "dist/cli/project-launch.d.ts",
       "dist/cli/project-launch.js",
       "dist/cli/team.d.ts",
       "dist/cli/team.d.ts.map",
@@ -3872,17 +3869,11 @@
       "dist/hooks/wiki/types.d.ts.map",
       "dist/hooks/wiki/types.js",
       "dist/hooks/wiki/types.js.map",
-      "dist/hosts/adapters.d.ts",
       "dist/hosts/adapters.js",
-      "dist/hosts/asset-ownership.d.ts",
       "dist/hosts/asset-ownership.js",
-      "dist/hosts/codex-config.d.ts",
       "dist/hosts/codex-config.js",
-      "dist/hosts/hooks.d.ts",
       "dist/hosts/hooks.js",
-      "dist/hosts/project-ignore.d.ts",
       "dist/hosts/project-ignore.js",
-      "dist/hosts/project-setup.d.ts",
       "dist/hosts/project-setup.js",
       "dist/hud/__tests__/autopilot-profile.test.d.ts",
       "dist/hud/__tests__/autopilot-profile.test.d.ts.map",
@@ -4611,9 +4602,7 @@
       "dist/openclaw/types.d.ts.map",
       "dist/openclaw/types.js",
       "dist/openclaw/types.js.map",
-      "dist/orchestration/selection.d.ts",
       "dist/orchestration/selection.js",
-      "dist/orchestration/state.d.ts",
       "dist/orchestration/state.js",
       "dist/planning/__tests__/artifacts.test.d.ts",
       "dist/planning/__tests__/artifacts.test.d.ts.map",
@@ -5545,23 +5534,14 @@
       "dist/team/worker-restart.d.ts.map",
       "dist/team/worker-restart.js",
       "dist/team/worker-restart.js.map",
-      "dist/team/workflow-adapters.d.ts",
       "dist/team/workflow-adapters.js",
-      "dist/team/workflow-contracts.d.ts",
       "dist/team/workflow-contracts.js",
-      "dist/team/workflow-process.d.ts",
       "dist/team/workflow-process.js",
-      "dist/team/workflow-prompt.d.ts",
       "dist/team/workflow-prompt.js",
-      "dist/team/workflow-publication.d.ts",
       "dist/team/workflow-publication.js",
-      "dist/team/workflow-ref-audit.d.ts",
       "dist/team/workflow-ref-audit.js",
-      "dist/team/workflow-report.d.ts",
       "dist/team/workflow-report.js",
-      "dist/team/workflow-usage.d.ts",
       "dist/team/workflow-usage.js",
-      "dist/team/workflow.d.ts",
       "dist/team/workflow.js",
       "dist/tools/__tests__/cancel-integration.test.d.ts",
       "dist/tools/__tests__/cancel-integration.test.d.ts.map",
@@ -14244,11 +14224,6 @@
         "path": "dist/cli/commands/doctor-team-routing.js.map"
       },
       {
-        "id": "dist/cli/commands/orchestrator.d.ts",
-        "kind": "generated-dist",
-        "path": "dist/cli/commands/orchestrator.d.ts"
-      },
-      {
         "id": "dist/cli/commands/orchestrator.js",
         "kind": "generated-dist",
         "path": "dist/cli/commands/orchestrator.js"
@@ -14312,11 +14287,6 @@
         "id": "dist/cli/commands/session-search.js.map",
         "kind": "generated-dist",
         "path": "dist/cli/commands/session-search.js.map"
-      },
-      {
-        "id": "dist/cli/commands/team-workflow.d.ts",
-        "kind": "generated-dist",
-        "path": "dist/cli/commands/team-workflow.d.ts"
       },
       {
         "id": "dist/cli/commands/team-workflow.js",
@@ -14512,11 +14482,6 @@
         "id": "dist/cli/lookout.js.map",
         "kind": "generated-dist",
         "path": "dist/cli/lookout.js.map"
-      },
-      {
-        "id": "dist/cli/project-launch.d.ts",
-        "kind": "generated-dist",
-        "path": "dist/cli/project-launch.d.ts"
       },
       {
         "id": "dist/cli/project-launch.js",
@@ -22524,19 +22489,9 @@
         "path": "dist/hooks/wiki/types.js.map"
       },
       {
-        "id": "dist/hosts/adapters.d.ts",
-        "kind": "generated-dist",
-        "path": "dist/hosts/adapters.d.ts"
-      },
-      {
         "id": "dist/hosts/adapters.js",
         "kind": "generated-dist",
         "path": "dist/hosts/adapters.js"
-      },
-      {
-        "id": "dist/hosts/asset-ownership.d.ts",
-        "kind": "generated-dist",
-        "path": "dist/hosts/asset-ownership.d.ts"
       },
       {
         "id": "dist/hosts/asset-ownership.js",
@@ -22544,19 +22499,9 @@
         "path": "dist/hosts/asset-ownership.js"
       },
       {
-        "id": "dist/hosts/codex-config.d.ts",
-        "kind": "generated-dist",
-        "path": "dist/hosts/codex-config.d.ts"
-      },
-      {
         "id": "dist/hosts/codex-config.js",
         "kind": "generated-dist",
         "path": "dist/hosts/codex-config.js"
-      },
-      {
-        "id": "dist/hosts/hooks.d.ts",
-        "kind": "generated-dist",
-        "path": "dist/hosts/hooks.d.ts"
       },
       {
         "id": "dist/hosts/hooks.js",
@@ -22564,19 +22509,9 @@
         "path": "dist/hosts/hooks.js"
       },
       {
-        "id": "dist/hosts/project-ignore.d.ts",
-        "kind": "generated-dist",
-        "path": "dist/hosts/project-ignore.d.ts"
-      },
-      {
         "id": "dist/hosts/project-ignore.js",
         "kind": "generated-dist",
         "path": "dist/hosts/project-ignore.js"
-      },
-      {
-        "id": "dist/hosts/project-setup.d.ts",
-        "kind": "generated-dist",
-        "path": "dist/hosts/project-setup.d.ts"
       },
       {
         "id": "dist/hosts/project-setup.js",
@@ -26219,19 +26154,9 @@
         "path": "dist/openclaw/types.js.map"
       },
       {
-        "id": "dist/orchestration/selection.d.ts",
-        "kind": "generated-dist",
-        "path": "dist/orchestration/selection.d.ts"
-      },
-      {
         "id": "dist/orchestration/selection.js",
         "kind": "generated-dist",
         "path": "dist/orchestration/selection.js"
-      },
-      {
-        "id": "dist/orchestration/state.d.ts",
-        "kind": "generated-dist",
-        "path": "dist/orchestration/state.d.ts"
       },
       {
         "id": "dist/orchestration/state.js",
@@ -30889,19 +30814,9 @@
         "path": "dist/team/worker-restart.js.map"
       },
       {
-        "id": "dist/team/workflow-adapters.d.ts",
-        "kind": "generated-dist",
-        "path": "dist/team/workflow-adapters.d.ts"
-      },
-      {
         "id": "dist/team/workflow-adapters.js",
         "kind": "generated-dist",
         "path": "dist/team/workflow-adapters.js"
-      },
-      {
-        "id": "dist/team/workflow-contracts.d.ts",
-        "kind": "generated-dist",
-        "path": "dist/team/workflow-contracts.d.ts"
       },
       {
         "id": "dist/team/workflow-contracts.js",
@@ -30909,19 +30824,9 @@
         "path": "dist/team/workflow-contracts.js"
       },
       {
-        "id": "dist/team/workflow-process.d.ts",
-        "kind": "generated-dist",
-        "path": "dist/team/workflow-process.d.ts"
-      },
-      {
         "id": "dist/team/workflow-process.js",
         "kind": "generated-dist",
         "path": "dist/team/workflow-process.js"
-      },
-      {
-        "id": "dist/team/workflow-prompt.d.ts",
-        "kind": "generated-dist",
-        "path": "dist/team/workflow-prompt.d.ts"
       },
       {
         "id": "dist/team/workflow-prompt.js",
@@ -30929,19 +30834,9 @@
         "path": "dist/team/workflow-prompt.js"
       },
       {
-        "id": "dist/team/workflow-publication.d.ts",
-        "kind": "generated-dist",
-        "path": "dist/team/workflow-publication.d.ts"
-      },
-      {
         "id": "dist/team/workflow-publication.js",
         "kind": "generated-dist",
         "path": "dist/team/workflow-publication.js"
-      },
-      {
-        "id": "dist/team/workflow-ref-audit.d.ts",
-        "kind": "generated-dist",
-        "path": "dist/team/workflow-ref-audit.d.ts"
       },
       {
         "id": "dist/team/workflow-ref-audit.js",
@@ -30949,29 +30844,14 @@
         "path": "dist/team/workflow-ref-audit.js"
       },
       {
-        "id": "dist/team/workflow-report.d.ts",
-        "kind": "generated-dist",
-        "path": "dist/team/workflow-report.d.ts"
-      },
-      {
         "id": "dist/team/workflow-report.js",
         "kind": "generated-dist",
         "path": "dist/team/workflow-report.js"
       },
       {
-        "id": "dist/team/workflow-usage.d.ts",
-        "kind": "generated-dist",
-        "path": "dist/team/workflow-usage.d.ts"
-      },
-      {
         "id": "dist/team/workflow-usage.js",
         "kind": "generated-dist",
         "path": "dist/team/workflow-usage.js"
-      },
-      {
-        "id": "dist/team/workflow.d.ts",
-        "kind": "generated-dist",
-        "path": "dist/team/workflow.d.ts"
       },
       {
         "id": "dist/team/workflow.js",
@@ -80712,12 +80592,12 @@
       }
     ],
     "stats": {
-      "nodeCount": 7079,
+      "nodeCount": 7059,
       "edgeCount": 7774,
       "importEdgeCount": 6411,
       "registerEdgeCount": 60
     }
   },
   "inventorySha256": "3b060be949c55191b9ac4d5bb848a98eb7309b835b64157ef9ad451591f272f7",
-  "manifestSha256": "63748fcc21d23c797d232fca664699cfd3697d777f6458da48a6965d091a88dc"
+  "manifestSha256": "33289157f5356509f031197cd35dd40567f8e67ed358d3d42fa642f6b602ac18"
 }
