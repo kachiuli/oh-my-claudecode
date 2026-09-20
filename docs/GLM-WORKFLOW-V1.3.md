@@ -1,8 +1,7 @@
 # Workflow V1.3: one optional supervised provider policy
 
-Status: local candidate with passing focused checks. V1.3 adds a single opt-in
-initialization policy to both existing profiles; it is not a published release
-and it does not migrate, upgrade or repair any earlier saved run. The
+V1.3 adds a single opt-in initialization policy to both existing profiles.
+It does not migrate, upgrade or repair any earlier saved run. The
 [V1/V1.1 guide](GLM-WORKFLOW.md), the
 [V1.2 role-substitution setup](GLM-WORKFLOW-V1.2.md) and their
 [validation status](GLM-WORKFLOW-V1.2-VALIDATION.md) remain accurate for the
@@ -54,8 +53,8 @@ stops a provider on elapsed time:
   process or an artifact directory in a state the controller never observed.
   Preserve the state directory and the retained worker worktree for inspection
   rather than assuming cleanup finished.
-- a provider that ends without a complete, parseable stream is not retried.
-  `workflow_output_incomplete` is terminal, exactly like `workflow_timeout` and
+- inherited output that does not finish draining after its parent exits reports
+  `workflow_output_incomplete` and is not retried. It is terminal, like `workflow_timeout` and
   `workflow_interrupted`: the attempt, its invocation record and its process
   artifacts stay inspectable, and remaining attempt budget is not spent on an
   automatic second dispatch.
@@ -144,7 +143,7 @@ already activated, including its existing cutoff: an old R4 runner and its
 one-hour bound stay in force for the workflows that were saved against it, and
 V1.3 does not rewrite them.
 
-A future wrapper that needs to bound its own non-provider controller call can
+A future wrapper that needs to remove the bound on its non-provider controller call can
 select the low-level `timeoutMs: null` process mode directly. That is a
 controller-side choice about one child process; it is not the workflow policy,
 must not be reported as a supervised provider, and must not be used to relax the
