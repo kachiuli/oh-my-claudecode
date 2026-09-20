@@ -29,6 +29,17 @@ describe('team workflow CLI', () => {
   });
   afterEach(() => { process.exitCode = 0; vi.restoreAllMocks(); rmSync(root, { recursive: true, force: true }); rmSync(privateRoot, { recursive: true, force: true }); });
 
+  function planFile() {
+    const file = join(root, 'plan.json'); writeFileSync(file, JSON.stringify({ name: 'feature' })); return file;
+  }
+
+  function bindingsFile() {
+    const file = join(root, 'roles.json');
+    writeFileSync(file, JSON.stringify({
+      lead: { id: 'external-lead' }, implementer: { id: 'claude-worker' }, reviewer: { id: 'claude-reviewer' } }));
+    return file;
+  }
+
   function runtimeFile(overrides: Record<string, unknown> = {}, file = join(privateRoot, 'runtime.json')) {
     writeFileSync(file, JSON.stringify({ schemaVersion: 1,
       profiles: { 'normal-claude': { providerRoute: 'claude', environment: { ANTHROPIC_API_KEY: 'synthetic-private-value' }, files: [] } },
@@ -193,6 +204,62 @@ describe('team workflow CLI', () => {
     await workflowCommand(['init', '--file', file, '--workers', '3', '--max-review-passes', '2'], root);
     expect(api.initWorkflow).toHaveBeenCalledWith(root, { name: 'feature' }, { workers: 3, maxReviewPasses: 2 });
     expect(console.log).toHaveBeenCalledWith(JSON.stringify({ name: 'feature', stage: 'planned' }));
+  });
+
+  it('forwards an explicit timeout to legacy initialization', async () => {
+    await workflowCommand(['init', '--file', planFile(), '--timeout-ms', '3600000'], root);
+    expect(api.initWorkflow).toHaveBeenCalledWith(root, { name: 'feature' }, { timeoutMs: 3600000 });
+    expect(api.initWorkflowV2).not.toHaveBeenCalled();
+  });
+
+  it('forwards the same timeout to role-substitution initialization', async () => {
+    await workflowCommand(['init', '--file', planFile(), '--profile', 'role-substitution',
+      '--bindings', bindingsFile(), '--timeout-ms', '3600000'], root);
+    expect(api.initWorkflowV2).toHaveBeenCalledWith(root, { name: 'feature' },
+      { lead: { id: 'external-lead' }, implementer: { id: 'claude-worker' }, reviewer: { id: 'claude-reviewer' } },
+      { mode: 'balanced', timeoutMs: 3600000 });
+    expect(api.initWorkflow).not.toHaveBeenCalled();
+  });
+
+  it.each(['100', '3600000'])('accepts the inclusive timeout boundary %s', async value => {
+    await workflowCommand(['init', '--file', planFile(), '--timeout-ms', value], root);
+    expect(api.initWorkflow).toHaveBeenCalledWith(root, { name: 'feature' }, { timeoutMs: Number(value) });
+  });
+
+  it.each([
+    'malformed', '1.5', '-1', '0', '99', '3600001', '9007199254740993', '+100', '1e3', ' 100', '100 ',
+  ])('refuses the invalid timeout %j as an invalid limit before initialization', async value => {
+    await expect(workflowCommand(['init', '--file', planFile(), '--timeout-ms', value], root))
+      .rejects.toThrow('workflow_invalid_limit');
+    expect(api.initWorkflow).not.toHaveBeenCalled(); expect(api.initWorkflowV2).not.toHaveBeenCalled();
+  });
+
+  it('refuses a missing or duplicate timeout flag before initialization', async () => {
+    const file = planFile();
+    await expect(workflowCommand(['init', '--file', file, '--timeout-ms'], root))
+      .rejects.toThrow('workflow_invalid_arguments');
+    await expect(workflowCommand(['init', '--file', file, '--timeout-ms', '1000', '--timeout-ms', '1000'], root))
+      .rejects.toThrow('workflow_invalid_arguments');
+    expect(api.initWorkflow).not.toHaveBeenCalled(); expect(api.initWorkflowV2).not.toHaveBeenCalled();
+  });
+
+  it('omits timeoutMs when the flag is absent so the saved controller default is unchanged', async () => {
+    await workflowCommand(['init', '--file', planFile()], root);
+    const legacy = api.initWorkflow.mock.calls[0] as unknown as [string, unknown, Record<string, unknown>];
+    expect(legacy[2]).toEqual({});
+    expect(legacy[2]).not.toHaveProperty('timeoutMs');
+    await workflowCommand(['init', '--file', planFile(), '--profile', 'role-substitution', '--bindings', bindingsFile()], root);
+    const substitution = api.initWorkflowV2.mock.calls[0] as unknown as [string, unknown, unknown, Record<string, unknown>];
+    expect(substitution[3]).not.toHaveProperty('timeoutMs');
+  });
+
+  it('documents the timeout flag for init only', async () => {
+    await workflowCommand(['--help'], root);
+    const help = vi.mocked(console.log).mock.calls.map(call => String(call[0])).join('\n');
+    expect(help.slice(help.indexOf('init --file'), help.indexOf('run <name>'))).toContain('--timeout-ms');
+    expect(help.split('\n').filter(line => line.includes('--timeout-ms'))).toHaveLength(1);
+    await expect(workflowCommand(['run', 'feature', '--timeout-ms', '3600000'], root)).rejects.toThrow('workflow_unknown_option');
+    expect(api.runWorkflow).not.toHaveBeenCalled();
   });
 
   it.each(['run', 'verify', 'review', 'finish'] as const)('dispatches the explicit %s operation', async operation => {

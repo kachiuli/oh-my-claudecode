@@ -13,7 +13,7 @@ import type { WorkflowAuthProfile, WorkflowRuntime } from '../../team/workflow-a
 export const WORKFLOW_HELP = `Usage: omc team workflow <operation>
 
   init --file <plan.json> [--mode v1|balanced] [--workers N] [--max-review-passes N] [--max-attempts N]
-       [--profile claude-glm-codex|role-substitution] [--bindings <roles.json>]
+       [--timeout-ms N] [--profile claude-glm-codex|role-substitution] [--bindings <roles.json>]
   run <name> [--runtime <absolute-private-config.json>]
   status <name>
   usage <name>
@@ -32,6 +32,8 @@ The external lead supplies a scoped plan, explicitly accepts worker commits, and
 adjudicates review findings. Results contain bounded metadata and artifact paths.
 Legacy initialization is unchanged. V1.2 requires an explicit role-substitution
 profile, public bindings and balanced mode; private runtime stays outside the project.
+Initialization accepts an optional task timeout between 100 and 3600000 ms, inclusive;
+omitting it saves the controller's 600000 ms default unchanged.
 Substitution records intent without dispatch or budget reset. Self-review is allowed.
 See docs/GLM-WORKFLOW.md and docs/GLM-WORKFLOW-V1.2.md for schemas and setup.`;
 
@@ -144,7 +146,7 @@ export async function workflowCommand(args: string[], cwd = process.cwd()): Prom
   }
   const { positional, flags } = parseArgs(rest);
   const allowed: Record<string, string[]> = {
-    init: ['--file', '--mode', '--workers', '--max-review-passes', '--max-attempts', '--profile', '--bindings'],
+    init: ['--file', '--mode', '--workers', '--max-review-passes', '--max-attempts', '--timeout-ms', '--profile', '--bindings'],
     run: ['--runtime'], status: [], usage: [], resume: ['--expected-head', '--reason', '--runtime'], accept: [], reject: ['--reason'], verify: [], review: ['--runtime'],
     substitute: ['--file'], adjudicate: ['--file'], 'add-fix': ['--file'], finish: [], cleanup: [],
   };
@@ -192,6 +194,13 @@ export async function workflowCommand(args: string[], cwd = process.cwd()): Prom
         }
         options[key] = Number(raw);
       }
+    }
+    // The controller's own inclusive timeout range; the CLI refuses early, before either initializer runs.
+    const timeout = flags.get('--timeout-ms');
+    if (timeout !== undefined) {
+      const value = /^[1-9]\d*$/.test(timeout) ? Number(timeout) : Number.NaN;
+      if (!Number.isSafeInteger(value) || value < 100 || value > 3_600_000) throw new Error('workflow_invalid_limit');
+      options.timeoutMs = value;
     }
     const plan = readInputFile(flags.get('--file'));
     if (profile === 'role-substitution') {
