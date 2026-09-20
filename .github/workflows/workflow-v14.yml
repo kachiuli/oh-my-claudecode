@@ -1,8 +1,7 @@
 name: workflow-v1.4 host compatibility
 
 on:
-  pull_request:
-    branches: [main, dev]
+  workflow_call:
   workflow_dispatch:
 
 permissions:
