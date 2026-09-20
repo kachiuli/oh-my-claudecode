@@ -6,6 +6,12 @@ see [Workflow V1.2 setup](GLM-WORKFLOW-V1.2.md) and its
 legacy V1/V1.1 commands and defaults; opting into balanced mode alone does not
 migrate a workflow to schema version 2.
 
+For the optional supervised provider policy, see
+[Workflow V1.3](GLM-WORKFLOW-V1.3.md). That policy is opt-in per new workflow: it
+removes only the implementer and reviewer elapsed bound, keeps local checks and
+integrated verification finite, and leaves every already saved workflow and
+runner pin untouched.
+
 This opt-in workflow assigns planning and integration to the Claude Code lead, bulk
 implementation to local GLM wrappers, and independent final review to Codex CLI.
 Without this profile, normal OMC routing and provider defaults remain unchanged.
@@ -152,6 +158,19 @@ omc team workflow init --file .omc/plans/feature-x.json --workers 4
 omc team workflow run feature-x
 omc team workflow status feature-x
 ```
+
+For a new workflow that should run its implementer and reviewer calls without a
+provider elapsed bound, see [Workflow V1.3](GLM-WORKFLOW-V1.3.md) and add the
+init-only flag:
+
+```text
+omc team workflow init --file .omc/plans/feature-x.json --workers 4 --provider-policy supervised
+```
+
+The policy applies to new workflows only. It never migrates or rewrites an
+existing saved run, and worker-declared test commands and integrated verification
+keep the saved finite `--timeout-ms` value even under `supervised`. Omitting the
+flag saves nothing, so the legacy finite provider timeout is unchanged.
 
 Worker counts are OMC admission limits, not claims about GLM subscription capacity.
 Excess assignments remain queued. Retries and backoff are bounded; dirty or

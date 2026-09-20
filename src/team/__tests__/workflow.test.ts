@@ -205,6 +205,40 @@ describe('Claude/GLM/Codex workflow with real local fake providers', () => {
     expect(fixture.git('rev-parse', 'main')).toBe(fixture.baseCommit);
   });
 
+  it('removes only the provider elapsed bound under supervised policy while an omitted policy keeps the finite saved timeout', async () => {
+    const delayed = 2500;
+    const finite = 1200;
+    fixture.configure({ tasks: { a: { delayMs: delayed }, review: { delayMs: delayed } } });
+    // Paired control: with no saved policy the identical delayed provider is terminated at the bound.
+    const control = 'finite';
+    await initWorkflow(fixture.cwd, plan(undefined, { name: control, integrationBranch: 'integration/finite' }),
+      { ...options, timeoutMs: finite, maxAttempts: 1 });
+    await runWorkflow(fixture.cwd, control);
+    const controlState = readWorkflow(fixture.cwd, control);
+    expect(controlState.tasks[0]).toMatchObject({ status: 'failed', error: 'workflow_timeout', attempts: 1 });
+    expect(controlState.options).not.toHaveProperty('providerPolicy');
+    expect(workflowStatus(fixture.cwd, control).providerPolicy).toBe('legacy');
+    const observed = fixture.events().length;
+
+    await initWorkflow(fixture.cwd, plan(), { ...options, timeoutMs: finite, maxAttempts: 1, providerPolicy: 'supervised' });
+    const implemented = await runWorkflow(fixture.cwd, name);
+    expect(implemented.tasks[0]).toMatchObject({ status: 'completed', attempts: 1 });
+    expect(implemented.options).toMatchObject({ providerPolicy: 'supervised', timeoutMs: finite });
+    expect(workflowStatus(fixture.cwd, name).providerPolicy).toBe('supervised');
+    await acceptWorkflowTask(fixture.cwd, name, 'a');
+    await verifyWorkflow(fixture.cwd, name);
+    expect((await reviewWorkflow(fixture.cwd, name)).reviewPasses).toBe(1);
+
+    // Both supervised provider processes ran past the threshold that ended the equivalent finite one.
+    const launches = fixture.events().slice(observed);
+    for (const role of ['glm', 'codex'] as const) {
+      const start = launches.find(event => event.role === role && event.event === 'start')!;
+      const end = launches.find(event => event.role === role && event.event === 'end')!;
+      expect(end.time - start.time).toBeGreaterThanOrEqual(delayed);
+    }
+    expect(fixture.events().filter(event => event.role === 'glm' && event.event === 'start')).toHaveLength(2);
+  }, 30000);
+
   it('fails closed when the GLM executable is unavailable', async () => {
     await initWorkflow(fixture.cwd, plan(), { ...options, glmCommand: join(fixture.root, 'missing-glm-provider') });
     await expect(runWorkflow(fixture.cwd, name)).rejects.toThrow(/unavailable.*fallback_disabled/);

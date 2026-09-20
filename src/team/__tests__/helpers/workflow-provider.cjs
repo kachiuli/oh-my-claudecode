@@ -65,6 +65,16 @@ function event(event) {
       await new Promise(resolve => setTimeout(resolve, 10));
     }
   }
+  // A wall-less controller can see this direct child exit while an inherited pipe stays open in a
+  // descendant; the run settles as output_incomplete instead of inventing a successful completion.
+  if (behavior.outputIncomplete) {
+    const { spawn } = require('node:child_process');
+    spawn(process.execPath, ['-e', 'setTimeout(() => {}, 3000)'], {
+      stdio: ['ignore', 'inherit', 'inherit'], detached: true, windowsHide: true, cwd: require('node:os').tmpdir(),
+    }).unref();
+    event('end');
+    process.exit(0);
+  }
   await new Promise(resolve => setTimeout(resolve, behavior.delayMs ?? configuration.delayMs ?? 0));
   if (behavior.resultFailure) {
     const outputIndex = process.argv.indexOf('--output-last-message');

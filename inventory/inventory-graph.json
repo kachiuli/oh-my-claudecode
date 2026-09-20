@@ -5,15 +5,15 @@
   "provenance": {
     "base": "05c800f40d1ad53b42a78609d2667ef4f726808b",
     "planningHead": "0a91273e61dbbd47eb0af4c02844409251e08398",
-    "head": "3a36e093a06ec294a60845afe1f09ea878657d22",
-    "sourceSha256": "a290d8dab745835f0db2756dd3d60f1ed8365b0850f02002f071b9480c964bf4",
+    "head": "377516f9bbccaf3c92d34cae73ea5e753bfe67fb",
+    "sourceSha256": "c1ca3a7737beae949f6e76faf4b7d2cf9ca3ac5a93e7fec400454b4b6d6744f0",
     "generatedAt": null,
     "generator": "scripts/generate-inventory-graph.mjs"
   },
   "base": "05c800f40d1ad53b42a78609d2667ef4f726808b",
   "planningHead": "0a91273e61dbbd47eb0af4c02844409251e08398",
-  "head": "3a36e093a06ec294a60845afe1f09ea878657d22",
-  "sourceSha256": "a290d8dab745835f0db2756dd3d60f1ed8365b0850f02002f071b9480c964bf4",
+  "head": "377516f9bbccaf3c92d34cae73ea5e753bfe67fb",
+  "sourceSha256": "c1ca3a7737beae949f6e76faf4b7d2cf9ca3ac5a93e7fec400454b4b6d6744f0",
   "counts": {
     "public": {
       "skills": 39,
@@ -32501,6 +32501,11 @@
         "id": "docs/GLM-WORKFLOW-V1.2.md",
         "kind": "other",
         "path": "docs/GLM-WORKFLOW-V1.2.md"
+      },
+      {
+        "id": "docs/GLM-WORKFLOW-V1.3.md",
+        "kind": "other",
+        "path": "docs/GLM-WORKFLOW-V1.3.md"
       },
       {
         "id": "docs/GLM-WORKFLOW-V2.md",
@@ -69971,6 +69976,11 @@
       },
       {
         "from": "src/team/__tests__/helpers/workflow-provider.cjs",
+        "to": "external:node:os",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/helpers/workflow-provider.cjs",
         "to": "external:node:path",
         "kind": "imports"
       },
@@ -79626,12 +79636,12 @@
       }
     ],
     "stats": {
-      "nodeCount": 7007,
-      "edgeCount": 7638,
-      "importEdgeCount": 6299,
+      "nodeCount": 7008,
+      "edgeCount": 7639,
+      "importEdgeCount": 6300,
       "registerEdgeCount": 60
     }
   },
-  "inventorySha256": "ef784a8596a472bc012e22a913d5def195978f6023940d7882d462eb238c7e25",
-  "manifestSha256": "1ffcaf16594a66983e05ab0da31a9adc85589d3980eb5c2bb6214c8453625861"
+  "inventorySha256": "3d8eb7d9a7feade71ff71694027da0669f97c14c13825a6138ba65632a716e7b",
+  "manifestSha256": "15445bf9929612a993b46ec39a0eb83a676daa386908014fb8b28e0bfa5cb447"
 }

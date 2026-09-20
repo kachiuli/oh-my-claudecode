@@ -4,6 +4,8 @@ import { isDeepStrictEqual } from 'node:util';
 
 export type WorkflowRole = 'lead' | 'implementer' | 'reviewer';
 export type WorkflowProviderRoute = 'claude' | 'glm' | 'codex';
+/** The single optional supervised policy; omission keeps the legacy finite provider timeout. */
+export type WorkflowProviderPolicy = 'supervised';
 export type WorkflowCapability = 'external-lead' | 'structured-handoff' | 'structured-findings' | 'read-only' | 'session-resume' | 'review-permission-transition';
 /** A declaration and evidence reference, not proof that a CLI has these capabilities. */
 export interface WorkflowRoleBinding {
@@ -55,6 +57,7 @@ export interface WorkflowOptions {
   glmModel?: string;
   codexModel?: string;
   codexCommand?: string;
+  providerPolicy?: WorkflowProviderPolicy;
 }
 export interface WorkflowHandoff {
   taskId: string;
@@ -124,7 +127,9 @@ export interface WorkflowState {
   plan: WorkflowPlan;
   cwd: string;
   integrationHead: string;
-  options: Required<Omit<WorkflowOptions, 'glmModel' | 'codexModel' | 'mode'>> & Pick<WorkflowOptions, 'glmModel' | 'codexModel' | 'mode'>;
+  /** providerPolicy stays optional: an omitted saved policy stays omitted and legacy-compatible. */
+  options: Required<Omit<WorkflowOptions, 'glmModel' | 'codexModel' | 'mode' | 'providerPolicy'>>
+    & Pick<WorkflowOptions, 'glmModel' | 'codexModel' | 'mode' | 'providerPolicy'>;
   stage: 'implementation' | 'integration' | 'verification' | 'review' | 'adjudication' | 'remediation' | 'complete';
   tasks: WorkflowTaskState[];
   verification?: { head: string; passed: boolean; checks: Array<{ command: WorkflowCommand; passed: boolean; artifacts: ArtifactDescriptor[] }> };
@@ -203,6 +208,12 @@ function modelLiteral(value: unknown): string {
   const text = boundedText(value, 160);
   if (!/^[A-Za-z0-9][A-Za-z0-9._:/@+-]*(?:\[[A-Za-z0-9._+-]+\])?$/.test(text)) throw new Error('workflow_invalid_model');
   return text;
+}
+/** The only present value is 'supervised'; omission stays omitted and is never rewritten or migrated. */
+export function parseWorkflowProviderPolicy(value: unknown): WorkflowProviderPolicy | undefined {
+  if (value === undefined) return undefined;
+  if (value !== 'supervised') throw new Error('workflow_invalid_policy');
+  return value;
 }
 export function parseWorkflowBinding(value: unknown): WorkflowRoleBinding {
   const raw = exactObject(value, ['id', 'role', 'providerRoute', 'cliFamily', 'model', 'effort', 'authProfileRef', 'authFingerprint', 'executableIdentity', 'capabilities', 'capabilityEvidenceSha256']);
@@ -290,6 +301,8 @@ export function parseWorkflowState(value: unknown): VersionedWorkflowState {
     || !Array.isArray(raw.tasks) || !Array.isArray(raw.reviews)) throw new Error('workflow_invalid_state');
   const options = object(raw.options);
   if (options.mode !== undefined && !['v1', 'balanced'].includes(String(options.mode))) throw new Error('workflow_invalid_mode');
+  // Validate any present policy for both schemas; omission is never rewritten into a saved value.
+  parseWorkflowProviderPolicy(options.providerPolicy);
   const rejected = new Set(raw.tasks.filter(entry => object(entry).status === 'rejected').map(entry => safeWorkflowId(object(object(entry).task).id)));
   const plan = parseWorkflowPlan(raw.plan, rejected);
   // Preserve legacy shape and optional fields exactly; this is not a migration.
@@ -377,6 +390,8 @@ export function validateWorkflowStateTransition(previous: unknown, next: unknown
     || before.plan.integrationBranch !== after.plan.integrationBranch) throw new Error('workflow_state_identity_changed');
   if (before.options.maxAttempts !== after.options.maxAttempts || before.options.maxReviewPasses !== after.options.maxReviewPasses
     || after.reviewPasses < before.reviewPasses) throw new Error('workflow_budget_reset_forbidden');
+  // The selected policy is part of the initialization contract and cannot change afterwards.
+  if (before.options.providerPolicy !== after.options.providerPolicy) throw new Error('workflow_policy_change_forbidden');
   if (after.substitutions.length < before.substitutions.length
     || before.substitutions.some((entry, index) => !isDeepStrictEqual(entry, after.substitutions[index]))) throw new Error('workflow_substitution_history_rewritten');
   const selected = { ...before.bindings };

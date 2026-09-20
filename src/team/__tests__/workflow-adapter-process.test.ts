@@ -41,6 +41,23 @@ describe('explicit private process boundary', () => {
     expect(result).toMatchObject({ passed: false, error: 'interrupted' });
     expect(readFileSync(result.artifacts[0].path, 'utf8')).toBe('ready');
   });
+
+  it('delivers a terminal envelope written after parent exit to the Claude decoder', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'omc-v2-drain-'));
+    const line = JSON.stringify({ type: 'result', subtype: 'success', is_error: false, structured_output: { findings: [] } }) + '\n';
+    const late = `setTimeout(() => process.stdout.write(${JSON.stringify(line)}), 400)`;
+    // The independent grandchild inherits the controller's stdout pipe, so its terminal envelope
+    // arrives while the controller is still draining output after the parent already exited.
+    const code = 'const { spawn } = require("node:child_process");'
+      + ` spawn(process.execPath, ['-e', ${JSON.stringify(late)}], { stdio: ['ignore', 'inherit', 'inherit'], detached: true, windowsHide: true });`
+      + ' setTimeout(() => process.exit(0), 50);';
+    const decoder = createClaudeWorkflowResultDecoder();
+    const result = await runWorkflowProcess({ command: process.execPath, args: ['-e', code], cwd, timeoutMs: null,
+      artifactPrefix: join(cwd, 'drained'), onStdout: decoder.write });
+    expect(result.passed).toBe(true);
+    expect(result.settlement).toMatchObject({ outputComplete: true, directChild: 'exited', termination: 'not-requested' });
+    expect(decoder.finish()).toEqual({ findings: [] });
+  });
 });
 
 describe('Claude terminal protocol bounds', () => {
