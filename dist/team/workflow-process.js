@@ -1,0 +1,313 @@
+import { spawn, spawnSync } from 'node:child_process';
+import { dirname, isAbsolute } from 'node:path';
+import { lstatSync, realpathSync } from 'node:fs';
+import { writeTextArtifact } from '../shared/artifact-descriptor.js';
+import { isExternalLLMDisabled } from '../lib/security-config.js';
+import { ensureDirWithMode, validateResolvedPath } from './fs-utils.js';
+import { createWorkflowUsageCollector } from './workflow-usage.js';
+const MAX_LOG_BYTES = 1024 * 1024;
+/** Largest delay a Node.js timer accepts; anything above would silently become a 1 ms timer. */
+const MAX_TIMEOUT_MS = 2147483647;
+/** Bounded settlement window shared by the elapsed timer and the post-exit drain. */
+const SETTLEMENT_GRACE_MS = 2000;
+export const WORKFLOW_PUBLICATION_ENV = Object.freeze({
+    capabilityId: 'OMC_WORKFLOW_PUBLICATION_ID',
+    capabilityToken: 'OMC_WORKFLOW_PUBLICATION_TOKEN',
+    workflowRoot: 'OMC_WORKFLOW_PUBLICATION_ROOT',
+    workflowName: 'OMC_WORKFLOW_PUBLICATION_WORKFLOW',
+    stateRoot: 'OMC_WORKFLOW_PUBLICATION_STATE_ROOT',
+});
+/** Redact before any captured process data reaches an artifact or caller. */
+export function redactWorkflowText(text, caseInsensitive = false, privateEnvironment = {}) {
+    let redacted = text;
+    const privateRedaction = Object.keys(privateEnvironment).length > 0;
+    if (privateRedaction)
+        redacted = redacted.split('\n').map(line => {
+            let parsed;
+            try {
+                parsed = JSON.parse(line);
+            }
+            catch {
+                return line;
+            }
+            // Normalize JSON escapes before matching private values; reject unserializable deep metadata safely.
+            try {
+                return JSON.stringify(parsed);
+            }
+            catch {
+                return '[unserializable structured output omitted]';
+            }
+        }).join('\n');
+    for (const [key, value] of [...Object.entries(process.env), ...Object.entries(privateEnvironment)]) {
+        if (/(?:key|token|secret|password|credential|authorization)/i.test(key) && value && value.length >= 4) {
+            for (const spelling of privateRedaction ? [...new Set([value, JSON.stringify(value).slice(1, -1)])] : [value]) {
+                redacted = caseInsensitive
+                    ? redacted.replace(new RegExp(spelling.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'), '[REDACTED]')
+                    : redacted.split(spelling).join('[REDACTED]');
+            }
+        }
+    }
+    return redacted.replace(/\b(?:Bearer\s+)[A-Za-z0-9._~+\/-]+/gi, 'Bearer [REDACTED]')
+        .replace(/\b(?:sk-[A-Za-z0-9_-]{8,})\b/g, '[REDACTED]')
+        .replace(/((?:api[_-]?key|access[_-]?token|password|secret)\s*[=:]\s*)[^\s,;]+/gi, '$1[REDACTED]');
+}
+/** One-shot execution only; no shell, transcript handoff or env serialization. */
+export async function runWorkflowProcess(input) {
+    if (input.provider && input.provider !== 'claude' && isExternalLLMDisabled())
+        throw new Error('workflow_external_llm_disabled');
+    if (input.provider === 'claude' && !input.environment)
+        throw new Error('workflow_explicit_environment_required');
+    if (!input.command || /[\0\r\n]/.test(input.command) || input.args.some(arg => arg.includes('\0')))
+        throw new Error('workflow_invalid_process_arguments');
+    if (process.platform === 'win32' && /\.(cmd|bat|ps1)$/i.test(input.command))
+        throw new Error('workflow_shell_wrapper_unsupported');
+    // Validate the lifetime bound before any artifact path is created or a child is spawned.
+    // Null is the sole unbounded value; every other invalid input is refused, never coerced to null.
+    const timeoutMs = input.timeoutMs;
+    if (timeoutMs !== null && (typeof timeoutMs !== 'number' || !Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > MAX_TIMEOUT_MS)) {
+        throw new Error('workflow_invalid_timeout');
+    }
+    const noWall = timeoutMs === null;
+    const artifactParent = dirname(input.artifactPrefix);
+    ensureDirWithMode(artifactParent);
+    if (lstatSync(artifactParent).isSymbolicLink())
+        throw new Error('workflow_artifact_parent_symlink');
+    const canonicalArtifactParent = realpathSync(artifactParent);
+    const script = isAbsolute(input.command) && /\.(?:c?js|mjs)$/i.test(input.command);
+    const command = script ? process.execPath : input.command;
+    const args = script ? [input.command, ...input.args] : input.args;
+    const environment = { ...(input.environment ?? process.env) };
+    // A provider/check is never the lead: its process must not inherit a revocable host lease.
+    for (const key of Object.keys(environment)) {
+        if (/^OMC_ORCHESTRATOR_/i.test(key))
+            delete environment[key];
+        if (/^OMC_WORKFLOW_PUBLICATION_/i.test(key))
+            delete environment[key];
+        if (input.provider === 'codex' && /^(?:ANTHROPIC_|CLAUDE_|CLAUDECODE$|OMC_GLM_|GLM_|ZAI_|Z_AI_)/i.test(key))
+            delete environment[key];
+        if ((input.provider === 'glm' || input.provider === 'claude') && /^(?:OPENAI_|CODEX_)/i.test(key))
+            delete environment[key];
+        if (input.provider === 'claude' && /^(?:OMC_GLM_|GLM_|ZAI_|Z_AI_)/i.test(key))
+            delete environment[key];
+        // Legacy GLM wrappers load their own private profile; the lead's Anthropic login is unrelated.
+        if (input.provider === 'glm' && !input.environment && /^(?:ANTHROPIC_|CLAUDE_|CLAUDECODE$)/i.test(key))
+            delete environment[key];
+    }
+    if (input.publicationEnvironment) {
+        const expected = Object.values(WORKFLOW_PUBLICATION_ENV);
+        const supplied = Object.keys(input.publicationEnvironment);
+        if (supplied.length !== expected.length || supplied.some(key => !expected.includes(key))
+            || expected.some(key => !input.publicationEnvironment?.[key]))
+            throw new Error('workflow_invalid_publication_authority');
+        Object.assign(environment, input.publicationEnvironment);
+    }
+    const redactionEnvironment = { ...input.environment, ...input.redactionEnvironment, ...input.publicationEnvironment };
+    // Nested Claude session identity must not route the isolated GLM wrapper back to the lead.
+    delete environment.CLAUDECODE;
+    delete environment.CLAUDE_CODE_ENTRYPOINT;
+    delete environment.OMC_TEAM_WORKER;
+    delete environment.OMC_TEAM_WORKER_NAME;
+    delete environment.OMC_TEAM_WORKTREE_PATH;
+    if (input.worker) {
+        environment.OMC_TEAM_WORKER = input.worker;
+        environment.OMC_TEAM_WORKTREE_PATH = input.cwd;
+    }
+    else {
+        // Reviews and verification commands are also subordinate workflow processes. Keep that
+        // authority boundary on descendants that outlive the controller operation lock.
+        environment.OMC_TEAM_WORKER_NAME = 'workflow-process';
+        environment.OMC_TEAM_WORKTREE_PATH = input.cwd;
+    }
+    const startedAt = performance.now();
+    const usage = input.collectUsage && input.provider ? createWorkflowUsageCollector(input.provider) : undefined;
+    const result = await new Promise(resolve => {
+        const stdout = [];
+        const stderr = [];
+        let stdoutBytes = 0;
+        let stderrBytes = 0;
+        let stdoutTruncated = false;
+        let stderrTruncated = false;
+        let error;
+        let finished = false;
+        let reapTimer;
+        let settlementTimer;
+        // An unbounded run reports only what was observed: an exited parent is never signalled again,
+        // and inherited pipes that outlive it are abandoned rather than attributed to a process we cannot see.
+        let started = false;
+        let parentExit;
+        let termination = 'not-requested';
+        let streamClose = false;
+        const child = spawn(command, args, { cwd: input.cwd, env: environment, stdio: ['pipe', 'pipe', 'pipe'], shell: false, windowsHide: true, detached: process.platform !== 'win32' });
+        const settlement = () => ({
+            parentExitCode: parentExit ? parentExit.code : null,
+            parentExitSignal: parentExit ? parentExit.signal : null,
+            outputComplete: streamClose,
+            termination,
+            directChild: !started ? 'not-started' : parentExit ? 'exited' : 'unconfirmed',
+            descendants: !started ? 'not-started' : 'unverified',
+        });
+        const finish = (code) => {
+            if (finished)
+                return;
+            finished = true;
+            if (elapsedTimer)
+                clearTimeout(elapsedTimer);
+            if (reapTimer)
+                clearTimeout(reapTimer);
+            if (settlementTimer)
+                clearTimeout(settlementTimer);
+            process.removeListener('SIGINT', interrupt);
+            process.removeListener('SIGTERM', interrupt);
+            // Strip any incomplete sensitive env value at the capture boundary before redacting complete values.
+            const captured = (chunks, truncated) => {
+                const buffer = Buffer.concat(chunks);
+                if (!truncated)
+                    return buffer;
+                let tailSafe = buffer.toString('utf8');
+                if (Object.keys(redactionEnvironment).length) {
+                    const lastLine = tailSafe.lastIndexOf('\n') + 1;
+                    if (/^\s*[\[{]/.test(tailSafe.slice(lastLine)))
+                        tailSafe = tailSafe.slice(0, lastLine);
+                }
+                for (const [key, value] of [...Object.entries(process.env), ...Object.entries(redactionEnvironment)]) {
+                    if (!/(?:key|token|secret|password|credential|authorization)/i.test(key) || !value || value.length < 4)
+                        continue;
+                    for (let length = Math.min(value.length - 1, tailSafe.length); length > 0; length--) {
+                        if (tailSafe.endsWith(value.slice(0, length))) {
+                            tailSafe = tailSafe.slice(0, -length);
+                            break;
+                        }
+                    }
+                }
+                return Buffer.from(`${redactWorkflowText(tailSafe, false, redactionEnvironment).slice(0, MAX_LOG_BYTES - 64)}\n[output truncated]\n`);
+            };
+            resolve({ code, error, stdout: captured(stdout, stdoutTruncated), stderr: captured(stderr, stderrTruncated),
+                ...(noWall ? { settlement: settlement() } : {}) });
+        };
+        /** Wait out the shared grace before dropping this controller's stream handles. */
+        const scheduleReap = () => {
+            if (reapTimer)
+                return;
+            reapTimer = setTimeout(() => {
+                child.stdout.destroy();
+                child.stderr.destroy();
+                child.stdin.destroy();
+                child.unref();
+                finish(null);
+            }, SETTLEMENT_GRACE_MS);
+        };
+        const terminate = () => {
+            // A stop is requested at most once. Null mode never signals an exited parent;
+            // finite mode retains its existing inherited-group/tree termination path.
+            if (termination !== 'not-requested')
+                return;
+            if (noWall && parentExit) {
+                scheduleReap();
+                return;
+            }
+            termination = 'attempted';
+            if (child.pid) {
+                try {
+                    if (process.platform === 'win32') {
+                        const killed = spawnSync('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore', timeout: 2000, shell: false });
+                        // A failed invocation is reported instead of being assumed to have cleaned up.
+                        if (killed.error || killed.status !== 0)
+                            termination = 'failed';
+                    }
+                    else
+                        process.kill(-child.pid, 'SIGKILL');
+                }
+                catch {
+                    termination = 'failed';
+                    try {
+                        child.kill('SIGKILL');
+                    }
+                    catch { /* Settlement below reports the failed invocation. */ }
+                }
+            }
+            else
+                termination = 'failed';
+            scheduleReap();
+        };
+        const interrupt = () => { error = 'interrupted'; terminate(); };
+        process.on('SIGINT', interrupt);
+        process.on('SIGTERM', interrupt);
+        const elapsedTimer = timeoutMs === null ? undefined : setTimeout(() => { error = 'timeout'; terminate(); }, timeoutMs);
+        child.on('spawn', () => { started = true; });
+        child.on('exit', (code, signal) => {
+            started = true;
+            parentExit ??= { code, signal };
+            // Only the unbounded mode separates parent exit from stream close: bounded output keeps
+            // flowing while the inherited pipes drain, and only a close inside the grace ends the run.
+            if (!noWall)
+                return;
+            settlementTimer = setTimeout(() => {
+                if (finished)
+                    return;
+                error ??= 'output_incomplete';
+                child.stdout.destroy();
+                child.stderr.destroy();
+                child.stdin.destroy();
+                child.unref();
+                finish(null);
+            }, SETTLEMENT_GRACE_MS);
+        });
+        child.stdout.on('data', (chunk) => {
+            usage?.write(chunk);
+            if (!error) {
+                try {
+                    input.onStdout?.(chunk);
+                }
+                catch {
+                    error = 'protocol_failed';
+                    terminate();
+                }
+            }
+            const kept = chunk.subarray(0, Math.max(0, MAX_LOG_BYTES - stdoutBytes));
+            if (kept.length)
+                stdout.push(kept);
+            stdoutTruncated ||= kept.length < chunk.length;
+            stdoutBytes += kept.length;
+        });
+        child.stderr.on('data', (chunk) => {
+            const kept = chunk.subarray(0, Math.max(0, MAX_LOG_BYTES - stderrBytes));
+            if (kept.length)
+                stderr.push(kept);
+            stderrTruncated ||= kept.length < chunk.length;
+            stderrBytes += kept.length;
+        });
+        child.on('error', () => { error = 'launch_failed'; });
+        child.stdin.on('error', () => { });
+        child.on('close', (code) => { streamClose = true; finish(code); });
+        child.stdin.end(input.stdin ?? '');
+    });
+    // Aggregate before redaction so secrets split across process chunks cannot escape.
+    if (lstatSync(artifactParent).isSymbolicLink() || realpathSync(artifactParent) !== canonicalArtifactParent)
+        throw new Error('workflow_artifact_parent_changed');
+    const artifacts = ['stdout', 'stderr'].map(stream => {
+        const path = `${input.artifactPrefix}.${stream}.log`;
+        try {
+            validateResolvedPath(path, canonicalArtifactParent);
+            return writeTextArtifact({ path, content: redactWorkflowText(result[stream].toString('utf8'), false, redactionEnvironment), exclusive: true,
+                kind: `workflow-${stream}`, producer: { system: 'omc', component: 'team-workflow', worker: input.worker }, retention: 'until-completion' });
+        }
+        catch {
+            throw new Error('workflow_artifact_write_refused');
+        }
+    });
+    const telemetry = usage?.finish({ durationMs: performance.now() - startedAt, passed: result.code === 0 && !result.error });
+    // UUID shape is not proof that an identity is safe: it can still echo a known credential.
+    // Compare without case because the collector canonicalizes UUIDs to lowercase.
+    if (telemetry?.sessionId && redactWorkflowText(telemetry.sessionId, true, redactionEnvironment) !== telemetry.sessionId) {
+        delete telemetry.sessionId;
+        telemetry.diagnostics = [...new Set([...(telemetry.diagnostics ?? []), 'session_identity_invalid'])].sort();
+        if (telemetry.status === 'measured')
+            telemetry.status = 'partial';
+    }
+    const failure = result.error ?? (result.code !== 0
+        ? /\b429\b|rate[_ -]?limit|too many requests/i.test(`${result.stdout.toString('utf8')}\n${result.stderr.toString('utf8')}`) ? 'throttled' : 'process_failed'
+        : telemetry && telemetry.terminal !== 'success' ? 'process_failed' : undefined);
+    return { passed: result.code === 0 && !failure, ...(failure ? { error: failure } : {}), artifacts,
+        ...(result.settlement ? { settlement: result.settlement } : {}), ...(telemetry ? { telemetry } : {}) };
+}
+//# sourceMappingURL=workflow-process.js.map

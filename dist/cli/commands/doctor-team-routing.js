@@ -7,7 +7,8 @@
  */
 import { colors } from '../utils/formatting.js';
 import { loadConfig } from '../../config/loader.js';
-import { probeCli } from '../../team/cli-detection.js';
+import { probeCli, probeGlmCli } from '../../team/cli-detection.js';
+import { getGlmConfig } from '../../team/glm-config.js';
 const PROVIDER_BINARY = {
     claude: 'claude',
     codex: 'codex',
@@ -15,8 +16,13 @@ const PROVIDER_BINARY = {
     grok: 'grok',
     cursor: 'cursor-agent',
     antigravity: 'agy',
+    glm: 'claude-glm',
 };
 function probeProvider(provider) {
+    if (provider === 'glm') {
+        const config = getGlmConfig(loadConfig());
+        return { provider, binary: config.command, ...probeGlmCli(config) };
+    }
     const binary = PROVIDER_BINARY[provider];
     return {
         provider,
@@ -29,10 +35,12 @@ function collectConfiguredProviders() {
     const providers = new Set();
     // Always include claude so orchestrator presence is reported.
     providers.add('claude');
+    if (cfg.team?.glm || cfg.team?.ops?.defaultAgentType === 'glm')
+        providers.add('glm');
     const roleRouting = cfg.team?.roleRouting ?? {};
     for (const spec of Object.values(roleRouting)) {
         const provider = spec?.provider;
-        if (provider === 'claude' || provider === 'codex' || provider === 'gemini' || provider === 'grok' || provider === 'cursor' || provider === 'antigravity') {
+        if (provider === 'claude' || provider === 'codex' || provider === 'gemini' || provider === 'grok' || provider === 'cursor' || provider === 'antigravity' || provider === 'glm') {
             providers.add(provider);
         }
     }
@@ -48,7 +56,7 @@ export async function doctorTeamRoutingCommand(options) {
         return 1;
     }
     const probes = [...providers].map(probeProvider);
-    const missing = probes.filter((p) => !p.found);
+    const missing = probes.filter((p) => !p.found || (p.provider === 'glm' && !p.launchable));
     if (options.json) {
         console.log(JSON.stringify({
             probes,
@@ -59,6 +67,10 @@ export async function doctorTeamRoutingCommand(options) {
         const claudeFound = probes.some((probe) => probe.provider === 'claude' && probe.found);
         console.log(colors.bold('Team role routing — provider CLI probe'));
         for (const p of probes) {
+            if (p.provider === 'glm') {
+                console.log(`  ${p.launchable ? colors.green('✓') : colors.yellow('⚠')} glm: ${p.launchable ? 'launchable' : p.error}; model override ${p.modelOverride ? 'configured' : 'unset'}; fallback disabled`);
+                continue;
+            }
             if (p.found) {
                 const resolvedPath = p.path ? `: ${p.path}` : '';
                 const version = p.version ? ` (${p.version})` : p.error ? ' (version unavailable)' : '';
@@ -75,6 +87,9 @@ export async function doctorTeamRoutingCommand(options) {
         }
         if (missing.length === 0) {
             console.log(colors.green('\nAll configured providers are available.'));
+        }
+        else if (missing.some(probe => probe.provider === 'glm')) {
+            console.log(colors.yellow(`\n${missing.length} provider${missing.length === 1 ? '' : 's'} unavailable. GLM tasks fail closed; Claude fallback is disabled for GLM.`));
         }
         else if (!claudeFound) {
             console.log(colors.yellow(`\n${missing.length} provider${missing.length === 1 ? '' : 's'} missing (warn only — no available Claude fallback; orchestrator/fallback unavailable).`));

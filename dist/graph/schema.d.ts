@@ -45,8 +45,8 @@ export declare const graphAgentNodeSchema: z.ZodObject<{
     id: z.ZodString;
     title: z.ZodString;
 }, "strict", z.ZodTypeAny, {
-    title: string;
     id: string;
+    title: string;
     kind: "agent";
     instructions: string;
     timeout_ms: number;
@@ -60,8 +60,8 @@ export declare const graphAgentNodeSchema: z.ZodObject<{
         policy: "reconcile";
     };
 }, {
-    title: string;
     id: string;
+    title: string;
     kind: "agent";
     instructions: string;
     timeout_ms: number;
@@ -105,9 +105,9 @@ export declare const graphCommandNodeSchema: z.ZodObject<{
     id: z.ZodString;
     title: z.ZodString;
 }, "strict", z.ZodTypeAny, {
+    id: string;
     title: string;
     command: string;
-    id: string;
     kind: "command";
     timeout_ms: number;
     max_attempts: number;
@@ -120,9 +120,9 @@ export declare const graphCommandNodeSchema: z.ZodObject<{
         policy: "reconcile";
     };
 }, {
+    id: string;
     title: string;
     command: string;
-    id: string;
     kind: "command";
     timeout_ms: number;
     max_attempts: number;
@@ -141,14 +141,14 @@ export declare const graphHumanApprovalNodeSchema: z.ZodObject<{
     id: z.ZodString;
     title: z.ZodString;
 }, "strict", z.ZodTypeAny, {
-    title: string;
-    prompt: string;
     id: string;
+    prompt: string;
+    title: string;
     kind: "human-approval";
 }, {
-    title: string;
-    prompt: string;
     id: string;
+    prompt: string;
+    title: string;
     kind: "human-approval";
 }>;
 export declare const graphJoinNodeSchema: z.ZodObject<{
@@ -158,14 +158,14 @@ export declare const graphJoinNodeSchema: z.ZodObject<{
     id: z.ZodString;
     title: z.ZodString;
 }, "strict", z.ZodTypeAny, {
-    title: string;
     id: string;
+    title: string;
     kind: "join";
     fan_out_node_id: string;
     input_branch_ids: string[];
 }, {
-    title: string;
     id: string;
+    title: string;
     kind: "join";
     fan_out_node_id: string;
     input_branch_ids: string[];
@@ -200,8 +200,8 @@ export declare const graphNodeSchema: z.ZodDiscriminatedUnion<"kind", [z.ZodObje
     id: z.ZodString;
     title: z.ZodString;
 }, "strict", z.ZodTypeAny, {
-    title: string;
     id: string;
+    title: string;
     kind: "agent";
     instructions: string;
     timeout_ms: number;
@@ -215,8 +215,8 @@ export declare const graphNodeSchema: z.ZodDiscriminatedUnion<"kind", [z.ZodObje
         policy: "reconcile";
     };
 }, {
-    title: string;
     id: string;
+    title: string;
     kind: "agent";
     instructions: string;
     timeout_ms: number;
@@ -259,9 +259,9 @@ export declare const graphNodeSchema: z.ZodDiscriminatedUnion<"kind", [z.ZodObje
     id: z.ZodString;
     title: z.ZodString;
 }, "strict", z.ZodTypeAny, {
+    id: string;
     title: string;
     command: string;
-    id: string;
     kind: "command";
     timeout_ms: number;
     max_attempts: number;
@@ -274,9 +274,9 @@ export declare const graphNodeSchema: z.ZodDiscriminatedUnion<"kind", [z.ZodObje
         policy: "reconcile";
     };
 }, {
+    id: string;
     title: string;
     command: string;
-    id: string;
     kind: "command";
     timeout_ms: number;
     max_attempts: number;
@@ -294,14 +294,14 @@ export declare const graphNodeSchema: z.ZodDiscriminatedUnion<"kind", [z.ZodObje
     id: z.ZodString;
     title: z.ZodString;
 }, "strict", z.ZodTypeAny, {
-    title: string;
-    prompt: string;
     id: string;
+    prompt: string;
+    title: string;
     kind: "human-approval";
 }, {
-    title: string;
-    prompt: string;
     id: string;
+    prompt: string;
+    title: string;
     kind: "human-approval";
 }>, z.ZodObject<{
     kind: z.ZodLiteral<"join">;
@@ -310,14 +310,14 @@ export declare const graphNodeSchema: z.ZodDiscriminatedUnion<"kind", [z.ZodObje
     id: z.ZodString;
     title: z.ZodString;
 }, "strict", z.ZodTypeAny, {
-    title: string;
     id: string;
+    title: string;
     kind: "join";
     fan_out_node_id: string;
     input_branch_ids: string[];
 }, {
-    title: string;
     id: string;
+    title: string;
     kind: "join";
     fan_out_node_id: string;
     input_branch_ids: string[];
@@ -512,8 +512,8 @@ export declare const graphDescriptorSchema: z.ZodObject<{
         id: z.ZodString;
         title: z.ZodString;
     }, "strict", z.ZodTypeAny, {
-        title: string;
         id: string;
+        title: string;
         kind: "agent";
         instructions: string;
         timeout_ms: number;
@@ -527,8 +527,8 @@ export declare const graphDescriptorSchema: z.ZodObject<{
             policy: "reconcile";
         };
     }, {
-        title: string;
         id: string;
+        title: string;
         kind: "agent";
         instructions: string;
         timeout_ms: number;
@@ -571,9 +571,9 @@ export declare const graphDescriptorSchema: z.ZodObject<{
         id: z.ZodString;
         title: z.ZodString;
     }, "strict", z.ZodTypeAny, {
+        id: string;
         title: string;
         command: string;
-        id: string;
         kind: "command";
         timeout_ms: number;
         max_attempts: number;
@@ -586,9 +586,9 @@ export declare const graphDescriptorSchema: z.ZodObject<{
             policy: "reconcile";
         };
     }, {
+        id: string;
         title: string;
         command: string;
-        id: string;
         kind: "command";
         timeout_ms: number;
         max_attempts: number;
@@ -606,14 +606,14 @@ export declare const graphDescriptorSchema: z.ZodObject<{
         id: z.ZodString;
         title: z.ZodString;
     }, "strict", z.ZodTypeAny, {
-        title: string;
-        prompt: string;
         id: string;
+        prompt: string;
+        title: string;
         kind: "human-approval";
     }, {
-        title: string;
-        prompt: string;
         id: string;
+        prompt: string;
+        title: string;
         kind: "human-approval";
     }>, z.ZodObject<{
         kind: z.ZodLiteral<"join">;
@@ -622,14 +622,14 @@ export declare const graphDescriptorSchema: z.ZodObject<{
         id: z.ZodString;
         title: z.ZodString;
     }, "strict", z.ZodTypeAny, {
-        title: string;
         id: string;
+        title: string;
         kind: "join";
         fan_out_node_id: string;
         input_branch_ids: string[];
     }, {
-        title: string;
         id: string;
+        title: string;
         kind: "join";
         fan_out_node_id: string;
         input_branch_ids: string[];
@@ -720,8 +720,8 @@ export declare const graphDescriptorSchema: z.ZodObject<{
     revision_id: string;
     goal: string;
     nodes: ({
-        title: string;
         id: string;
+        title: string;
         kind: "agent";
         instructions: string;
         timeout_ms: number;
@@ -735,9 +735,9 @@ export declare const graphDescriptorSchema: z.ZodObject<{
             policy: "reconcile";
         };
     } | {
+        id: string;
         title: string;
         command: string;
-        id: string;
         kind: "command";
         timeout_ms: number;
         max_attempts: number;
@@ -750,13 +750,13 @@ export declare const graphDescriptorSchema: z.ZodObject<{
             policy: "reconcile";
         };
     } | {
-        title: string;
-        prompt: string;
         id: string;
+        prompt: string;
+        title: string;
         kind: "human-approval";
     } | {
-        title: string;
         id: string;
+        title: string;
         kind: "join";
         fan_out_node_id: string;
         input_branch_ids: string[];
@@ -797,8 +797,8 @@ export declare const graphDescriptorSchema: z.ZodObject<{
     revision_id: string;
     goal: string;
     nodes: ({
-        title: string;
         id: string;
+        title: string;
         kind: "agent";
         instructions: string;
         timeout_ms: number;
@@ -812,9 +812,9 @@ export declare const graphDescriptorSchema: z.ZodObject<{
             policy: "reconcile";
         };
     } | {
+        id: string;
         title: string;
         command: string;
-        id: string;
         kind: "command";
         timeout_ms: number;
         max_attempts: number;
@@ -827,13 +827,13 @@ export declare const graphDescriptorSchema: z.ZodObject<{
             policy: "reconcile";
         };
     } | {
-        title: string;
-        prompt: string;
         id: string;
+        prompt: string;
+        title: string;
         kind: "human-approval";
     } | {
-        title: string;
         id: string;
+        title: string;
         kind: "join";
         fan_out_node_id: string;
         input_branch_ids: string[];

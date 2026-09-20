@@ -24,8 +24,8 @@ export function runtimeFixture(fixture: ReturnType<typeof createWorkflowFixture>
   const runtime: WorkflowRuntime = { allowSyntheticCapabilities: true, resolveBinding(selected) {
     const value = profiles.get(selected.id); if (!value) throw new Error('Missing synthetic route'); return value;
   } };
-  const selectedBinding = (role: 'implementer' | 'reviewer', route: WorkflowProviderRoute, actorId?: string, suffix = '', profileOptions: Partial<WorkflowAuthProfile> = {}) => {
-    const base = binding(role, route);
+  const selectedBinding = (role: 'implementer' | 'reviewer', route: WorkflowProviderRoute, actorId?: string, suffix = '', profileOptions: Partial<WorkflowAuthProfile> = {}, model?: string) => {
+    const base = parseWorkflowBinding({ ...binding(role, route), ...(model ? { model } : {}) });
     const id = `${base.id}${suffix}`;
     const authProfile: WorkflowAuthProfile = { ref: base.authProfileRef, providerRoute: route, files: [],
       ...profileOptions, environment: { OMC_WORKFLOW_TEST_CONFIG: fixture.configPath, FIXTURE_ROUTE: route,

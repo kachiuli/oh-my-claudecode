@@ -2,6 +2,8 @@
 
 This guide covers all migration paths for oh-my-claudecode. Find your current version below.
 
+For the custom **workflow-v1.4** candidate, [project adoption, host removal, rollback, and OMX boundaries](WORKFLOW-V1.4.md) are documented separately. Existing OMC workflow state needs no migration; adopt host assets at a quiescent boundary with `omc setup --host both --scope project`. The npm package version remains `5.4.0`.
+
 ---
 
 ## Table of Contents

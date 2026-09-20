@@ -905,6 +905,7 @@ describe('launchCommand — env var propagation', () => {
 describe('prepareOmcLaunchConfigDir / launchCommand OMC companion loading', () => {
   const originalClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
   const originalHome = process.env.HOME;
+  const originalUserProfile = process.env.USERPROFILE;
   let tempRoot: string | null = null;
 
   const originalClaudecode = process.env.CLAUDECODE;
@@ -914,6 +915,7 @@ describe('prepareOmcLaunchConfigDir / launchCommand OMC companion loading', () =
     delete process.env.CLAUDECODE;
     tempRoot = mkdtempSync(join(tmpdir(), 'omc-launch-profile-'));
     process.env.HOME = join(tempRoot, 'home');
+    process.env.USERPROFILE = process.env.HOME;
     (execFileSync as ReturnType<typeof vi.fn>).mockReturnValue(Buffer.from(''));
     (resolveLaunchPolicy as ReturnType<typeof vi.fn>).mockReturnValue('direct');
     // Clear CLAUDECODE to avoid "already inside CC session" exit
@@ -930,6 +932,8 @@ describe('prepareOmcLaunchConfigDir / launchCommand OMC companion loading', () =
     } else {
       process.env.HOME = originalHome;
     }
+    if (originalUserProfile === undefined) delete process.env.USERPROFILE;
+    else process.env.USERPROFILE = originalUserProfile;
     if (originalClaudeConfigDir === undefined) {
       delete process.env.CLAUDE_CONFIG_DIR;
     } else {

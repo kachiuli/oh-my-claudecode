@@ -5,15 +5,17 @@ import { constants as osConstants } from 'os';
 import { basename, dirname, isAbsolute, join } from 'path';
 import { fileURLToPath } from 'url';
 import { isExternalLLMDisabled } from '../lib/security-config.js';
+import { loadConfig } from '../config/loader.js';
+import { getGlmConfig } from '../team/glm-config.js';
 export const ASK_USAGE = [
-    'Usage: omc ask <claude|codex|gemini|antigravity|grok|cursor> <question or task>',
-    '   or: omc ask <claude|codex|gemini|antigravity|grok|cursor> -p "<prompt>"',
-    '   or: omc ask <claude|codex|gemini|antigravity|grok|cursor> --print "<prompt>"',
-    '   or: omc ask <claude|codex|gemini|antigravity|grok|cursor> --prompt "<prompt>"',
-    '   or: omc ask <claude|codex|gemini|antigravity|grok|cursor> --agent-prompt <role> "<prompt>"',
-    '   or: omc ask <claude|codex|gemini|antigravity|grok|cursor> --agent-prompt=<role> --prompt "<prompt>"',
+    'Usage: omc ask <claude|codex|gemini|antigravity|grok|cursor|glm> <question or task>',
+    '   or: omc ask <claude|codex|gemini|antigravity|grok|cursor|glm> -p "<prompt>"',
+    '   or: omc ask <claude|codex|gemini|antigravity|grok|cursor|glm> --print "<prompt>"',
+    '   or: omc ask <claude|codex|gemini|antigravity|grok|cursor|glm> --prompt "<prompt>"',
+    '   or: omc ask <claude|codex|gemini|antigravity|grok|cursor|glm> --agent-prompt <role> "<prompt>"',
+    '   or: omc ask <claude|codex|gemini|antigravity|grok|cursor|glm> --agent-prompt=<role> --prompt "<prompt>"',
 ].join('\n');
-const ASK_PROVIDERS = ['claude', 'codex', 'gemini', 'antigravity', 'grok', 'cursor'];
+const ASK_PROVIDERS = ['claude', 'codex', 'gemini', 'antigravity', 'grok', 'cursor', 'glm'];
 const ASK_PROVIDER_SET = new Set(ASK_PROVIDERS);
 const ASK_AGENT_PROMPT_FLAG = '--agent-prompt';
 const SAFE_ROLE_PATTERN = /^[a-z][a-z0-9-]*$/;
@@ -185,6 +187,10 @@ export async function askCommand(args) {
         env: {
             ...process.env,
             [ASK_ORIGINAL_TASK_ENV]: parsed.prompt,
+            ...(parsed.provider === 'glm' ? (() => {
+                const glm = getGlmConfig(loadConfig());
+                return { OMC_GLM_COMMAND: glm.command, OMC_GLM_DEFAULT_MODEL: glm.model ?? '' };
+            })() : {}),
         },
         stdio: ['ignore', 'pipe', 'pipe'],
     });

@@ -123,7 +123,7 @@ function isUuid(value) {
 }
 function isProvider(value) {
     return value === 'claude' || value === 'codex' || value === 'gemini'
-        || value === 'cursor' || value === 'grok' || value === 'antigravity';
+        || value === 'cursor' || value === 'grok' || value === 'antigravity' || value === 'glm';
 }
 function identityMatches(value, expected) {
     if (!value || typeof value !== 'object' || Array.isArray(value))

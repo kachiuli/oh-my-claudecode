@@ -23,6 +23,47 @@ describe('bounded one-shot workflow process', () => {
     expect(JSON.parse(readFileSync(result.artifacts[0]!.path, 'utf8'))).toEqual([untrusted]);
   });
 
+  it.each([undefined, 'claude', 'codex', 'glm'] as const)('removes lead lease credentials from a %s child', async provider => {
+    vi.stubEnv('OMC_ORCHESTRATOR_LEASE_TOKEN', 'fixture-lease-token');
+    vi.stubEnv('OMC_ORCHESTRATOR_HOST', 'codex');
+    const result = await runWorkflowProcess({ command: process.execPath,
+      args: ['-e', 'process.stdout.write(JSON.stringify(Object.keys(process.env).filter(key=>key.startsWith("OMC_ORCHESTRATOR_"))))'],
+      cwd, provider, timeoutMs: 5000, environment: { ...process.env }, artifactPrefix: join(cwd, 'isolated') });
+    expect(result.passed).toBe(true);
+    expect(JSON.parse(readFileSync(result.artifacts[0]!.path, 'utf8'))).toEqual([]);
+  });
+
+  it('marks a review or verification child as a subordinate workflow process', async () => {
+    const result = await runWorkflowProcess({ command: process.execPath,
+      args: ['-e', 'process.stdout.write(JSON.stringify({worker:process.env.OMC_TEAM_WORKER,name:process.env.OMC_TEAM_WORKER_NAME,worktree:process.env.OMC_TEAM_WORKTREE_PATH}))'],
+      cwd, provider: 'codex', timeoutMs: 5000, environment: { ...process.env }, artifactPrefix: join(cwd, 'subordinate') });
+    expect(result.passed).toBe(true);
+    expect(JSON.parse(readFileSync(result.artifacts[0]!.path, 'utf8'))).toEqual({ name: 'workflow-process', worktree: cwd });
+  });
+
+  it.each(['claude', 'codex', 'glm'] as const)('isolates %s provider authentication from the other native host', async provider => {
+    const environment = { ...process.env, OPENAI_API_KEY: 'fixture-openai-key', CODEX_HOME: '/fixture/codex',
+      ANTHROPIC_API_KEY: 'fixture-anthropic-key', CLAUDE_CONFIG_DIR: '/fixture/claude', ZAI_API_KEY: 'fixture-zai-key' };
+    const result = await runWorkflowProcess({ command: process.execPath,
+      args: ['-e', 'process.stdout.write(JSON.stringify(Object.keys(process.env).filter(key=>["OPENAI_API_KEY","CODEX_HOME","ANTHROPIC_API_KEY","CLAUDE_CONFIG_DIR","ZAI_API_KEY"].includes(key)).sort()))'],
+      cwd, provider, timeoutMs: 5000, environment, artifactPrefix: join(cwd, 'auth') });
+    expect(result.passed).toBe(true);
+    expect(JSON.parse(readFileSync(result.artifacts[0]!.path, 'utf8'))).toEqual(provider === 'codex'
+      ? ['CODEX_HOME', 'OPENAI_API_KEY'] : provider === 'glm'
+        ? ['ANTHROPIC_API_KEY', 'CLAUDE_CONFIG_DIR', 'ZAI_API_KEY'] : ['ANTHROPIC_API_KEY', 'CLAUDE_CONFIG_DIR']);
+  });
+
+  it('keeps the legacy GLM wrapper isolated from inherited Claude OAuth credentials', async () => {
+    vi.stubEnv('CLAUDE_CODE_OAUTH_TOKEN', 'fixture-claude-oauth');
+    vi.stubEnv('ANTHROPIC_API_KEY', 'fixture-anthropic-key');
+    vi.stubEnv('CLAUDE_CONFIG_DIR', '/fixture/claude');
+    const result = await runWorkflowProcess({ command: process.execPath,
+      args: ['-e', 'process.stdout.write(JSON.stringify(Object.keys(process.env).filter(key=>/^(?:CLAUDE_|ANTHROPIC_)/i.test(key))))'],
+      cwd, provider: 'glm', timeoutMs: 5000, artifactPrefix: join(cwd, 'legacy-auth') });
+    expect(result.passed).toBe(true);
+    expect(JSON.parse(readFileSync(result.artifacts[0]!.path, 'utf8'))).toEqual([]);
+  });
+
   it('stores large output only in size-bounded artifact files', async () => {
     const result = await run('process.stdout.write("PRIVATE_TRANSCRIPT".repeat(15000)); process.stderr.write("PRIVATE_ERROR".repeat(15000))');
     expect(result.passed).toBe(true);

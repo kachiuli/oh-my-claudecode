@@ -353,17 +353,163 @@ describe('Claude/GLM/Codex workflow with real local fake providers', () => {
     await runWorkflow(fixture.cwd, name);
     const failed = readWorkflow(fixture.cwd, name).tasks[0]!;
     expect(failed.status).toBe('failed');
-    expect(failed.error).toBe(resultFormat === 'invalid' ? 'workflow_invalid_result' : 'workflow_worker_failed');
+    expect(failed.error).toBe(resultFormat === 'invalid' ? 'workflow_invalid_result' : 'workflow_designated_result_missing');
     expect(failed.handoff?.outcome).toBe('failed');
     expect(failed.handoff?.artifacts.map(artifact => artifact.kind)).toEqual(['workflow-stdout', 'workflow-stderr']);
     for (const artifact of failed.handoff!.artifacts) expect(existsSync(artifact.path)).toBe(true);
+  });
+
+  it.each(['stdout-only', 'local-only'] as const)(
+    'does not replay or retry when a normally completed worker publishes a valid handoff to %s', async publication => {
+      const replayMarker = join(fixture.root, `replay-${publication}.txt`);
+      const replay = { command: process.execPath,
+        args: ['-e', 'require("node:fs").writeFileSync(process.argv[1], "replayed")', replayMarker] };
+      fixture.configure({ tasks: { a: { publication } } });
+      await initWorkflow(fixture.cwd, plan([task('a', { tests: [replay] })]), { ...options, maxAttempts: 3 });
+      await runWorkflow(fixture.cwd, name);
+      const state = readWorkflow(fixture.cwd, name); const failed = state.tasks[0]!;
+      expect(failed).toMatchObject({ status: 'failed', error: 'workflow_designated_result_missing', attempts: 1 });
+      expect(existsSync(replayMarker)).toBe(false);
+      expect(existsSync(join(fixture.cwd, '.omc/state/team', name, 'artifacts', 'task-a-1.result.json'))).toBe(false);
+      expect(failed.handoff?.artifacts.map(artifact => artifact.kind).sort()).toEqual(['workflow-stderr', 'workflow-stdout']);
+      await runWorkflow(fixture.cwd, name);
+      expect(fixture.events().filter(event => event.role === 'glm' && event.event === 'start')).toHaveLength(1);
+      await expect(acceptWorkflowTask(fixture.cwd, name, 'a')).rejects.toThrow('workflow_task_not_awaiting_acceptance');
+    },
+  );
+
+  it('preserves exclusively published result bytes and reaches controller replay', async () => {
+    const replayMarker = join(fixture.root, 'replay-published.txt');
+    const replay = { command: process.execPath,
+      args: ['-e', 'require("node:fs").writeFileSync(process.argv[1], "replayed")', replayMarker] };
+    fixture.configure({ tasks: { a: { prettyResult: true } } });
+    await initWorkflow(fixture.cwd, plan([task('a', { tests: [replay] })]), { ...options, maxAttempts: 1 });
+    await runWorkflow(fixture.cwd, name);
+    const state = readWorkflow(fixture.cwd, name); const completed = state.tasks[0]!;
+    const resultFile = join(fixture.cwd, '.omc/state/team', name, 'artifacts', 'task-a-1.result.json');
+    expect(completed).toMatchObject({ status: 'completed', attempts: 1 });
+    const publishedBytes = readFileSync(resultFile, 'utf8');
+    expect(publishedBytes.startsWith('{\n  "taskId"')).toBe(true);
+    expect(publishedBytes.endsWith('}\n')).toBe(true);
+    expect(readFileSync(replayMarker, 'utf8')).toBe('replayed');
+    const prompt = JSON.parse(fixture.events().find(event => event.event === 'start')!.prompt);
+    expect(prompt.task).toEqual(completed.task);
+    expect(prompt.publication).toMatchObject({
+      canonicalTask: { source: 'dispatch.task', taskId: 'a' },
+      designatedResult: { path: resultFile, authorization: 'create-this-file-only', overwrite: false, stdoutIsHandoff: false },
+    });
+    expect(prompt.publication.publishCommand).toContain('omc team workflow publish-result');
+  });
+
+  it('rejects a designated handoff whose task identity does not match the canonical task', async () => {
+    fixture.configure({ tasks: { a: { handoffTaskId: 'different-task' } } });
+    await initWorkflow(fixture.cwd, plan(), { ...options, maxAttempts: 1 });
+    await runWorkflow(fixture.cwd, name);
+    expect(readWorkflow(fixture.cwd, name).tasks[0]).toMatchObject({
+      status: 'failed', error: 'workflow_invalid_handoff_identity', attempts: 1,
+    });
+  });
+
+  it.each(['branch', 'tag', 'checkpoint'] as const)(
+    'fails closed with private phase evidence when a provider changes a protected %s ref', async protectedRef => {
+      fixture.configure({ tasks: { a: { protectedRef } } });
+      await initWorkflow(fixture.cwd, plan(), { ...options, maxAttempts: 1 });
+      await expect(runWorkflow(fixture.cwd, name)).rejects.toThrow('workflow_protected_refs_changed');
+      const state = readWorkflow(fixture.cwd, name); const failed = state.tasks[0]!;
+      expect(failed).toMatchObject({ status: 'failed', error: 'workflow_protected_refs_changed' });
+      const descriptor = failed.handoff?.artifacts.find(artifact => artifact.kind === 'workflow-protected-ref-audit');
+      expect(descriptor).toBeDefined();
+      const audit = JSON.parse(readFileSync(descriptor!.path, 'utf8'));
+      expect(audit).toMatchObject({ writer: 'unknown', outcome: 'protected-refs-changed', overflow: false });
+      expect(audit.changes).toEqual(expect.arrayContaining([expect.objectContaining({ firstObservedPhase: 'provider-complete' })]));
+      const routine = JSON.stringify(workflowStatus(fixture.cwd, name));
+      expect(routine).not.toContain(audit.changes[0].ref);
+      expect(routine).not.toContain('firstObservedPhase');
+    },
+  );
+
+  it.each(['branch-add', 'branch-delete', 'tag-move', 'tag-delete'] as const)(
+    'fails closed for protected ref operation %s', async protectedRef => {
+      if (protectedRef.endsWith('delete') || protectedRef === 'tag-move') {
+        const namespace = protectedRef.startsWith('branch') ? 'heads' : 'tags';
+        fixture.git('update-ref', `refs/${namespace}/protected-existing`, fixture.baseCommit);
+      }
+      fixture.configure({ tasks: { a: { protectedRef } } });
+      await initWorkflow(fixture.cwd, plan(), { ...options, maxAttempts: 1 });
+      await expect(runWorkflow(fixture.cwd, name)).rejects.toThrow('workflow_protected_refs_changed');
+      expect(readWorkflow(fixture.cwd, name).tasks[0]).toMatchObject({ status: 'failed', error: 'workflow_protected_refs_changed' });
+    },
+  );
+
+  it('allows only an unrelated root-tree Codex checkpoint first observed during controller replay', async () => {
+    const checkpoint = 'refs/codex/turn-diffs/checkpoints/external-replay-a';
+    const replay = { command: 'git', args: ['update-ref', checkpoint, fixture.baseCommit] };
+    await initWorkflow(fixture.cwd, plan([task('a', { tests: [replay] })]), { ...options, maxAttempts: 1 });
+    await runWorkflow(fixture.cwd, name);
+    const completed = readWorkflow(fixture.cwd, name).tasks[0]!;
+    expect(completed).toMatchObject({ status: 'completed', attempts: 1 });
+    const descriptor = completed.handoff?.artifacts.find(artifact => artifact.kind === 'workflow-protected-ref-audit');
+    const audit = JSON.parse(readFileSync(descriptor!.path, 'utf8'));
+    expect(audit).toMatchObject({ writer: 'unknown', outcome: 'allowed-external-checkpoint', overflow: false });
+    expect(audit.changes).toEqual([expect.objectContaining({ ref: checkpoint, before: null,
+      firstObservedPhase: 'controller-replay', activeProviders: 0 })]);
+  });
+
+  it('rejects a checkpoint prefix when replay points it at the worker commit', async () => {
+    const checkpoint = 'refs/codex/turn-diffs/checkpoints/related-replay-a';
+    const replay = { command: 'git', args: ['update-ref', checkpoint, 'HEAD'] };
+    await initWorkflow(fixture.cwd, plan([task('a', { tests: [replay] })]), { ...options, maxAttempts: 1 });
+    await expect(runWorkflow(fixture.cwd, name)).rejects.toThrow('workflow_protected_refs_changed');
+    expect(readWorkflow(fixture.cwd, name).tasks[0]).toMatchObject({ status: 'failed', error: 'workflow_protected_refs_changed' });
+  });
+
+  it('rejects a root-tree checkpoint whose commit descends from the worker commit', async () => {
+    const checkpoint = 'refs/codex/turn-diffs/checkpoints/worker-descendant-replay-a';
+    const script = [
+      "const {execFileSync}=require('node:child_process');",
+      "const git=(...args)=>execFileSync('git',args,{encoding:'utf8'}).trim();",
+      "const tree=git('rev-parse','HEAD~1^{tree}');",
+      "const parent=git('rev-parse','HEAD');",
+      "const commit=git('commit-tree',tree,'-p',parent,'-m','Synthetic related checkpoint');",
+      `git('update-ref',${JSON.stringify(checkpoint)},commit);`,
+    ].join('');
+    const replay = { command: process.execPath, args: ['-e', script] };
+    await initWorkflow(fixture.cwd, plan([task('a', { tests: [replay] })]), { ...options, maxAttempts: 1 });
+    await expect(runWorkflow(fixture.cwd, name)).rejects.toThrow('workflow_protected_refs_changed');
+    expect(readWorkflow(fixture.cwd, name).tasks[0]).toMatchObject({ status: 'failed', error: 'workflow_protected_refs_changed' });
+  });
+
+  it('fails closed when checkpoint evidence is first observed while another provider is active', async () => {
+    const checkpoint = 'refs/codex/turn-diffs/checkpoints/overlapping-provider';
+    const replay = { command: 'git', args: ['update-ref', checkpoint, fixture.baseCommit] };
+    fixture.configure({ barrierCount: 2, tasks: { b: { delayMs: 1200 } } });
+    await initWorkflow(fixture.cwd, plan([task('a', { tests: [replay] }), task('b')]),
+      { ...options, workers: 2, maxAttempts: 1 });
+    await expect(runWorkflow(fixture.cwd, name)).rejects.toThrow('workflow_protected_refs_changed');
+    const state = readWorkflow(fixture.cwd, name);
+    expect(state.tasks.every(entry => entry.status === 'failed' && entry.error === 'workflow_protected_refs_changed')).toBe(true);
+    const descriptor = state.tasks[0]!.handoff?.artifacts.find(artifact => artifact.kind === 'workflow-protected-ref-audit');
+    const audit = JSON.parse(readFileSync(descriptor!.path, 'utf8'));
+    expect(audit.changes).toEqual([expect.objectContaining({ ref: checkpoint,
+      firstObservedPhase: 'controller-replay', activeProviders: 1 })]);
+  });
+
+  it('bounds protected-ref evidence and fails closed when the delta overflows', async () => {
+    fixture.configure({ tasks: { a: { protectedRef: 'overflow' } } });
+    await initWorkflow(fixture.cwd, plan(), { ...options, maxAttempts: 1 });
+    await expect(runWorkflow(fixture.cwd, name)).rejects.toThrow('workflow_protected_refs_changed');
+    const failed = readWorkflow(fixture.cwd, name).tasks[0]!;
+    const descriptor = failed.handoff?.artifacts.find(artifact => artifact.kind === 'workflow-protected-ref-audit');
+    const audit = JSON.parse(readFileSync(descriptor!.path, 'utf8'));
+    expect(audit).toMatchObject({ outcome: 'protected-refs-changed', overflow: true });
+    expect(audit.changes).toHaveLength(32);
   });
 
   it.each(['dirty', 'badBranch'] as const)('preserves the worktree and fails safely after a worker leaves %s state', async behavior => {
     fixture.configure({ tasks: { a: { [behavior]: true } } });
     await initWorkflow(fixture.cwd, plan(), options);
     if (behavior === 'badBranch') {
-      await expect(runWorkflow(fixture.cwd, name)).rejects.toThrow('workflow_worker_modified_protected_refs');
+      await expect(runWorkflow(fixture.cwd, name)).rejects.toThrow('workflow_protected_refs_changed');
     } else {
       await runWorkflow(fixture.cwd, name);
     }

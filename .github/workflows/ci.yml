@@ -17,6 +17,11 @@ permissions:
   contents: read
 
 jobs:
+  project-hosts:
+    name: Workflow V1.4 hosts
+    if: github.event_name != 'push' || github.ref_type != 'tag'
+    uses: ./.github/workflows/workflow-v14.yml
+
   lint-and-typecheck:
     name: Lint & Type Check
     if: github.event_name != 'push' || github.ref_type != 'tag'

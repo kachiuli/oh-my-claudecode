@@ -135,13 +135,29 @@ function event(event) {
   const commitSha = git('rev-parse', 'HEAD');
   if (behavior.dirty) fs.writeFileSync('uncommitted-user-work.txt', 'preserve this work\n');
   if (behavior.badBranch) git('switch', '-c', `unexpected-${taskId}`);
+  if (behavior.protectedRef === 'branch') git('update-ref', 'refs/heads/main', 'HEAD');
+  if (behavior.protectedRef === 'branch-add') git('update-ref', `refs/heads/provider-${taskId}`, 'HEAD');
+  if (behavior.protectedRef === 'branch-delete') git('update-ref', '-d', 'refs/heads/protected-existing');
+  if (behavior.protectedRef === 'tag') git('update-ref', `refs/tags/provider-${taskId}`, 'HEAD');
+  if (behavior.protectedRef === 'tag-move') git('update-ref', 'refs/tags/protected-existing', 'HEAD');
+  if (behavior.protectedRef === 'tag-delete') git('update-ref', '-d', 'refs/tags/protected-existing');
+  if (behavior.protectedRef === 'checkpoint') git('update-ref', `refs/codex/turn-diffs/checkpoints/provider-${taskId}`, 'HEAD');
+  if (behavior.protectedRef === 'overflow') {
+    for (let index = 0; index < 40; index++) git('update-ref', `refs/tags/provider-${taskId}-${index}`, 'HEAD');
+  }
   const handoff = {
-    taskId, outcome: 'completed', commitSha, changedFiles: [file],
+    taskId: behavior.handoffTaskId ?? taskId, outcome: 'completed', commitSha, changedFiles: [file],
     tests: request.task.tests.map(test => ({ ...test, passed: true })),
     interfaceChanges: behavior.metadata ?? [], assumptions: behavior.metadata ?? [], risks: behavior.metadata ?? [],
     summary: behavior.summary ?? `Completed ${taskId}.`,
   };
-  fs.writeFileSync(request.resultFile, JSON.stringify(handoff));
+  const handoffBytes = behavior.prettyResult ? `${JSON.stringify(handoff, null, 2)}\n` : JSON.stringify(handoff);
+  if (behavior.publication === 'stdout-only') process.stdout.write(handoffBytes);
+  else if (behavior.publication === 'local-only') {
+    const local = path.join(process.cwd(), '.omc', 'helper-results', `${taskId}.json`);
+    fs.mkdirSync(path.dirname(local), { recursive: true });
+    fs.writeFileSync(local, handoffBytes);
+  } else fs.writeFileSync(request.resultFile, handoffBytes);
   emitUsage();
   event('end');
 })().catch(error => {

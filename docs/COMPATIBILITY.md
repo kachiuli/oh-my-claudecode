@@ -2,6 +2,8 @@
 
 The Compatibility Layer enables oh-my-claudecode to discover, register, and use external plugins, MCP servers, and tools. It provides a unified interface for managing external tools while maintaining security through an integrated permission system.
 
+The custom workflow-v1.4 candidate's [Claude/Codex host, provider, and platform matrix](WORKFLOW-V1.4-RELEASE-NOTES.md) and [donor capability decisions](design/workflow-v1.4-capabilities.md) describe repository host selection and its verification limits.
+
 ## Table of Contents
 
 - [Overview](#overview)

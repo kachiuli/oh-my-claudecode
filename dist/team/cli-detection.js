@@ -4,6 +4,7 @@ export { isCliAvailable, validateCliAvailable, getContract } from './model-contr
 import { existsSync } from 'fs';
 import path from 'path';
 import { spawnSync } from 'child_process';
+import { resolveGlmExecutable } from './glm-config.js';
 const RESOLVE_TIMEOUT_MS = 5000;
 const VERSION_TIMEOUT_MS = 3000;
 const SAFE_BINARY_NAME = /^[A-Za-z0-9._-]+$/;
@@ -218,7 +219,7 @@ export function detectCli(binary) {
         path: result.path,
     };
 }
-export function detectAllClis() {
+export function detectAllClis(options = {}) {
     return {
         claude: detectCli('claude'),
         codex: detectCli('codex'),
@@ -226,6 +227,22 @@ export function detectAllClis() {
         cursor: detectCli('cursor-agent'),
         grok: detectCli('grok'),
         antigravity: detectCli('agy'),
+        ...(options.glm ? { glm: (() => { const result = probeGlmCli(options.glm); return { available: result.launchable, path: result.path }; })() } : {}),
     };
+}
+/** Wrapper output is deliberately omitted: diagnostics need no credentials or transcript. */
+export function probeGlmCli(config) {
+    const details = { modelOverride: Boolean(config.model), fallback: false };
+    try {
+        const executable = resolveGlmExecutable(config.command);
+        const result = spawnSync(executable, ['--version'], {
+            timeout: 3000, shell: false, windowsHide: true, stdio: 'ignore',
+        });
+        const launchable = !result.error && result.status === 0;
+        return { ...details, found: true, path: executable, launchable, ...(!launchable ? { error: 'GLM version probe failed' } : {}) };
+    }
+    catch {
+        return { ...details, found: false, launchable: false, error: 'GLM executable unavailable (fallback disabled)' };
+    }
 }
 //# sourceMappingURL=cli-detection.js.map

@@ -226,6 +226,9 @@ function buildInitialTaskInstruction(teamName, workerName, task, taskId, teamSta
 export async function startTeam(config) {
     const { teamName, agentTypes, tasks, cwd } = config;
     validateTeamName(teamName);
+    if (agentTypes.includes('glm')) {
+        throw new Error('GLM workers require native runtime-v2 worktree isolation. Unset OMC_RUNTIME_V2=0 or set OMC_RUNTIME_V2=1.');
+    }
     // Validate CLIs once and pin absolute binary paths for consistent spawn behavior.
     // Reject headless-unsupported providers (e.g. antigravity on Windows) here in
     // preflight — BEFORE writing any team state or creating the tmux session — so an
@@ -790,7 +793,7 @@ export async function shutdownTeam(teamName, sessionName, cwd, timeoutMs = 30_00
     // Polling for ACK files on CLI worker teams wastes the full timeoutMs on every shutdown.
     // Detect CLI worker teams by checking if all agent types are known CLI types, and skip
     // ACK polling — the tmux kill below handles process cleanup instead.
-    const CLI_AGENT_TYPES = new Set(['claude', 'codex', 'gemini', 'grok', 'cursor', 'antigravity']);
+    const CLI_AGENT_TYPES = new Set(['claude', 'codex', 'gemini', 'grok', 'cursor', 'antigravity', 'glm']);
     const agentTypes = configData?.agentTypes ?? [];
     const isCliWorkerTeam = agentTypes.length > 0 && agentTypes.every(t => CLI_AGENT_TYPES.has(t));
     if (!isCliWorkerTeam) {

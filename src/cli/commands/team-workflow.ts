@@ -1,5 +1,6 @@
 import { lstatSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
+import { publishWorkflowResultArtifact } from '../../team/workflow-publication.js';
 import {
   acceptWorkflowTask, addWorkflowFix, adjudicateWorkflow, cleanupWorkflow, finishWorkflow,
   initWorkflow, initWorkflowV2, readWorkflow, rejectWorkflowTask, resumeWorkflowTask, reviewWorkflow, runWorkflow,
@@ -17,6 +18,7 @@ export const WORKFLOW_HELP = `Usage: omc team workflow <operation>
   run <name> [--runtime <absolute-private-config.json>]
   status <name>
   usage <name>
+  publish-result --source <verified.json> --result-file <absolute-designated-path> --task-id <task-id>
   resume <name> <task-id> --expected-head <integration-sha> --reason <reason> [--runtime <absolute-private-config.json>]
   substitute <name> --file <intent.json>
   accept <name> <task-id>
@@ -153,13 +155,25 @@ export async function workflowCommand(args: string[], cwd = process.cwd()): Prom
     init: ['--file', '--mode', '--workers', '--max-review-passes', '--max-attempts', '--timeout-ms', '--provider-policy', '--profile', '--bindings'],
     run: ['--runtime'], status: [], usage: [], resume: ['--expected-head', '--reason', '--runtime'], accept: [], reject: ['--reason'], verify: [], review: ['--runtime'],
     substitute: ['--file'], adjudicate: ['--file'], 'add-fix': ['--file'], finish: [], cleanup: [],
+    'publish-result': ['--source', '--result-file', '--task-id'],
   };
   if (!Object.hasOwn(allowed, operation)) throw new Error('workflow_unknown_operation');
   if ([...flags.keys()].some(flag => !allowed[operation].includes(flag))) {
     throw new Error('workflow_unknown_option');
   }
-  const expected = operation === 'init' ? 0 : ['accept', 'reject', 'resume'].includes(operation) ? 2 : 1;
+  const expected = ['init', 'publish-result'].includes(operation) ? 0 : ['accept', 'reject', 'resume'].includes(operation) ? 2 : 1;
   if (positional.length !== expected) throw new Error('workflow_invalid_arguments');
+  if (operation === 'publish-result') {
+    const source = flags.get('--source');
+    const destination = flags.get('--result-file');
+    const taskId = safeWorkflowId(flags.get('--task-id'));
+    if (!source || !destination || !isAbsolute(destination)) throw new Error('workflow_invalid_publication_arguments');
+    console.log(JSON.stringify(publishWorkflowResultArtifact(resolve(cwd, source), destination, taskId, {
+      cwd,
+      environment: process.env,
+    })));
+    return;
+  }
   let name = positional[0];
   const runtime = () => {
     const file = flags.get('--runtime');

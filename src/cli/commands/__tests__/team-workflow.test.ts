@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, symlinkSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync, readFileSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { issueWorkflowPublication, type IssuedWorkflowPublication } from '../../../team/workflow-publication.js';
 
 const api = vi.hoisted(() => ({
   initWorkflow: vi.fn(async () => ({ plan: { name: 'feature' } })),
@@ -22,12 +24,13 @@ describe('team workflow CLI', () => {
   let privateRoot: string;
   beforeEach(() => {
     vi.clearAllMocks();
-    root = mkdtempSync(join(tmpdir(), 'omc-workflow-cli-'));
-    privateRoot = mkdtempSync(join(tmpdir(), 'omc-workflow-private-'));
+    root = realpathSync(mkdtempSync(join(tmpdir(), 'omc-workflow-cli-')));
+    privateRoot = realpathSync(mkdtempSync(join(tmpdir(), 'omc-workflow-private-')));
+    execFileSync('git', ['init'], { cwd: root, stdio: 'pipe' });
     api.readWorkflow.mockReturnValue({ schemaVersion: 1 });
     vi.spyOn(console, 'log').mockImplementation(() => undefined);
   });
-  afterEach(() => { process.exitCode = 0; vi.restoreAllMocks(); rmSync(root, { recursive: true, force: true }); rmSync(privateRoot, { recursive: true, force: true }); });
+  afterEach(() => { process.exitCode = 0; vi.unstubAllEnvs(); vi.restoreAllMocks(); rmSync(root, { recursive: true, force: true }); rmSync(privateRoot, { recursive: true, force: true }); });
 
   function planFile() {
     const file = join(root, 'plan.json'); writeFileSync(file, JSON.stringify({ name: 'feature' })); return file;
@@ -47,12 +50,77 @@ describe('team workflow CLI', () => {
     return file;
   }
 
+  function publicationAuthority(taskId = 'task-a', attempt = 1): { destination: string; issued: IssuedWorkflowPublication } {
+    const workflowName = 'feature'; const worker = `task-${taskId}`; const sha = 'a'.repeat(40);
+    const check = { command: process.execPath, args: ['-e', 'process.exit(0)'] };
+    const task = { id: taskId, objective: 'Publish verified result', baseCommit: sha, writeScope: ['feature/a.txt'], readScope: [],
+      prohibitedScope: [], dependencies: [], contracts: [], acceptanceCriteria: ['Verified publication succeeds'], tests: [] };
+    const teamRoot = join(root, '.omc', 'state', 'team', workflowName); const artifacts = join(teamRoot, 'artifacts');
+    mkdirSync(artifacts, { recursive: true });
+    writeFileSync(join(teamRoot, 'workflow.json'), JSON.stringify({
+      schemaVersion: 1, profile: 'claude-glm-codex', cwd: root,
+      plan: { name: workflowName, objective: 'Publication fixture', baseCommit: sha, integrationBranch: 'integration/feature', verification: [check], tasks: [task] },
+      options: { mode: 'v1' }, tasks: [{ task, canonicalId: '1', status: 'running', attempts: attempt, worker, worktree: root,
+        invocations: [{ attempt, mode: 'fresh', startedAt: new Date().toISOString(), outcome: 'failed',
+          error: 'workflow_invocation_incomplete', artifacts: [], telemetry: { provider: 'glm', durationMs: 0, status: 'unknown', scope: 'unknown' } }] }],
+      reviews: [],
+    }));
+    const destination = join(artifacts, `${worker}-${attempt}.result.json`);
+    const issued = issueWorkflowPublication({ workflowRoot: root, workflowName, taskId, worker, attempt, worktree: root, resultFile: destination });
+    for (const [key, value] of Object.entries(issued.environment)) vi.stubEnv(key, value);
+    vi.stubEnv('OMC_TEAM_WORKER', worker); vi.stubEnv('OMC_TEAM_WORKTREE_PATH', root);
+    return { destination, issued };
+  }
+
   it('documents explicit V1.2 selection and private runtime without making independence mandatory', async () => {
     await workflowCommand(['--help'], root);
     expect(console.log).toHaveBeenCalledWith(expect.stringContaining('--profile claude-glm-codex|role-substitution'));
     expect(console.log).toHaveBeenCalledWith(expect.stringContaining('Self-review is allowed'));
     expect(console.log).toHaveBeenCalledWith(expect.stringContaining('--runtime <absolute-private-config.json>'));
     expect(api.initWorkflow).not.toHaveBeenCalled(); expect(api.initWorkflowV2).not.toHaveBeenCalled();
+  });
+
+  it('publishes verified handoff bytes exclusively to the designated result path', async () => {
+    const source = join(root, 'verified.json'); const { destination, issued } = publicationAuthority();
+    const bytes = `${JSON.stringify({ taskId: 'task-a', outcome: 'completed', commitSha: 'a'.repeat(40),
+      changedFiles: ['feature/a.txt'], tests: [], interfaceChanges: [], assumptions: [], risks: [], summary: 'Complete.' }, null, 2)}\n`;
+    writeFileSync(source, bytes);
+    await workflowCommand(['publish-result', '--source', source, '--result-file', destination, '--task-id', 'task-a'], root);
+    expect(readFileSync(destination, 'utf8')).toBe(bytes);
+    issued.revoke();
+    const next = publicationAuthority();
+    await expect(workflowCommand(['publish-result', '--source', source, '--result-file', destination, '--task-id', 'task-a'], root))
+      .rejects.toThrow('workflow_result_already_exists');
+    next.issued.revoke();
+    expect(readFileSync(destination, 'utf8')).toBe(bytes);
+  });
+
+  it('rejects malformed or mismatched helper results before creating designated evidence', async () => {
+    const source = join(root, 'invalid.json'); const { destination, issued } = publicationAuthority();
+    for (const bytes of ['not json', JSON.stringify({ taskId: 'another-task', outcome: 'failed', changedFiles: [], tests: [],
+      interfaceChanges: [], assumptions: [], risks: [], summary: 'Failed.' })]) {
+      writeFileSync(source, bytes);
+      await expect(workflowCommand(['publish-result', '--source', source, '--result-file', destination, '--task-id', 'task-a'], root))
+        .rejects.toThrow(/workflow_/);
+      expect(() => readFileSync(destination)).toThrow();
+    }
+    issued.revoke();
+  });
+
+  it('binds publication authority to the exact live task, attempt, and designated path', async () => {
+    const source = join(root, 'verified.json'); const { destination, issued } = publicationAuthority();
+    writeFileSync(source, JSON.stringify({ taskId: 'task-a', outcome: 'completed', commitSha: 'a'.repeat(40), changedFiles: ['feature/a.txt'],
+      tests: [], interfaceChanges: [], assumptions: [], risks: [], summary: 'Complete.' }));
+    for (const [target, taskId] of [
+      [join(root, 'arbitrary-result.json'), 'task-a'],
+      [destination.replace('-1.result.json', '-2.result.json'), 'task-a'],
+      [destination, 'task-b'],
+    ]) {
+      await expect(workflowCommand(['publish-result', '--source', source, '--result-file', target, '--task-id', taskId], root))
+        .rejects.toThrow('workflow_publication_not_authorized');
+      expect(() => readFileSync(target)).toThrow();
+    }
+    issued.revoke();
   });
 
   it('explicitly selects a new schema-2 profile and forwards public bindings in balanced mode', async () => {

@@ -12,6 +12,16 @@ const MAX_TIMEOUT_MS = 2147483647;
 /** Bounded settlement window shared by the elapsed timer and the post-exit drain. */
 const SETTLEMENT_GRACE_MS = 2000;
 
+export const WORKFLOW_PUBLICATION_ENV = Object.freeze({
+  capabilityId: 'OMC_WORKFLOW_PUBLICATION_ID',
+  capabilityToken: 'OMC_WORKFLOW_PUBLICATION_TOKEN',
+  workflowRoot: 'OMC_WORKFLOW_PUBLICATION_ROOT',
+  workflowName: 'OMC_WORKFLOW_PUBLICATION_WORKFLOW',
+  stateRoot: 'OMC_WORKFLOW_PUBLICATION_STATE_ROOT',
+} as const);
+
+export type WorkflowPublicationEnvironment = Readonly<Record<(typeof WORKFLOW_PUBLICATION_ENV)[keyof typeof WORKFLOW_PUBLICATION_ENV], string>>;
+
 /** Redact before any captured process data reaches an artifact or caller. */
 export function redactWorkflowText(text: string, caseInsensitive = false, privateEnvironment: NodeJS.ProcessEnv = {}): string {
   let redacted = text;
@@ -62,6 +72,8 @@ export async function runWorkflowProcess(input: {
   timeoutMs: number | null;
   provider?: WorkflowTelemetry['provider']; worker?: string; collectUsage?: boolean;
   environment?: NodeJS.ProcessEnv;
+  /** One-shot worker publication authority. Only these exact keys reach the provider. */
+  publicationEnvironment?: WorkflowPublicationEnvironment;
   redactionEnvironment?: NodeJS.ProcessEnv;
   /** Operation decoder receives raw bounded-protocol chunks only inside the controller. */
   onStdout?: (chunk: Buffer) => void;
@@ -85,13 +97,37 @@ export async function runWorkflowProcess(input: {
   const command = script ? process.execPath : input.command;
   const args = script ? [input.command, ...input.args] : input.args;
   const environment = { ...(input.environment ?? process.env) };
-  const redactionEnvironment = { ...input.environment, ...input.redactionEnvironment };
+  // A provider/check is never the lead: its process must not inherit a revocable host lease.
+  for (const key of Object.keys(environment)) {
+    if (/^OMC_ORCHESTRATOR_/i.test(key)) delete environment[key];
+    if (/^OMC_WORKFLOW_PUBLICATION_/i.test(key)) delete environment[key];
+    if (input.provider === 'codex' && /^(?:ANTHROPIC_|CLAUDE_|CLAUDECODE$|OMC_GLM_|GLM_|ZAI_|Z_AI_)/i.test(key)) delete environment[key];
+    if ((input.provider === 'glm' || input.provider === 'claude') && /^(?:OPENAI_|CODEX_)/i.test(key)) delete environment[key];
+    if (input.provider === 'claude' && /^(?:OMC_GLM_|GLM_|ZAI_|Z_AI_)/i.test(key)) delete environment[key];
+    // Legacy GLM wrappers load their own private profile; the lead's Anthropic login is unrelated.
+    if (input.provider === 'glm' && !input.environment && /^(?:ANTHROPIC_|CLAUDE_|CLAUDECODE$)/i.test(key)) delete environment[key];
+  }
+  if (input.publicationEnvironment) {
+    const expected = Object.values(WORKFLOW_PUBLICATION_ENV);
+    const supplied = Object.keys(input.publicationEnvironment);
+    if (supplied.length !== expected.length || supplied.some(key => !expected.includes(key as typeof expected[number]))
+      || expected.some(key => !input.publicationEnvironment?.[key])) throw new Error('workflow_invalid_publication_authority');
+    Object.assign(environment, input.publicationEnvironment);
+  }
+  const redactionEnvironment = { ...input.environment, ...input.redactionEnvironment, ...input.publicationEnvironment };
   // Nested Claude session identity must not route the isolated GLM wrapper back to the lead.
   delete environment.CLAUDECODE;
   delete environment.CLAUDE_CODE_ENTRYPOINT;
   delete environment.OMC_TEAM_WORKER;
+  delete environment.OMC_TEAM_WORKER_NAME;
+  delete environment.OMC_TEAM_WORKTREE_PATH;
   if (input.worker) {
     environment.OMC_TEAM_WORKER = input.worker;
+    environment.OMC_TEAM_WORKTREE_PATH = input.cwd;
+  } else {
+    // Reviews and verification commands are also subordinate workflow processes. Keep that
+    // authority boundary on descendants that outlive the controller operation lock.
+    environment.OMC_TEAM_WORKER_NAME = 'workflow-process';
     environment.OMC_TEAM_WORKTREE_PATH = input.cwd;
   }
   const startedAt = performance.now();

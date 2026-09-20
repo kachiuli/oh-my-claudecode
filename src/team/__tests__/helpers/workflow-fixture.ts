@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -16,7 +16,7 @@ export interface FixtureEvent {
 
 /** An actual repository and actual child providers, without credentials or shell wrappers. */
 export function createWorkflowFixture() {
-  const root = mkdtempSync(join(tmpdir(), 'omc-workflow-'));
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'omc-workflow-')));
   const cwd = join(root, 'repo');
   mkdirSync(cwd);
   const git = (...args: string[]) => execFileSync('git', args, {

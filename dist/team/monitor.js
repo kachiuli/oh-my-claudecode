@@ -91,12 +91,12 @@ function isOptionalExternalModelsDefaults(value) {
         return true;
     if (!isRecord(value))
         return false;
-    const allowed = new Set(['provider', 'codexModel', 'geminiModel', 'grokModel', 'antigravityModel', 'cursorModel']);
+    const allowed = new Set(['provider', 'codexModel', 'geminiModel', 'grokModel', 'antigravityModel', 'cursorModel', 'glmModel']);
     if (Object.keys(value).some(key => !allowed.has(key)))
         return false;
     if (value.provider !== undefined && !['codex', 'gemini', 'antigravity'].includes(value.provider))
         return false;
-    return ['codexModel', 'geminiModel', 'grokModel', 'antigravityModel', 'cursorModel']
+    return ['codexModel', 'geminiModel', 'grokModel', 'antigravityModel', 'cursorModel', 'glmModel']
         .every(key => value[key] === undefined || value[key] === '' || isNonEmptyString(value[key]));
 }
 function isOptionalRoutingRoles(value) {
@@ -120,7 +120,7 @@ function isWorkerInfo(value) {
         return false;
     return (value.role === undefined || typeof value.role === 'string')
         && (value.assigned_tasks === undefined || isStringArray(value.assigned_tasks))
-        && (value.worker_cli === undefined || ['claude', 'codex', 'gemini', 'cursor', 'grok', 'antigravity'].includes(value.worker_cli))
+        && (value.worker_cli === undefined || ['claude', 'codex', 'gemini', 'cursor', 'grok', 'antigravity', 'glm'].includes(value.worker_cli))
         && (value.pid === undefined || (isSafeCounter(value.pid) && value.pid > 0))
         && (value.pane_id === undefined || typeof value.pane_id === 'string')
         && (value.working_dir === undefined || typeof value.working_dir === 'string')
@@ -140,7 +140,7 @@ function isWorkerInfo(value) {
 }
 function isLaunchDescriptor(value) {
     return isRecord(value) && value.schema_version === 1
-        && ['claude', 'codex', 'gemini', 'cursor', 'grok', 'antigravity'].includes(value.provider)
+        && ['claude', 'codex', 'gemini', 'cursor', 'grok', 'antigravity', 'glm'].includes(value.provider)
         && (value.model === null || typeof value.model === 'string')
         && isNonEmptyString(value.binary) && isStringArray(value.args);
 }
@@ -191,6 +191,7 @@ function isTeamConfig(value, requireRevision, expectedTeamName) {
         || (value.worker_launch_mode !== undefined && !['interactive', 'prompt'].includes(value.worker_launch_mode))
         || !isSafeCounter(value.worker_count)
         || !isValidPersistedMaxWorkers(value.max_workers)
+        || (value.glm_max_workers !== undefined && !isValidPersistedMaxWorkers(value.glm_max_workers))
         || !Array.isArray(value.workers) || value.worker_count !== value.workers.length
         || !value.workers.every(isWorkerInfo) || !hasUniqueWorkerIdentity(value.workers)
         || !isTimestamp(value.created_at) || !isNonEmptyString(value.tmux_session)
@@ -271,7 +272,7 @@ function isResolvedRoleRoute(value) {
 function isRoleAssignment(value, allowEmptyExternalModel = false) {
     const provider = isRecord(value) ? value.provider : undefined;
     return isRecord(value)
-        && ['claude', 'codex', 'gemini', 'grok', 'cursor', 'antigravity'].includes(provider)
+        && ['claude', 'codex', 'gemini', 'grok', 'cursor', 'antigravity', 'glm'].includes(provider)
         && (isNonEmptyString(value.model) || (allowEmptyExternalModel && provider !== 'claude' && value.model === ''))
         && KNOWN_AGENT_NAMES.some(agent => agent === value.agent);
 }

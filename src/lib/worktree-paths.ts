@@ -1349,6 +1349,16 @@ export function getOmcRoot(worktreeRoot?: string): string {
 }
 
 /**
+ * Resolve project-owned installation/configuration files under a resolved project root.
+ * These assets stay with the checkout even when OMC_STATE_DIR relocates runtime state.
+ * Session and workflow state must use the existing state resolvers instead.
+ */
+export function resolveProjectOmcPath(relativePath: string, projectRoot: string): string {
+  validatePath(relativePath);
+  return normalize(resolve(projectRoot, OmcPaths.ROOT, relativePath));
+}
+
+/**
  * Resolve a relative path under .omc/ to an absolute path.
  * Validates the path is within the omc boundary.
  *

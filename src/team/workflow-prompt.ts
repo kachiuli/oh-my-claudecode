@@ -1,9 +1,10 @@
 import { createHash } from 'node:crypto';
 import type { VersionedWorkflowState, WorkflowTaskState } from './workflow-contracts.js';
+import { workflowPublicationContract } from './workflow-publication.js';
 
 type WorkflowState = Pick<VersionedWorkflowState, 'plan' | 'options' | 'tasks' | 'profile'>;
 
-const INSTRUCTIONS = 'Implement only your writeScope and follow all contracts and acceptanceCriteria. Run the declared tests. Do not merge, push, modify other branches, spawn nested workers or write leader state. Make exactly one coherent commit on baseCommit and leave your worktree clean. Write resultFile JSON with taskId, outcome (completed|failed), commitSha, changedFiles, tests ({command,args,passed}), interfaceChanges, assumptions, risks, summary. Keep summary <=1000 characters and lists <=30 items. stdout/stderr are artifacts, never the handoff. Do not emit credentials.';
+const INSTRUCTIONS = 'Implement only your writeScope and follow all contracts and acceptanceCriteria. Run the declared tests. Do not merge, push, modify other branches or spawn nested workers. Do not alter workflow state, budgets or previous artifacts. The sole state-directory exception is exclusive creation of the dispatch publication.designatedResult.path. Make exactly one coherent commit on baseCommit and leave your worktree clean. The handoff JSON contains taskId, outcome (completed|failed), commitSha, changedFiles, tests ({command,args,passed}), interfaceChanges, assumptions, risks, summary. Keep summary <=1000 characters and lists <=30 items. Follow publication.finalization exactly; stdout/stderr and helper-local JSON are evidence, never the controller handoff. Do not emit credentials.';
 const BALANCED_INSTRUCTIONS = `${INSTRUCTIONS} The complete current task contract and current filesystem take precedence over prior session history and shared summaries. Dependency handoffs are previews: inspect their referenced result artifacts and current source whenever details are needed. Preserve the specified model capability, required context, tests and acceptance criteria; do not trade correctness for token savings.`;
 
 export function workflowPromptFingerprint(prompt: string): string {
@@ -27,9 +28,10 @@ function balancedPayload(state: WorkflowState, entry: WorkflowTaskState) {
 }
 
 export function buildWorkflowPrompt(state: WorkflowState, entry: WorkflowTaskState, resultFile: string): string {
+  const publication = workflowPublicationContract(entry.task.id, resultFile);
   const prompt = JSON.stringify(state.options.mode === 'balanced'
-    ? { ...balancedPayload(state, entry), resultFile }
-    : { kind: 'implementation', task: entry.task, instructions: INSTRUCTIONS, resultFile });
+    ? { ...balancedPayload(state, entry), resultFile, publication }
+    : { kind: 'implementation', task: entry.task, instructions: INSTRUCTIONS, resultFile, publication });
   // Reject oversized context instead of silently removing task scope or acceptance evidence.
   if (Buffer.byteLength(prompt) > 384 * 1024) throw new Error('workflow_prompt_too_large');
   return prompt;

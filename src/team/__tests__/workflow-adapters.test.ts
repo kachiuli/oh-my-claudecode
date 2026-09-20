@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as workflow from '../workflow.js';
@@ -130,6 +130,9 @@ describe('versioned workflow adapters', () => {
     vi.stubEnv('ANTHROPIC_AUTH_TOKEN', 'parent-glm-private-sentinel');
     vi.stubEnv('CONTROLLER_REDACTION_SECRET', 'parent-only-private-sentinel');
     const configured = await init(); fixture.configure({ tasks: { a: { echoSecret: true } } });
+    const predictableCollision = artifact('task-a-1.result.json.sanitized.json');
+    mkdirSync(artifact(''), { recursive: true });
+    writeFileSync(predictableCollision, 'pre-existing evidence');
     const state = await workflow.runWorkflow(fixture.cwd, 'roles', configured.runtime);
     expect(state.tasks[0].status).toBe('completed');
     const event = JSON.parse(readFileSync(fixture.eventsPath, 'utf8').split('\n')[0]);
@@ -137,7 +140,23 @@ describe('versioned workflow adapters', () => {
     expect(event.environmentKeys).not.toEqual(expect.arrayContaining(['ANTHROPIC_BASE_URL', 'ANTHROPIC_AUTH_TOKEN', 'CONTROLLER_REDACTION_SECRET']));
     expect(readFileSync(artifact('task-a-1.stderr.log'), 'utf8')).toBe('[REDACTED]');
     expect(readFileSync(artifact('task-a-1.result.json'), 'utf8')).not.toContain('synthetic-private-claude-sentinel');
+    expect(readFileSync(predictableCollision, 'utf8')).toBe('pre-existing evidence');
+    const resultArtifact = state.tasks[0].handoff?.artifacts.find(entry => entry.kind === 'workflow-result');
+    expect(resultArtifact?.path).toMatch(/\.result\.json\.sanitized-[a-f0-9-]+\.json$/);
+    expect(readFileSync(resultArtifact!.path, 'utf8')).not.toContain('synthetic-private-claude-sentinel');
     expect(JSON.stringify(state)).not.toContain('synthetic-private-claude-sentinel');
+  });
+
+  it('preserves safe single-line result bytes when a private redaction environment is present', async () => {
+    const configured = await init();
+    fixture.configure({ tasks: { a: { spacedResult: true } } });
+    const state = await workflow.runWorkflow(fixture.cwd, 'roles', configured.runtime);
+    const resultFile = artifact('task-a-1.result.json');
+    const resultArtifact = state.tasks[0].handoff?.artifacts.find(entry => entry.kind === 'workflow-result');
+    expect(state.tasks[0].status).toBe('completed');
+    expect(resultArtifact?.path).toBe(resultFile);
+    expect(readFileSync(resultFile, 'utf8')).toMatch(/^ \{"taskId":"a".*\} \n$/);
+    expect(readdirSync(artifact('')).filter(file => file.includes('.sanitized-'))).toEqual([]);
   });
 
   it.each(['glm', 'codex'] as const)('blocks external %s under policy while normal Claude remains eligible', async route => {
@@ -164,7 +183,7 @@ describe('versioned workflow adapters', () => {
   it.each(['malformedHandoff', 'omitHandoff', 'omitTests', 'extraCommit', 'mutateRef'])(
     'keeps shared commit and protocol guards for a Claude worker with %s', async defect => {
       const configured = await init(); fixture.configure({ tasks: { a: { [defect]: true } } });
-      if (defect === 'mutateRef') await expect(workflow.runWorkflow(fixture.cwd, 'roles', configured.runtime)).rejects.toThrow('workflow_worker_modified_protected_refs');
+      if (defect === 'mutateRef') await expect(workflow.runWorkflow(fixture.cwd, 'roles', configured.runtime)).rejects.toThrow('workflow_protected_refs_changed');
       else await workflow.runWorkflow(fixture.cwd, 'roles', configured.runtime);
       const state = workflow.readWorkflow(fixture.cwd, 'roles');
       expect(state.tasks[0]).toMatchObject({ status: 'failed', attempts: 1 });
@@ -271,9 +290,9 @@ describe('versioned workflow adapters', () => {
     await workflow.initWorkflowV2(fixture.cwd, input, { lead: binding('lead', 'codex'), implementer: configured.selectedBinding('implementer', 'claude'),
       reviewer: configured.selectedBinding('reviewer', 'codex') }, { workers: 2, maxAttempts: 1 });
     fixture.configure({ tasks: { b: { delayMs: 1200, mutateRef: true } } });
-    await expect(workflow.runWorkflow(fixture.cwd, 'roles', configured.runtime)).rejects.toThrow('workflow_worker_modified_protected_refs');
+    await expect(workflow.runWorkflow(fixture.cwd, 'roles', configured.runtime)).rejects.toThrow('workflow_protected_refs_changed');
     const state = workflow.readWorkflow(fixture.cwd, 'roles');
-    expect(state.tasks.every(task => task.status === 'failed' && task.error === 'workflow_worker_modified_protected_refs')).toBe(true);
+    expect(state.tasks.every(task => task.status === 'failed' && task.error === 'workflow_protected_refs_changed')).toBe(true);
     expect(state.tasks.every(task => task.invocations?.[0].outcome === 'failed')).toBe(true);
     expect(fixture.git('rev-parse', 'main')).not.toBe(fixture.baseCommit);
   });
@@ -289,11 +308,11 @@ describe('versioned workflow adapters', () => {
     const originalResolver = configured.runtime.resolveBinding; let calls = 0;
     configured.runtime.resolveBinding = selected => { if (++calls === 2) throw new Error('Synthetic next-route preflight failure'); return originalResolver(selected); };
     fixture.configure({ tasks: { a: { mutateRef: true } } });
-    await expect(workflow.runWorkflow(fixture.cwd, 'roles', configured.runtime)).rejects.toThrow('workflow_worker_modified_protected_refs');
+    await expect(workflow.runWorkflow(fixture.cwd, 'roles', configured.runtime)).rejects.toThrow('workflow_protected_refs_changed');
     const state = workflow.readWorkflow(fixture.cwd, 'roles');
     expect(state.tasks[1].attempts).toBe(1);
     expect(JSON.stringify(state.tasks[1].invocations?.[0])).toBe(previous);
-    expect(state.tasks[0].invocations?.[1].error).toBe('workflow_worker_modified_protected_refs');
+    expect(state.tasks[0].invocations?.[1].error).toBe('workflow_protected_refs_changed');
   });
 
   it('resumes only a confirmed same-binding session and reserves a new invocation identity', async () => {

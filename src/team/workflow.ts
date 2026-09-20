@@ -6,7 +6,8 @@ import { randomUUID } from 'node:crypto';
 import { withFileLock } from '../lib/file-lock.js';
 import { expandPathForCompare } from '../lib/worktree-paths.js';
 import { loadConfig } from '../config/loader.js';
-import { createArtifactDescriptorFromPath } from '../shared/artifact-descriptor.js';
+import { createArtifactDescriptorFromPath, type ArtifactDescriptor } from '../shared/artifact-descriptor.js';
+import { withOrchestratorOperation, type ActiveOrchestratorSnapshot, type OrchestratorHost } from '../orchestration/selection.js';
 import { TeamPaths, absPath, teamStateRoot } from './state-paths.js';
 import { atomicWriteJson, ensureDirWithMode, validateResolvedPath } from './fs-utils.js';
 import { ensureWorkerWorktree, getBranchName, getWorktreePath, removeWorkerWorktree } from './git-worktree.js';
@@ -18,6 +19,8 @@ import { runWorkflowProcess, redactWorkflowText } from './workflow-process.js';
 import { createClaudeWorkflowResultDecoder, prepareWorkflowBinding, workflowWorkerArguments, workflowReviewerArguments, workflowReviewProvenance,
   type PreparedWorkflowBinding, type WorkflowRuntime } from './workflow-adapters.js';
 import { buildWorkflowPrompt, workflowContextFingerprint, workflowPromptFingerprint, workflowSessionFingerprint } from './workflow-prompt.js';
+import { issueWorkflowPublication, publishNativeClaudeResult, readWorkflowJsonArtifact, readWorkflowResultArtifact } from './workflow-publication.js';
+import { WorkflowRefAudit } from './workflow-ref-audit.js';
 import { boundedText, safeWorkflowId, parseWorkflowPlan, parseWorkflowTask, matchesScope,
   parseWorkflowHandoff, parseWorkflowFindings, parseWorkflowBinding, parseWorkflowState, parseWorkflowProviderPolicy,
   validateWorkflowStateTransition,
@@ -42,47 +45,39 @@ function boundedJson(path: string, max = 64 * 1024): unknown {
   if (lstatSync(path).isSymbolicLink() || statSync(path).size > max) throw new Error('workflow_artifact_invalid_or_oversized');
   try { return JSON.parse(readFileSync(path, 'utf8')); } catch { throw new Error('workflow_invalid_json'); }
 }
-function workerResultJson(path: string, canonicalParent: string, environment?: NodeJS.ProcessEnv): unknown {
-  const parent = dirname(path);
-  if (lstatSync(parent).isSymbolicLink() || realpathSync(parent) !== canonicalParent) throw new Error('workflow_artifact_parent_changed');
-  const info = lstatSync(path);
-  if (info.isSymbolicLink()) throw new Error('workflow_result_symlink_rejected');
-  if (!info.isFile() || info.nlink !== 1) throw new Error('workflow_result_not_regular_file');
-  validateResolvedPath(path, canonicalParent);
-  try {
-    if (info.size > 64 * 1024) throw new Error('workflow_artifact_invalid_or_oversized');
-    const parsed: unknown = JSON.parse(redactWorkflowText(readFileSync(path, 'utf8'), false, environment));
-    atomicWriteJson(path, parsed);
-    return parsed;
-  } catch {
-    // Result metadata is a bounded protocol, not a transcript archive. Invalid raw metadata must not retain secrets.
-    atomicWriteJson(path, { error: 'workflow_invalid_result' });
-    throw new Error('workflow_invalid_result');
-  }
-}
-async function runWorkflowProvider(input: Parameters<typeof runWorkflowProcess>[0], resultFile: string, claudeStructuredResult = false) {
+type WorkflowResultTransport =
+  | { kind: 'worker-designated-result'; taskId: string }
+  | { kind: 'provider-designated-json' }
+  | { kind: 'claude-native-structured' };
+async function runWorkflowProvider(input: Parameters<typeof runWorkflowProcess>[0], resultFile: string, transport: WorkflowResultTransport) {
   // Capture before launch: an unsuccessful provider can still write or redirect its result path.
   const canonicalParent = realpathSync(dirname(resultFile));
   let result: Awaited<ReturnType<typeof runWorkflowProcess>> | undefined;
   let output: unknown;
   let outputError: unknown;
-  const decoder = claudeStructuredResult ? createClaudeWorkflowResultDecoder() : undefined;
+  let outputArtifactPath = resultFile;
+  const decoder = transport.kind === 'claude-native-structured' ? createClaudeWorkflowResultDecoder() : undefined;
   try {
     result = await runWorkflowProcess({ ...input, ...(decoder ? { onStdout: decoder.write } : {}) });
     if (decoder) {
       try {
         const decoded = decoder.finish();
-        if (realpathSync(dirname(resultFile)) !== canonicalParent || lstatSync(dirname(resultFile)).isSymbolicLink()) throw new Error('workflow_artifact_parent_changed');
-        writeFileSync(resultFile, redactWorkflowText(JSON.stringify(decoded), false, input.redactionEnvironment ?? input.environment), { flag: 'wx', mode: 0o600 });
+        publishNativeClaudeResult(resultFile, decoded, input.redactionEnvironment ?? input.environment);
       } catch (error) { outputError = error; }
     }
   }
   finally {
-    try { output = workerResultJson(resultFile, canonicalParent, input.redactionEnvironment ?? input.environment); }
+    try {
+      const artifact = transport.kind === 'worker-designated-result'
+        ? readWorkflowResultArtifact(resultFile, canonicalParent, transport.taskId, input.redactionEnvironment ?? input.environment)
+        : readWorkflowJsonArtifact(resultFile, canonicalParent, input.redactionEnvironment ?? input.environment);
+      output = artifact.value;
+      outputArtifactPath = artifact.artifactPath;
+    }
     catch (error) { outputError ??= error; }
   }
   // Return parse failures so callers can retain process artifacts and preserve the original failure precedence.
-  return { ...result, output, outputError };
+  return { ...result, output, outputError, outputArtifactPath };
 }
 function clean(cwd: string): boolean {
   return git(cwd, ['status', '--porcelain', '--untracked-files=all']).split('\n')
@@ -103,13 +98,11 @@ function assertMutable(state: WorkflowState): void {
 }
 function save(state: WorkflowState): void {
   state.updatedAt = now();
-  if (state.schemaVersion === 2) {
-    const previous = savedSnapshots.get(state);
-    if (previous) validateWorkflowStateTransition(previous, state);
-    else parseWorkflowState(state);
-  }
+  const previous = savedSnapshots.get(state);
+  if (previous) validateWorkflowStateTransition(previous, state);
+  else parseWorkflowState(state);
   atomicWriteJson(statePath(state.cwd, state.plan.name), state);
-  if (state.schemaVersion === 2) savedSnapshots.set(state, JSON.parse(JSON.stringify(state)));
+  savedSnapshots.set(state, JSON.parse(JSON.stringify(state)));
   // Canonical task projections retain numeric IDs and claim identities; workflow.json owns integration decisions.
   for (const entry of state.tasks) {
     atomicWriteJson(absPath(state.cwd, TeamPaths.taskFile(state.plan.name, entry.canonicalId)), {
@@ -124,7 +117,7 @@ function save(state: WorkflowState): void {
 }
 export function readWorkflow(cwd: string, name: string): WorkflowState {
   let state = boundedJson(statePath(cwd, name), 16 * 1024 * 1024) as WorkflowState;
-  if (state?.schemaVersion === 2) state = parseWorkflowState(state);
+  if (state?.schemaVersion === 1 || state?.schemaVersion === 2) state = parseWorkflowState(state);
   if (!state || !((state.schemaVersion === 1 && state.profile === 'claude-glm-codex') || (state.schemaVersion === 2 && state.profile === 'role-substitution')) || state.plan?.name !== name
     || realpathSync(state.cwd) !== realpathSync(cwd)) throw new Error('workflow_invalid_state');
   if (!Array.isArray(state.tasks) || !Array.isArray(state.reviews)) throw new Error('workflow_invalid_state');
@@ -134,16 +127,17 @@ export function readWorkflow(cwd: string, name: string): WorkflowState {
   parseWorkflowPlan(state.plan, new Set(state.tasks.filter(entry => entry.status === 'rejected').map(entry => entry.task.id)));
   return state;
 }
-async function mutate(cwd: string, name: string, action: (state: WorkflowState) => Promise<void>): Promise<WorkflowState> {
+async function mutate(cwd: string, name: string,
+  action: (state: WorkflowState, active: ActiveOrchestratorSnapshot) => Promise<void>): Promise<WorkflowState> {
   assertLeadCaller();
   const path = statePath(cwd, name);
-  return withFileLock(`${path}.lock`, async () => {
-    const state = readWorkflow(cwd, name);
-    if (state.schemaVersion === 2) savedSnapshots.set(state, JSON.parse(JSON.stringify(state)));
-    assertMutable(state);
-    try { await action(state); } finally { save(state); }
-    return state;
-  }, { timeoutMs: 0 });
+  return withOrchestratorOperation(cwd, active => withFileLock(`${path}.lock`, async () => {
+      const state = readWorkflow(cwd, name);
+      savedSnapshots.set(state, JSON.parse(JSON.stringify(state)));
+      assertMutable(state);
+      try { await action(state, active); } finally { save(state); }
+      return state;
+    }, { timeoutMs: 0 }));
 }
 function count(value: number | undefined, fallback: number, max: number, min = 1): number {
   const result = value ?? fallback;
@@ -156,7 +150,8 @@ function count(value: number | undefined, fallback: number, max: number, min = 1
  * never be silently re-dispatched, and its original attempt and artifacts stay inspectable.
  */
 const NON_RETRYABLE_WORKER_ERRORS = ['workflow_timeout', 'workflow_interrupted', 'workflow_output_incomplete',
-  'workflow_worker_modified_protected_refs', 'workflow_session_identity_mismatch'] as const;
+  'workflow_designated_result_missing', 'workflow_worker_modified_protected_refs', 'workflow_protected_refs_changed',
+  'workflow_protected_ref_audit_failed', 'workflow_session_identity_mismatch'] as const;
 function nonRetryableWorkerError(error: string | undefined): boolean {
   return NON_RETRYABLE_WORKER_ERRORS.some(entry => entry === error);
 }
@@ -175,9 +170,10 @@ export async function initWorkflowV2(cwd: string, rawPlan: unknown, bindings: Re
 }
 async function initializeWorkflow(cwd: string, rawPlan: unknown, options: WorkflowOptions, bindings?: Readonly<Record<WorkflowRole, WorkflowRoleBinding>>): Promise<WorkflowState> {
   assertLeadCaller();
-  if (redactWorkflowText(JSON.stringify({ rawPlan, options })) !== JSON.stringify({ rawPlan, options })) throw new Error('workflow_sensitive_input_rejected');
-  cwd = realpathSync(cwd);
-  const plan = parseWorkflowPlan(rawPlan);
+  return withOrchestratorOperation(cwd, async () => {
+    if (redactWorkflowText(JSON.stringify({ rawPlan, options })) !== JSON.stringify({ rawPlan, options })) throw new Error('workflow_sensitive_input_rejected');
+    cwd = realpathSync(cwd);
+    const plan = parseWorkflowPlan(rawPlan);
   if (options.mode !== undefined && !['v1', 'balanced'].includes(options.mode)) throw new Error('workflow_invalid_mode');
   // Refuse every unsupported present policy before any state directory, branch or provider exists.
   const providerPolicy = parseWorkflowProviderPolicy(options.providerPolicy);
@@ -223,7 +219,8 @@ async function initializeWorkflow(cwd: string, rawPlan: unknown, options: Workfl
       worker: `task-${task.id}`, updatedAt: now() })), reviewAttempts: [] } : legacy;
   ensureDirWithMode(teamStateRoot(cwd, plan.name));
   await withFileLock(`${path}.lock`, async () => save(state));
-  return state;
+    return state;
+  });
 }
 function getTask(state: WorkflowState, id: string): WorkflowTaskState {
   const task = state.tasks.find(entry => entry.task.id === id);
@@ -308,7 +305,8 @@ function sessionFingerprint(state: WorkflowState, entry: WorkflowTaskState, comm
   return workflowPromptFingerprint(JSON.stringify({ launch: launchIdentity,
     context: workflowSessionFingerprint(state, entry, executable, worktree) }));
 }
-async function executeTask(state: WorkflowState, entry: WorkflowTaskState, command: string, resumeReason?: string, prepared?: PreparedWorkflowBinding): Promise<void> {
+async function executeTask(state: WorkflowState, entry: WorkflowTaskState, command: string, resumeReason?: string,
+  prepared?: PreparedWorkflowBinding, refAudit?: WorkflowRefAudit, orchestrationHost: OrchestratorHost = 'claude'): Promise<void> {
   const root = artifactsRoot(state);
   const balanced = state.options.mode === 'balanced';
   const resuming = resumeReason !== undefined;
@@ -318,12 +316,12 @@ async function executeTask(state: WorkflowState, entry: WorkflowTaskState, comma
   while (entry.attempts < state.options.maxAttempts) {
     const started = Date.now();
     entry.attempts++; entry.status = 'running'; entry.claimToken = randomUUID(); entry.updatedAt = now();
-    const invocation: WorkflowInvocation | undefined = balanced ? { attempt: entry.attempts, mode: resuming ? 'resume' : 'fresh',
+    const invocation: WorkflowInvocation = { orchestrationHost, attempt: entry.attempts, mode: resuming ? 'resume' : 'fresh',
       ...(prepared ? { invocationId: randomUUID(), binding: prepared.binding, model: prepared.binding.model }
         : state.options.glmModel ? { model: state.options.glmModel } : {}), startedAt: now(), outcome: 'failed',
       error: 'workflow_invocation_incomplete', ...(resumeReason === undefined ? {} : { reason: resumeReason }), artifacts: [],
-      telemetry: { provider: prepared?.binding.providerRoute ?? 'glm', durationMs: 0, status: 'unknown', scope: 'unknown' } } : undefined;
-    if (invocation) (entry.invocations ??= []).push(invocation);
+      telemetry: { provider: prepared?.binding.providerRoute ?? 'glm', durationMs: 0, status: 'unknown', scope: 'unknown' } };
+    (entry.invocations ??= []).push(invocation);
     save(state);
     try {
       const worktree = ensureWorkerWorktree(state.plan.name, entry.worker, state.cwd, { mode: 'named', baseRef: entry.task.baseCommit });
@@ -331,10 +329,20 @@ async function executeTask(state: WorkflowState, entry: WorkflowTaskState, comma
       entry.worktree = worktree.path; entry.branch = worktree.branch;
       assertWorker(state, entry);
       if (git(entry.worktree, ['rev-parse', 'HEAD']) !== entry.task.baseCommit) throw new Error('workflow_worker_base_mismatch');
+      save(state);
       const prefix = join(root, `${entry.worker}-${entry.attempts}`);
       const resultFile = `${prefix}.result.json`;
       if (existsSync(resultFile)) throw new Error('workflow_result_already_exists');
       const prompt = buildWorkflowPrompt(state, entry, resultFile);
+      const publication = issueWorkflowPublication({
+        workflowRoot: state.cwd,
+        workflowName: state.plan.name,
+        taskId: entry.task.id,
+        worker: entry.worker,
+        attempt: entry.attempts,
+        worktree: entry.worktree,
+        resultFile,
+      });
       const sessionEnabled = balanced && (!prepared || prepared.binding.capabilities.includes('session-resume'));
       if (sessionEnabled) {
         const worktree = realpathSync(entry.worktree);
@@ -343,21 +351,28 @@ async function executeTask(state: WorkflowState, entry: WorkflowTaskState, comma
         if (resuming && (!entry.session?.confirmed || entry.session.fingerprint !== fingerprint)) throw new Error('workflow_session_identity_changed');
         entry.session = { id: resuming ? entry.session!.id : randomUUID(), confirmed: false, fingerprint,
           worktree, branch: entry.branch!, ...(prepared ? { binding: prepared.binding } : {}) };
-        invocation!.promptFingerprint = workflowPromptFingerprint(prompt);
-        invocation!.contextFingerprint = workflowContextFingerprint(state);
+        invocation.promptFingerprint = workflowPromptFingerprint(prompt);
+        invocation.contextFingerprint = workflowContextFingerprint(state);
         save(state);
       }
-      const result = await runWorkflowProvider({ command, args: prepared ? workflowWorkerArguments(prepared,
-        sessionEnabled ? { id: entry.session!.id, resume: resuming } : undefined) : [...buildLaunchArgs('glm', {
-        teamName: state.plan.name, workerName: entry.worker, cwd: entry.worktree, model: state.options.glmModel,
-      }), '-p', ...(balanced ? [resuming ? '--resume' : '--session-id', entry.session!.id, '--output-format', 'stream-json', '--verbose'] : [])],
-      cwd: entry.worktree, stdin: prompt, ...(balanced ? { collectUsage: true } : {}),
-      timeoutMs: providerTimeoutMs(state), artifactPrefix: prefix, provider: prepared?.binding.providerRoute ?? 'glm', worker: entry.worker,
-      ...(prepared ? { environment: prepared.environment, redactionEnvironment: prepared.redactionEnvironment } : {}) }, resultFile);
-      if (invocation) {
-        invocation.telemetry = result.telemetry ?? { provider: prepared?.binding.providerRoute ?? 'glm', durationMs: Date.now() - started, status: 'unknown', scope: 'unknown' };
-        invocation.artifacts = result.artifacts;
+      let result: Awaited<ReturnType<typeof runWorkflowProvider>>;
+      refAudit?.providerStarted(entry.worker);
+      try {
+        result = await runWorkflowProvider({ command, args: prepared ? workflowWorkerArguments(prepared,
+          sessionEnabled ? { id: entry.session!.id, resume: resuming } : undefined) : [...buildLaunchArgs('glm', {
+          teamName: state.plan.name, workerName: entry.worker, cwd: entry.worktree, model: state.options.glmModel,
+        }), '-p', ...(balanced ? [resuming ? '--resume' : '--session-id', entry.session!.id, '--output-format', 'stream-json', '--verbose'] : [])],
+        cwd: entry.worktree, stdin: prompt, ...(balanced ? { collectUsage: true } : {}),
+        timeoutMs: providerTimeoutMs(state), artifactPrefix: prefix, provider: prepared?.binding.providerRoute ?? 'glm', worker: entry.worker,
+        publicationEnvironment: publication.environment,
+        ...(prepared ? { environment: prepared.environment, redactionEnvironment: prepared.redactionEnvironment } : {}) }, resultFile,
+        { kind: 'worker-designated-result', taskId: entry.task.id });
+      } finally {
+        try { publication.revoke(); }
+        finally { refAudit?.providerCompleted(entry.worker); }
       }
+      invocation.telemetry = result.telemetry ?? { provider: prepared?.binding.providerRoute ?? 'glm', durationMs: Date.now() - started, status: 'unknown', scope: 'unknown' };
+      invocation.artifacts = result.artifacts;
       entry.handoff = { taskId: entry.task.id, outcome: 'failed', changedFiles: [], tests: [], interfaceChanges: [], assumptions: [], risks: [], summary: result.error ?? 'Worker result pending validation', artifacts: result.artifacts };
       if (sessionEnabled) {
         if (result.telemetry?.sessionId && result.telemetry.sessionId !== entry.session!.id
@@ -368,24 +383,25 @@ async function executeTask(state: WorkflowState, entry: WorkflowTaskState, comma
       }
       if (!result.passed) throw new Error(`workflow_${result.error}`);
       if (result.outputError) throw result.outputError;
-      validateResolvedPath(resultFile, root);
+      validateResolvedPath(result.outputArtifactPath, root);
       const handoff = parseWorkflowHandoff(result.output, entry.task.id);
       // Provider result is untrusted text: never persist credentials returned in a handoff.
       const safeHandoff = parseWorkflowHandoff(JSON.parse(redactWorkflowText(JSON.stringify(handoff))), entry.task.id);
-      atomicWriteJson(resultFile, safeHandoff);
-      entry.handoff = { ...safeHandoff, artifacts: [...result.artifacts, createArtifactDescriptorFromPath(resultFile, {
+      entry.handoff = { ...safeHandoff, artifacts: [...result.artifacts, createArtifactDescriptorFromPath(result.outputArtifactPath, {
         kind: 'workflow-result', producer: { system: 'omc', component: 'team-workflow', worker: entry.worker }, retention: 'until-completion',
       })] };
-      if (invocation) invocation.artifacts = entry.handoff.artifacts.slice(0, 3);
+      invocation.artifacts = entry.handoff.artifacts.slice(0, 3);
       if (handoff.outcome !== 'completed' || handoff.tests.some(test => !test.passed)) throw new Error('workflow_worker_reported_failure');
       for (const test of entry.task.tests) if (!handoff.tests.some(result => result.passed && result.command === test.command && JSON.stringify(result.args) === JSON.stringify(test.args))) throw new Error('workflow_worker_test_evidence_missing');
       validateCommit(state, entry);
-      for (const [index, test] of entry.task.tests.entries()) {
-        const check = await runWorkflowProcess({ ...test, cwd: entry.worktree, timeoutMs: state.options.timeoutMs,
-          artifactPrefix: `${prefix}.test-${index}`, worker: entry.worker });
-        entry.handoff.artifacts.push(...check.artifacts);
-        if (!check.passed) throw new Error('workflow_worker_test_failed');
-      }
+      try {
+        for (const [index, test] of entry.task.tests.entries()) {
+          const check = await runWorkflowProcess({ ...test, cwd: entry.worktree, timeoutMs: state.options.timeoutMs,
+            artifactPrefix: `${prefix}.test-${index}`, worker: entry.worker });
+          entry.handoff.artifacts.push(...check.artifacts);
+          if (!check.passed) throw new Error('workflow_worker_test_failed');
+        }
+      } finally { refAudit?.controllerReplayCompleted(); }
       validateCommit(state, entry);
       entry.status = 'completed'; delete entry.error; break;
     } catch (error) {
@@ -407,7 +423,7 @@ async function executeTask(state: WorkflowState, entry: WorkflowTaskState, comma
         await new Promise(resolve => setTimeout(resolve, delay));
       }
     } finally {
-      if (invocation && state.schemaVersion === 1) {
+      if (state.schemaVersion === 1) {
         invocation.outcome = entry.status === 'completed' ? 'completed' : 'failed';
         if (entry.error) invocation.error = entry.error; else delete invocation.error;
         if (!invocation.telemetry.durationMs) invocation.telemetry.durationMs = Date.now() - started;
@@ -416,13 +432,18 @@ async function executeTask(state: WorkflowState, entry: WorkflowTaskState, comma
     }
   }
 }
-function protectedWorkflowRefs(cwd: string, name: string): string {
-  return git(cwd, ['for-each-ref', '--format=%(refname) %(objectname)']).split('\n')
-    .filter(ref => !ref.startsWith(`refs/heads/omc-team/${name}/`)).join('\n');
+function attachRefAudit(entries: WorkflowTaskState[], artifact: ArtifactDescriptor | undefined): void {
+  if (!artifact) return;
+  for (const entry of entries) {
+    if (entry.handoff && !entry.handoff.artifacts.some(item => item.path === artifact.path)) entry.handoff.artifacts.push(artifact);
+    const invocation = entry.invocations?.at(-1);
+    if (invocation?.error === 'workflow_invocation_incomplete' && !invocation.artifacts.some(item => item.path === artifact.path)) invocation.artifacts.push(artifact);
+  }
 }
-function failProtectedRefs(entries: WorkflowTaskState[], balanced: boolean, onlyIncomplete = false): void {
+function failProtectedRefs(entries: WorkflowTaskState[], balanced: boolean, onlyIncomplete = false,
+  error = 'workflow_protected_refs_changed'): void {
   for (const entry of entries) if (balanced || entry.status === 'completed') {
-    entry.status = 'failed'; entry.error = 'workflow_worker_modified_protected_refs';
+    entry.status = 'failed'; entry.error = error;
     if (entry.session) entry.session.confirmed = false;
     const invocation = entry.invocations?.at(-1);
     if (invocation && (!onlyIncomplete || invocation.error === 'workflow_invocation_incomplete')) { invocation.outcome = 'failed'; invocation.error = entry.error; }
@@ -438,9 +459,9 @@ function settleVersionedInvocations(state: WorkflowState, entries: WorkflowTaskS
   }
 }
 export async function runWorkflow(cwd: string, name: string, runtime?: WorkflowRuntime): Promise<WorkflowState> {
-  return mutate(cwd, name, async state => {
+  return mutate(cwd, name, async (state, active) => {
     assertLeader(state);
-    const refsBefore = protectedWorkflowRefs(cwd, name);
+    const refAudit = new WorkflowRefAudit(cwd, name);
     // A killed owner is never silently re-spawned: retained running work requires inspection.
     if (state.tasks.some(entry => entry.status === 'running')) throw new Error('workflow_interrupted_worker_requires_inspection');
     const candidates = state.tasks.filter(entry => ['pending', 'failed'].includes(entry.status) && entry.attempts < state.options.maxAttempts
@@ -460,14 +481,23 @@ export async function runWorkflow(cwd: string, name: string, runtime?: WorkflowR
       while (cursor < candidates.length && !state.tasks.some(entry => entry.error === 'workflow_interrupted')) {
         const entry = candidates[cursor++]!;
         const prepared = state.schemaVersion === 2 ? prepareBinding(state, state.bindings.implementer, runtime) : undefined;
-        await executeTask(state, entry, prepared?.command ?? command, undefined, prepared);
+        await executeTask(state, entry, prepared?.command ?? command, undefined, prepared, refAudit, active.host);
       }
     }));
     if (state.schemaVersion === 1 && pools.some(pool => pool.status === 'rejected')) throw new Error('workflow_worker_persistence_failed');
     try {
-      if (protectedWorkflowRefs(cwd, name) !== refsBefore) {
+      let audit;
+      try {
+        audit = refAudit.finalize(() => join(artifactsRoot(state), `ref-audit-${randomUUID()}.json`),
+          candidates.map(entry => ({ worker: entry.worker, commitSha: entry.handoff?.commitSha })));
+      } catch {
+        failProtectedRefs(candidates, state.options.mode === 'balanced', state.schemaVersion === 2, 'workflow_protected_ref_audit_failed');
+        throw new Error('workflow_protected_ref_audit_failed');
+      }
+      attachRefAudit(candidates, audit.artifact);
+      if (audit.outcome === 'protected-refs-changed') {
         failProtectedRefs(candidates, state.options.mode === 'balanced', state.schemaVersion === 2);
-        throw new Error('workflow_worker_modified_protected_refs');
+        throw new Error('workflow_protected_refs_changed');
       }
       const rejected = pools.find(pool => pool.status === 'rejected');
       if (rejected?.status === 'rejected') {
@@ -482,7 +512,7 @@ export async function runWorkflow(cwd: string, name: string, runtime?: WorkflowR
 }
 /** Explicit continuation of a verified conversation in the same pristine task worktree. */
 export async function resumeWorkflowTask(cwd: string, name: string, taskId: string, expectedHead: string, reason: string, runtime?: WorkflowRuntime): Promise<WorkflowState> {
-  return mutate(cwd, name, async state => {
+  return mutate(cwd, name, async (state, active) => {
     if (state.options.mode !== 'balanced') throw new Error('workflow_balanced_mode_required');
     if (assertLeader(state) !== expectedHead) throw new Error('workflow_resume_head_mismatch');
     if (state.tasks.some(entry => entry.status === 'running')) throw new Error('workflow_interrupted_worker_requires_inspection');
@@ -492,7 +522,8 @@ export async function resumeWorkflowTask(cwd: string, name: string, taskId: stri
     if (entry.attempts >= state.options.maxAttempts) throw new Error('workflow_attempt_limit_reached');
     if (state.schemaVersion === 1 && !state.options.glmModel) throw new Error('workflow_resume_model_required');
     if (!entry.task.dependencies.every(id => getTask(state, id).status === 'accepted')) throw new Error('workflow_dependency_not_integrated');
-    if (['workflow_worker_modified_protected_refs', 'workflow_session_identity_mismatch'].includes(entry.error ?? '')) throw new Error('workflow_session_not_resumable');
+    if (['workflow_worker_modified_protected_refs', 'workflow_protected_refs_changed', 'workflow_protected_ref_audit_failed',
+      'workflow_session_identity_mismatch'].includes(entry.error ?? '')) throw new Error('workflow_session_not_resumable');
     const session = entry.session;
     if (!session?.confirmed || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(session.id)) throw new Error('workflow_session_not_confirmed');
     const worktree = realpathSync(assertWorker(state, entry));
@@ -510,14 +541,23 @@ export async function resumeWorkflowTask(cwd: string, name: string, taskId: stri
     const fingerprint = prepared ? workflowPromptFingerprint(JSON.stringify({ binding: prepared.binding, worktree, branch: entry.branch,
       context: workflowSessionFingerprint(state, entry, command, worktree) })) : sessionFingerprint(state, entry, command, worktree);
     if (session.fingerprint !== fingerprint) throw new Error('workflow_session_identity_changed');
-    const refs = protectedWorkflowRefs(cwd, name);
+    const refAudit = new WorkflowRefAudit(cwd, name);
     let executionFailure: { error: unknown } | undefined;
-    try { await executeTask(state, entry, command, safeReason, prepared); }
+    try { await executeTask(state, entry, command, safeReason, prepared, refAudit, active.host); }
     catch (error) { executionFailure = { error }; }
     try {
-      if (protectedWorkflowRefs(cwd, name) !== refs) {
+      let audit;
+      try {
+        audit = refAudit.finalize(() => join(artifactsRoot(state), `ref-audit-${randomUUID()}.json`),
+          [{ worker: entry.worker, commitSha: entry.handoff?.commitSha }]);
+      } catch {
+        failProtectedRefs([entry], true, state.schemaVersion === 2, 'workflow_protected_ref_audit_failed');
+        throw new Error('workflow_protected_ref_audit_failed');
+      }
+      attachRefAudit([entry], audit.artifact);
+      if (audit.outcome === 'protected-refs-changed') {
         failProtectedRefs([entry], true, state.schemaVersion === 2);
-        throw new Error('workflow_worker_modified_protected_refs');
+        throw new Error('workflow_protected_refs_changed');
       }
     } finally { settleVersionedInvocations(state, [entry]); }
     if (executionFailure) throw executionFailure.error;
@@ -636,7 +676,7 @@ function reviewContext(state: WorkflowStateV2): { projectInstructions: Array<{ p
   return context;
 }
 export async function reviewWorkflow(cwd: string, name: string, runtime?: WorkflowRuntime): Promise<WorkflowState> {
-  return mutate(cwd, name, async state => {
+  return mutate(cwd, name, async (state, active) => {
     const head = verificationGate(state);
     const refs = git(cwd, ['for-each-ref', '--format=%(refname) %(objectname)']);
     if (state.reviewPasses >= state.options.maxReviewPasses) throw new Error('workflow_review_limit_reached');
@@ -648,14 +688,14 @@ export async function reviewWorkflow(cwd: string, name: string, runtime?: Workfl
     const balanced = state.options.mode === 'balanced';
     const started = Date.now();
     state.reviewPasses++; state.stage = 'review';
-    const reservation: WorkflowReviewAttempt = { pass: state.reviewPasses, head,
+    const reservation: WorkflowReviewAttempt = { orchestrationHost: active.host, pass: state.reviewPasses, head,
       ...(prepared ? { model: prepared.binding.model } : state.options.codexModel ? { model: state.options.codexModel } : {}), startedAt: now(), outcome: 'failed',
       error: 'workflow_invocation_incomplete', artifacts: [], telemetry: { provider: prepared?.binding.providerRoute ?? 'codex', durationMs: 0, status: 'unknown', scope: 'unknown' } };
     let attempt: WorkflowReviewAttempt | undefined;
     if (state.schemaVersion === 2 && prepared && provenance) {
       const bound: WorkflowReviewAttemptV2 = { ...reservation, invocationId: randomUUID(), binding: prepared.binding, provenance };
       (state.reviewAttempts ??= []).push(bound); attempt = bound;
-    } else if (state.schemaVersion === 1 && balanced) { (state.reviewAttempts ??= []).push(reservation); attempt = reservation; }
+    } else if (state.schemaVersion === 1) { (state.reviewAttempts ??= []).push(reservation); attempt = reservation; }
     save(state);
     try {
       const root = artifactsRoot(state); const prefix = join(root, `review-${state.reviewPasses}`);
@@ -680,7 +720,8 @@ export async function reviewWorkflow(cwd: string, name: string, runtime?: Workfl
         : ['exec', '--sandbox', 'read-only', '--ephemeral', ...(balanced ? ['--json'] : []),
         ...(state.options.codexModel ? ['--model', state.options.codexModel] : []), '--output-schema', schemaFile, '--output-last-message', resultFile, '-'],
         cwd, stdin: request, ...(prepared ? { environment: prepared.environment, redactionEnvironment: prepared.redactionEnvironment } : {}),
-        timeoutMs: providerTimeoutMs(state), artifactPrefix: prefix, provider: prepared?.binding.providerRoute ?? 'codex', ...(balanced ? { collectUsage: true } : {}) }, resultFile, prepared?.binding.providerRoute === 'claude');
+        timeoutMs: providerTimeoutMs(state), artifactPrefix: prefix, provider: prepared?.binding.providerRoute ?? 'codex', ...(balanced ? { collectUsage: true } : {}) }, resultFile,
+        prepared?.binding.providerRoute === 'claude' ? { kind: 'claude-native-structured' } : { kind: 'provider-designated-json' });
       if (attempt) {
         attempt.telemetry = result.telemetry ?? { provider: prepared?.binding.providerRoute ?? 'codex', durationMs: Date.now() - started, status: 'unknown', scope: 'unknown' };
         attempt.artifacts = result.artifacts;
@@ -690,10 +731,10 @@ export async function reviewWorkflow(cwd: string, name: string, runtime?: Workfl
       } catch { throw new Error('workflow_reviewer_modified_repository'); }
       if (!result.passed) throw new Error('workflow_review_process_failed');
       if (result.outputError) throw result.outputError;
-      validateResolvedPath(resultFile, root);
+      validateResolvedPath(result.outputArtifactPath, root);
       const raw = result.output;
       const findings = parseWorkflowReviewFindings(JSON.parse(redactWorkflowText(JSON.stringify(raw))), state.reviewPasses, cwd);
-      state.reviews.push({ pass: state.reviewPasses, head, findings, artifacts: [...result.artifacts, createArtifactDescriptorFromPath(resultFile, {
+      state.reviews.push({ pass: state.reviewPasses, head, findings, artifacts: [...result.artifacts, createArtifactDescriptorFromPath(result.outputArtifactPath, {
         kind: 'workflow-review', producer: { system: 'omc', component: 'team-workflow' }, retention: 'until-completion',
       })] });
       state.stage = 'adjudication';
@@ -801,22 +842,22 @@ export function workflowStatus(cwd: string, name: string): Record<string, unknow
 /** Explicit completed-workflow cleanup; rejected/failed and changed worktrees remain inspectable. */
 export async function cleanupWorkflow(cwd: string, name: string): Promise<{ removed: string[]; preserved: Array<{ taskId: string; reason: string }> }> {
   assertLeadCaller();
-  return withFileLock(`${statePath(cwd, name)}.lock`, async () => {
-    const state = readWorkflow(cwd, name);
-    if (state.stage !== 'complete') throw new Error('workflow_completion_required_for_cleanup');
-    assertLeader(state);
-    const result: { removed: string[]; preserved: Array<{ taskId: string; reason: string }> } = { removed: [], preserved: [] };
-    for (const entry of state.tasks) {
-      if (!entry.worktree || !existsSync(entry.worktree)) continue;
-      if (entry.status !== 'accepted') { result.preserved.push({ taskId: entry.task.id, reason: 'unaccepted_work_preserved' }); continue; }
-      try {
-        validateCommit(state, entry);
-        removeWorkerWorktree(name, entry.worker, cwd);
-        if (existsSync(entry.worktree)) throw new Error('workflow_cleanup_unverified');
-        result.removed.push(entry.task.id);
-      } catch { result.preserved.push({ taskId: entry.task.id, reason: 'dirty_changed_or_unverified_worktree_preserved' }); }
-    }
-    atomicWriteJson(join(teamStateRoot(cwd, name), 'workflow-cleanup.json'), result);
-    return result;
-  }, { timeoutMs: 0 });
+  return withOrchestratorOperation(cwd, () => withFileLock(`${statePath(cwd, name)}.lock`, async () => {
+      const state = readWorkflow(cwd, name);
+      if (state.stage !== 'complete') throw new Error('workflow_completion_required_for_cleanup');
+      assertLeader(state);
+      const result: { removed: string[]; preserved: Array<{ taskId: string; reason: string }> } = { removed: [], preserved: [] };
+      for (const entry of state.tasks) {
+        if (!entry.worktree || !existsSync(entry.worktree)) continue;
+        if (entry.status !== 'accepted') { result.preserved.push({ taskId: entry.task.id, reason: 'unaccepted_work_preserved' }); continue; }
+        try {
+          validateCommit(state, entry);
+          removeWorkerWorktree(name, entry.worker, cwd);
+          if (existsSync(entry.worktree)) throw new Error('workflow_cleanup_unverified');
+          result.removed.push(entry.task.id);
+        } catch { result.preserved.push({ taskId: entry.task.id, reason: 'dirty_changed_or_unverified_worktree_preserved' }); }
+      }
+      atomicWriteJson(join(teamStateRoot(cwd, name), 'workflow-cleanup.json'), result);
+      return result;
+    }, { timeoutMs: 0 }));
 }

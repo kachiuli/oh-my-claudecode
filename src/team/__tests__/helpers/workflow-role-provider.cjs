@@ -47,11 +47,20 @@ const terminal = output => {
   git('add', '--', file); git('commit', '-m', 'Synthetic implementation');
   if (behavior.extraCommit) { fs.appendFileSync(file, 'second commit\n'); git('add', '--', file); git('commit', '-m', 'Extra synthetic commit'); }
   if (behavior.mutateRef) git('branch', '-f', 'main', 'HEAD');
+  if (behavior.protectedRef === 'checkpoint') git('update-ref', `refs/codex/turn-diffs/checkpoints/provider-${request.task.id}`, 'HEAD');
   if (behavior.commitHang) await new Promise(resolve => setTimeout(resolve, 30000));
   const result = { taskId: request.task.id, outcome: 'completed', commitSha: git('rev-parse', 'HEAD'), changedFiles: [file],
     tests: behavior.omitTests ? [] : request.task.tests.map(test => ({ ...test, passed: true })),
     interfaceChanges: [], assumptions: [], risks: [], summary: behavior.echoSecret ? process.env.PRIVATE_TEST_SECRET : 'Synthetic implementation complete.' };
-  if (!behavior.omitHandoff) fs.writeFileSync(request.resultFile, behavior.malformedHandoff ? '{}' : JSON.stringify(result));
+  if (!behavior.omitHandoff) {
+    const bytes = behavior.malformedHandoff ? '{}' : behavior.spacedResult ? ` ${JSON.stringify(result)} \n` : JSON.stringify(result);
+    if (behavior.publication === 'stdout-only') process.stdout.write(`${bytes}\n`);
+    else if (behavior.publication === 'local-only') {
+      const local = path.join(process.cwd(), '.omc', 'helper-results', `${request.task.id}.json`);
+      fs.mkdirSync(path.dirname(local), { recursive: true });
+      fs.writeFileSync(local, bytes);
+    } else fs.writeFileSync(request.resultFile, bytes);
+  }
   terminal();
   event({ event: 'end' });
 })().catch(error => { process.stderr.write(String(error)); process.exitCode = 1; });

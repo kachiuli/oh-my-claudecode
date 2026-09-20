@@ -19,6 +19,10 @@ import { loadConfig, getConfigPaths, } from '../config/loader.js';
 import { createOmcSession } from '../index.js';
 import { checkForUpdates, performUpdate, formatUpdateNotification, getInstalledVersion, getOMCConfig, reconcileUpdateRuntime, CONFIG_FILE, } from '../features/auto-update.js';
 import { install as installOmc, isInstalled, getInstallInfo } from '../installer/index.js';
+import { getRuntimePackageRoot } from '../installer/index.js';
+import { setupProjectHosts, uninstallProjectHost, doctorProjectHosts } from '../hosts/project-setup.js';
+import { orchestratorHost, registerOrchestratorCommands } from './commands/orchestrator.js';
+import { launchProjectOrchestrator } from './project-launch.js';
 import { waitCommand, waitStatusCommand, waitDaemonCommand, waitDetectCommand } from './commands/wait.js';
 import { doctorConflictsCommand } from './commands/doctor-conflicts.js';
 import { doctorTeamRoutingCommand } from './commands/doctor-team-routing.js';
@@ -80,7 +84,8 @@ async function defaultAction() {
         await askCommand(args.slice(1));
         return;
     }
-    await launchCommand(args);
+    if (!await launchProjectOrchestrator(args))
+        await launchCommand(args);
 }
 program
     .name('omc')
@@ -88,32 +93,37 @@ program
     .version(version)
     .allowUnknownOption()
     .action(defaultAction);
+registerOrchestratorCommands(program);
 /**
  * Launch command - Native tmux shell launch for Claude Code
  */
 program
     .command('launch [args...]')
-    .description('Launch Claude Code with native tmux shell integration')
+    .description('Launch the selected repository orchestrator (legacy repositories launch Claude Code)')
     .allowUnknownOption()
     .addHelpText('after', `
 Examples:
   $ omc                                Launch Claude Code
-  $ omc --madmax                       Launch with permissions bypass
-  $ omc --yolo                         Launch with permissions bypass (alias)
+  $ omc --madmax                       Legacy Claude launch with permissions bypass
+  $ omc --yolo                         Legacy permissions bypass alias
   $ omc --notify false                 Launch without CCNotifier events
   $ omc launch                         Explicit launch subcommand (same as bare omc)
-  $ omc launch --madmax                Explicit launch with flags
+  $ omc launch --notify false          Launch the selected host with notifications disabled
 
 Options:
   --notify <bool>   Enable/disable CCNotifier events. false sets OMC_NOTIFY=0
                     and suppresses all stop/session-start/session-idle notifications.
                     Default: true
 
+Project host launches preserve notification options and native permission checks.
+Permissions-bypass aliases (--madmax/--yolo) are refused after project adoption.
+
 Environment:
   OMC_NOTIFY=0              Suppress all notifications (set by --notify false)
 `)
     .action(async (args) => {
-    await launchCommand(args);
+    if (!await launchProjectOrchestrator(args))
+        await launchCommand(args);
 });
 /**
  * Interop command - Split-pane tmux session with OMC and OMX
@@ -656,6 +666,8 @@ program
     .option('-q, --quiet', 'Suppress output except for errors')
     .option('--standalone', 'Force npm update even in plugin context')
     .option('--clean', 'Purge old plugin cache versions immediately (bypass 24h grace period)')
+    .option('--host <host>', 'Refresh project assets for claude, codex, or both from this installed package')
+    .option('--scope <scope>', 'Use project for repository host assets')
     .addHelpText('after', `
 Examples:
   $ omc update                   Check and install updates
@@ -663,6 +675,15 @@ Examples:
   $ omc update --force           Force reinstall
   $ omc update --standalone      Force npm update in plugin context`)
     .action(async (options) => {
+    if (options.host || options.scope) {
+        if (options.scope !== 'project' || !options.host)
+            throw new Error('Project update requires --host claude|codex|both --scope project.');
+        if (options.check || options.standalone || options.clean)
+            throw new Error('Project host update refreshes this package; --check, --standalone and --clean apply to legacy global updates.');
+        const hosts = options.host === 'both' ? ['claude', 'codex'] : [orchestratorHost(options.host)];
+        console.log(JSON.stringify(await setupProjectHosts(process.cwd(), hosts, { packageRoot: getRuntimePackageRoot() }), null, 2));
+        return;
+    }
     if (!options.quiet) {
         console.log(chalk.blue('Oh-My-ClaudeCode Update\n'));
     }
@@ -1139,6 +1160,14 @@ Examples:
     // Without --team-routing, show help text for the parent command.
     doctorCmd.help();
 });
+doctorCmd.command('hosts').description('Check repository host assets and both orchestration CLIs')
+    .option('--json', 'Output JSON (also the default)')
+    .action(async () => {
+    const report = await doctorProjectHosts(process.cwd());
+    console.log(JSON.stringify(report, null, 2));
+    if (!report.healthy)
+        process.exitCode = 1;
+});
 doctorCmd
     .command('team-routing')
     .description('Probe CLI presence for every provider referenced by team.roleRouting')
@@ -1183,6 +1212,9 @@ program
     .option('--plugin-dir-mode', 'Treat OMC as launched via --plugin-dir at runtime (skip agent/skill copy; HUD + hooks + CLAUDE.md still installed)')
     .option('--skip-hooks', 'Skip hook installation')
     .option('--force-hooks', 'Force reinstall hooks even if unchanged')
+    .option('--host <host>', 'Prepare claude, codex, or both as project orchestration hosts')
+    .option('--scope <scope>', 'Use project for repository host assets')
+    .option('--dry-run', 'Preview project setup without writing files')
     .addHelpText('after', `
 Examples:
   $ omc setup                     Sync all OMC components
@@ -1193,6 +1225,18 @@ Examples:
   $ omc setup --skip-hooks        Install without hooks
   $ omc setup --force-hooks       Force reinstall hooks`)
     .action(async (options) => {
+    if (options.host || options.scope || options.dryRun) {
+        if (options.scope !== 'project' || !options.host)
+            throw new Error('Project setup requires --host claude|codex|both --scope project.');
+        if (options.pluginDirMode || options.plugin === false || options.skipHooks || options.forceHooks) {
+            throw new Error('Project host setup manages its own assets; legacy plugin and hook flags are unsupported.');
+        }
+        const hosts = options.host === 'both' ? ['claude', 'codex'] : [orchestratorHost(options.host)];
+        const result = await setupProjectHosts(process.cwd(), hosts, { packageRoot: getRuntimePackageRoot(), dryRun: !!options.dryRun });
+        if (!options.quiet)
+            console.log(JSON.stringify(result, null, 2));
+        return;
+    }
     if (!options.quiet) {
         console.log(chalk.blue('Oh-My-ClaudeCode Setup\n'));
     }
@@ -1270,6 +1314,14 @@ Examples:
         }
         console.log(chalk.gray('Start Claude Code and use /oh-my-claudecode:omc-setup for interactive setup.'));
     }
+});
+program.command('uninstall').description('Remove owned project host assets while preserving workflow state and user files')
+    .requiredOption('--host <host>', 'claude or codex')
+    .requiredOption('--scope <scope>', 'project')
+    .action(async (options) => {
+    if (options.scope !== 'project')
+        throw new Error('Host uninstall supports --scope project.');
+    console.log(JSON.stringify(await uninstallProjectHost(process.cwd(), orchestratorHost(options.host)), null, 2));
 });
 /**
  * Postinstall command - Silent install for npm postinstall hook

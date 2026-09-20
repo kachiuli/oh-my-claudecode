@@ -6,6 +6,7 @@ import { homedir, tmpdir } from 'os';
 import {
   validatePath,
   resolveOmcPath,
+  resolveProjectOmcPath,
   resolveStatePath,
   ensureOmcDir,
   getWorktreeNotepadPath,
@@ -68,6 +69,16 @@ function canonicalTestPath(path: string): string {
 
 
 const TEST_DIR = mkdtempSync(join(homedir(), 'worktree-paths-test-'));
+
+describe('project installation paths', () => {
+  afterEach(() => vi.unstubAllEnvs());
+  it('keeps project assets in the checkout when runtime state is relocated', () => {
+    vi.stubEnv('OMC_STATE_DIR', join(tmpdir(), 'central-state'));
+    expect(resolveProjectOmcPath('orchestrator.json', TEST_DIR)).toBe(join(TEST_DIR, '.omc', 'orchestrator.json'));
+    expect(() => resolveProjectOmcPath('../outside', TEST_DIR)).toThrow();
+    expect(() => resolveProjectOmcPath(resolve(TEST_DIR, 'outside'), TEST_DIR)).toThrow();
+  });
+});
 
 describe('worktree-paths', () => {
   let previousHome: string | undefined;
