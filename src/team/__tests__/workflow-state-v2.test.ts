@@ -11,20 +11,21 @@ function binding(role = 'implementer', providerRoute = 'claude') {
     capabilities: role === 'lead' ? ['external-lead'] : role === 'reviewer' ? ['structured-findings', 'read-only'] : ['structured-handoff', 'session-resume'],
     capabilityEvidenceSha256: hash };
 }
-function legacyState() {
+function legacyState(policy?: unknown) {
   const task = { id: 'one', objective: 'Update owned source', baseCommit: 'b'.repeat(40), writeScope: ['src/one.ts'],
     readScope: [], prohibitedScope: [], dependencies: [], contracts: [], acceptanceCriteria: ['Owned source works'], tests: [] };
   return { schemaVersion: 1, profile: 'claude-glm-codex', cwd: 'C:/project', integrationHead: 'b'.repeat(40),
     plan: { name: 'example', objective: 'Implement example', baseCommit: 'b'.repeat(40), integrationBranch: 'integration/example', tasks: [task], verification: [{ command: 'node', args: ['check.mjs'] }] },
-    options: { mode: 'balanced', workers: 1, maxWorkers: 3, maxAttempts: 2, maxReviewPasses: 2, timeoutMs: 1000, backoffMs: 0, glmCommand: 'glm', codexCommand: 'codex' },
+    options: { mode: 'balanced', workers: 1, maxWorkers: 3, maxAttempts: 2, maxReviewPasses: 2, timeoutMs: 1000, backoffMs: 0, glmCommand: 'glm', codexCommand: 'codex',
+      ...(policy === undefined ? {} : { providerPolicy: policy }) },
     tasks: [{ task, canonicalId: '1', status: 'pending', attempts: 0, worker: 'task-one', updatedAt: '2026-09-15T00:00:00.000Z' }],
     stage: 'implementation', reviewPasses: 0, reviews: [], createdAt: '2026-09-15T00:00:00.000Z', updatedAt: '2026-09-15T00:00:00.000Z' };
 }
-function state() {
-  return { ...legacyState(), schemaVersion: 2, profile: 'role-substitution',
+function state(policy?: unknown) {
+  return { ...legacyState(policy), schemaVersion: 2, profile: 'role-substitution',
     bindings: { lead: binding('lead', 'codex'), implementer: binding(), reviewer: binding('reviewer', 'codex') }, substitutions: [] };
 }
-function completedState() {
+function completedState(policy?: unknown) {
   const worker = binding();
   const reviewer = binding('reviewer');
   const invocation = { invocationId: '11111111-1111-4111-8111-111111111111', binding: worker,
@@ -34,7 +35,8 @@ function completedState() {
     pass: 1, head: 'b'.repeat(40), model: reviewer.model, startedAt: '2026-09-15T00:00:02.000Z', outcome: 'completed', artifacts: [],
     provenance: { relation: 'self-review', authorIds: ['agent-a'], reviewerId: 'agent-a', context: 'fresh' },
     telemetry: { provider: 'claude', durationMs: 1, status: 'unknown', scope: 'unknown' } };
-  return { ...state(), bindings: { ...state().bindings, reviewer }, tasks: [{ ...state().tasks[0], status: 'completed', attempts: 1, invocations: [invocation] }],
+  const base = state(policy);
+  return { ...base, bindings: { ...base.bindings, reviewer }, tasks: [{ ...base.tasks[0], status: 'completed', attempts: 1, invocations: [invocation] }],
     reviewPasses: 1, reviewAttempts: [review] };
 }
 function substitutedState() {
@@ -160,5 +162,34 @@ describe('versioned workflow contracts', () => {
     expect(() => validateWorkflowStateTransition(reserved, completedState())).not.toThrow();
     const changed = completedState(); changed.tasks[0]!.invocations[0]!.mode = 'resume';
     expect(() => validateWorkflowStateTransition(reserved, changed)).toThrow(/workflow_/);
+  });
+  it('keeps the optional provider policy absent when omitted and unchanged when present in both schemas', () => {
+    for (const policy of [undefined, 'supervised'] as const) {
+      for (const build of [() => legacyState(policy), () => state(policy)]) {
+        const raw = build();
+        const bytes = JSON.stringify(raw);
+        const parsed = parseWorkflowState(raw);
+        expect(parsed.options.providerPolicy).toBe(policy);
+        expect('providerPolicy' in parsed.options).toBe(policy !== undefined);
+        expect(JSON.stringify(parsed)).toBe(bytes);
+      }
+    }
+    // Reading an old omitted state neither adds nor migrates the field.
+    expect(JSON.stringify(parseWorkflowState(legacyState()))).not.toContain('providerPolicy');
+    expect(JSON.stringify(parseWorkflowState(state()))).not.toContain('providerPolicy');
+  });
+  it.each([null, true, false, 0, 1, [], {}, 'Supervised', 'legacy', 'unsupervised', 'supervised '])(
+    'refuses the unsupported saved provider policy %j for both schemas', policy => {
+      for (const build of [legacyState, state]) {
+        const raw = build() as { options: Record<string, unknown> };
+        raw.options.providerPolicy = policy;
+        expect(() => parseWorkflowState(raw)).toThrow('workflow_invalid_policy');
+      }
+    });
+  it('refuses a provider policy change after initialization while permitting an unchanged value', () => {
+    expect(() => validateWorkflowStateTransition(completedState('supervised'), completedState('supervised'))).not.toThrow();
+    expect(() => validateWorkflowStateTransition(completedState(), completedState())).not.toThrow();
+    expect(() => validateWorkflowStateTransition(completedState(), completedState('supervised'))).toThrow('workflow_policy_change_forbidden');
+    expect(() => validateWorkflowStateTransition(completedState('supervised'), completedState())).toThrow('workflow_policy_change_forbidden');
   });
 });

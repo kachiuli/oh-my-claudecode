@@ -405,4 +405,79 @@ describe('versioned workflow adapters', () => {
     expect(request.changes).toContain('+complete synthetic component');
     expect(request.projectInstructions).toContainEqual({ path: 'AGENTS.md', content: 'Keep the complete synthetic source guard contract.\n' });
   });
+
+  it('keeps the finite provider bound for an omitted policy and reports the legacy selection', async () => {
+    fixture.configure({ tasks: { a: { delayMs: 2500 } } });
+    const configured = await init('claude', 'codex', { timeoutMs: 1200, maxAttempts: 1 });
+    const state = await workflow.runWorkflow(fixture.cwd, 'roles', configured.runtime);
+    expect(state.tasks[0]).toMatchObject({ status: 'failed', error: 'workflow_timeout', attempts: 1 });
+    expect(state.options).not.toHaveProperty('providerPolicy');
+    expect(workflow.workflowStatus(fixture.cwd, 'roles')).toMatchObject({ schemaVersion: 2, providerPolicy: 'legacy' });
+  }, 30000);
+
+  it('removes only the implementer and reviewer elapsed bound under supervised policy in schema 2', async () => {
+    const delayed = 2500;
+    fixture.configure({ tasks: { a: { delayMs: delayed }, review: { delayMs: delayed } } });
+    const configured = await init('claude', 'codex', { timeoutMs: 1200, maxAttempts: 1, maxReviewPasses: 1, providerPolicy: 'supervised' });
+    const started = Date.now();
+    const state = await workflow.runWorkflow(fixture.cwd, 'roles', configured.runtime);
+    expect(state.tasks[0]).toMatchObject({ status: 'completed', attempts: 1 });
+    // The paired legacy run fails at the same saved 1200 ms bound, so only an unbounded provider reaches this delay.
+    expect(Date.now() - started).toBeGreaterThanOrEqual(delayed);
+    await workflow.acceptWorkflowTask(fixture.cwd, 'roles', 'a');
+    await workflow.verifyWorkflow(fixture.cwd, 'roles');
+    const reviewStarted = Date.now();
+    const reviewed = await workflow.reviewWorkflow(fixture.cwd, 'roles', configured.runtime);
+    expect(reviewed.reviewAttempts?.[0]).toMatchObject({ outcome: 'completed' });
+    expect(Date.now() - reviewStarted).toBeGreaterThanOrEqual(delayed);
+    const saved = workflow.readWorkflow(fixture.cwd, 'roles');
+    expect(saved.options).toMatchObject({ providerPolicy: 'supervised', timeoutMs: 1200 });
+    expect(workflow.workflowStatus(fixture.cwd, 'roles')).toMatchObject({ providerPolicy: 'supervised', reviewPasses: 1 });
+  }, 60000);
+
+  it('keeps the saved policy while an explicit substitution changes only the selected binding', async () => {
+    const configured = await init('claude', 'codex', { providerPolicy: 'supervised' });
+    await workflow.substituteWorkflowBinding(fixture.cwd, 'roles', { role: 'implementer', binding: configured.selectedBinding('implementer', 'glm'),
+      expectedHead: fixture.baseCommit, reason: 'Select a route for future work', authorityRef: 'fixture-decision' });
+    const saved = workflow.readWorkflow(fixture.cwd, 'roles');
+    expect(saved.options.providerPolicy).toBe('supervised');
+    if (saved.schemaVersion !== 2) throw new Error('Expected V2');
+    expect(saved.substitutions).toHaveLength(1);
+    expect(workflow.workflowStatus(fixture.cwd, 'roles')).toMatchObject({ providerPolicy: 'supervised', substitutionCount: 1 });
+  });
+
+  it('refuses a malformed saved provider policy in schema 2 before any provider launch', async () => {
+    const configured = await init();
+    const path = join(fixture.cwd, '.omc/state/team/roles/workflow.json');
+    const raw = JSON.parse(readFileSync(path, 'utf8')); raw.options.providerPolicy = 'legacy';
+    writeFileSync(path, JSON.stringify(raw));
+    expect(() => workflow.readWorkflow(fixture.cwd, 'roles')).toThrow('workflow_invalid_policy');
+    await expect(workflow.runWorkflow(fixture.cwd, 'roles', configured.runtime)).rejects.toThrow('workflow_invalid_policy');
+    expect(readFileSync(fixture.eventsPath, 'utf8')).toBe('');
+  });
+
+  it('keeps worker-declared checks finite under supervised policy in schema 2', async () => {
+    const slow = { command: process.execPath, args: ['-e', 'setTimeout(() => {}, 6000)'] };
+    const configured = runtimeFixture(fixture); const input = plan(); input.tasks[0].tests = [slow];
+    await workflow.initWorkflowV2(fixture.cwd, input, { lead: binding('lead', 'codex'), implementer: configured.selectedBinding('implementer', 'claude'),
+      reviewer: configured.selectedBinding('reviewer', 'codex') }, { timeoutMs: 900, maxAttempts: 1, backoffMs: 0, providerPolicy: 'supervised' });
+    const started = Date.now();
+    const state = await workflow.runWorkflow(fixture.cwd, 'roles', configured.runtime);
+    expect(state.tasks[0]).toMatchObject({ status: 'failed', error: 'workflow_worker_test_failed', attempts: 1 });
+    // The declared check sleeps for six seconds, so only a bounded local run can settle this quickly.
+    expect(Date.now() - started).toBeLessThan(5000);
+  }, 30000);
+
+  it('keeps integrated verification finite under supervised policy in schema 2', async () => {
+    const slow = { command: process.execPath, args: ['-e', 'setTimeout(() => {}, 6000)'] };
+    const configured = runtimeFixture(fixture); const input = plan(); input.verification = [slow];
+    await workflow.initWorkflowV2(fixture.cwd, input, { lead: binding('lead', 'codex'), implementer: configured.selectedBinding('implementer', 'claude'),
+      reviewer: configured.selectedBinding('reviewer', 'codex') }, { timeoutMs: 900, maxAttempts: 1, backoffMs: 0, providerPolicy: 'supervised' });
+    await workflow.runWorkflow(fixture.cwd, 'roles', configured.runtime);
+    await workflow.acceptWorkflowTask(fixture.cwd, 'roles', 'a');
+    const started = Date.now();
+    await workflow.verifyWorkflow(fixture.cwd, 'roles');
+    expect(Date.now() - started).toBeLessThan(5000);
+    expect(workflow.readWorkflow(fixture.cwd, 'roles').verification?.passed).toBe(false);
+  }, 30000);
 });

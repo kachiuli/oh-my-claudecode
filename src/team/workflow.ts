@@ -19,7 +19,8 @@ import { createClaudeWorkflowResultDecoder, prepareWorkflowBinding, workflowWork
   type PreparedWorkflowBinding, type WorkflowRuntime } from './workflow-adapters.js';
 import { buildWorkflowPrompt, workflowContextFingerprint, workflowPromptFingerprint, workflowSessionFingerprint } from './workflow-prompt.js';
 import { boundedText, safeWorkflowId, parseWorkflowPlan, parseWorkflowTask, matchesScope,
-  parseWorkflowHandoff, parseWorkflowFindings, parseWorkflowBinding, parseWorkflowState, validateWorkflowStateTransition,
+  parseWorkflowHandoff, parseWorkflowFindings, parseWorkflowBinding, parseWorkflowState, parseWorkflowProviderPolicy,
+  validateWorkflowStateTransition,
   type WorkflowState as LegacyWorkflowState, type VersionedWorkflowState as WorkflowState, type WorkflowStateV2,
   parseWorkflowSubstitution, assertWorkflowResumeBinding, type WorkflowRole, type WorkflowRoleBinding, type WorkflowOptions, type WorkflowTaskState,
   type WorkflowFinding, type WorkflowInvocation, type WorkflowReviewAttempt, type WorkflowReviewAttemptV2 } from './workflow-contracts.js';
@@ -128,6 +129,8 @@ export function readWorkflow(cwd: string, name: string): WorkflowState {
     || realpathSync(state.cwd) !== realpathSync(cwd)) throw new Error('workflow_invalid_state');
   if (!Array.isArray(state.tasks) || !Array.isArray(state.reviews)) throw new Error('workflow_invalid_state');
   if (state.options.mode !== undefined && !['v1', 'balanced'].includes(state.options.mode)) throw new Error('workflow_invalid_mode');
+  // A malformed saved policy is refused here, before any lock, provider launch or work.
+  parseWorkflowProviderPolicy(state.options.providerPolicy);
   parseWorkflowPlan(state.plan, new Set(state.tasks.filter(entry => entry.status === 'rejected').map(entry => entry.task.id)));
   return state;
 }
@@ -146,6 +149,16 @@ function count(value: number | undefined, fallback: number, max: number, min = 1
   const result = value ?? fallback;
   if (!Number.isInteger(result) || result < min || result > max) throw new Error('workflow_invalid_limit');
   return result;
+}
+/**
+ * Worker failures that are terminal rather than a retry prompt. workflow_output_incomplete joins the
+ * explicit timeout/interruption stops: a wall-less provider that ended without a complete stream must
+ * never be silently re-dispatched, and its original attempt and artifacts stay inspectable.
+ */
+const NON_RETRYABLE_WORKER_ERRORS = ['workflow_timeout', 'workflow_interrupted', 'workflow_output_incomplete',
+  'workflow_worker_modified_protected_refs', 'workflow_session_identity_mismatch'] as const;
+function nonRetryableWorkerError(error: string | undefined): boolean {
+  return NON_RETRYABLE_WORKER_ERRORS.some(entry => entry === error);
 }
 export async function initWorkflow(cwd: string, rawPlan: unknown, options: WorkflowOptions = {}): Promise<LegacyWorkflowState> {
   const state = await initializeWorkflow(cwd, rawPlan, options);
@@ -166,6 +179,8 @@ async function initializeWorkflow(cwd: string, rawPlan: unknown, options: Workfl
   cwd = realpathSync(cwd);
   const plan = parseWorkflowPlan(rawPlan);
   if (options.mode !== undefined && !['v1', 'balanced'].includes(options.mode)) throw new Error('workflow_invalid_mode');
+  // Refuse every unsupported present policy before any state directory, branch or provider exists.
+  const providerPolicy = parseWorkflowProviderPolicy(options.providerPolicy);
   const path = statePath(cwd, plan.name);
   if (existsSync(teamStateRoot(cwd, plan.name))) throw new Error('workflow_name_already_exists');
   if (!clean(cwd)) throw new Error('workflow_leader_worktree_dirty');
@@ -188,6 +203,7 @@ async function initializeWorkflow(cwd: string, rawPlan: unknown, options: Workfl
     glmCommand: options.glmCommand ?? config.command, codexCommand: options.codexCommand ?? 'codex',
     ...(options.glmModel ?? (executor.model || config.model) ? { glmModel: options.glmModel ?? (executor.model || config.model) } : {}),
     ...(options.codexModel ?? reviewer.model ? { codexModel: options.codexModel ?? reviewer.model } : {}),
+    ...(providerPolicy === undefined ? {} : { providerPolicy }),
   };
   if (redactWorkflowText(JSON.stringify(resolvedOptions)) !== JSON.stringify(resolvedOptions)) throw new Error('workflow_sensitive_input_rejected');
   // Resolve lazily at dispatch: init/status remain usable when a provider has not been installed yet.
@@ -219,6 +235,14 @@ function artifactsRoot(state: WorkflowState): string {
   validateResolvedPath(root, teamStateRoot(state.cwd, state.plan.name));
   ensureDirWithMode(root);
   return root;
+}
+/**
+ * Supervised policy removes only the implementer/reviewer elapsed bound; null is the sole unbounded
+ * value. Worker-declared checks, integrated verification and every other local command stay finite,
+ * and the policy is never inferred from a provider name, model, environment or timeout value.
+ */
+function providerTimeoutMs(state: WorkflowState): number | null {
+  return state.options.providerPolicy === 'supervised' ? null : state.options.timeoutMs;
 }
 function prepareBinding(state: WorkflowStateV2, binding: WorkflowRoleBinding, runtime?: WorkflowRuntime): PreparedWorkflowBinding {
   try { return prepareWorkflowBinding(binding, runtime); }
@@ -328,7 +352,7 @@ async function executeTask(state: WorkflowState, entry: WorkflowTaskState, comma
         teamName: state.plan.name, workerName: entry.worker, cwd: entry.worktree, model: state.options.glmModel,
       }), '-p', ...(balanced ? [resuming ? '--resume' : '--session-id', entry.session!.id, '--output-format', 'stream-json', '--verbose'] : [])],
       cwd: entry.worktree, stdin: prompt, ...(balanced ? { collectUsage: true } : {}),
-      timeoutMs: state.options.timeoutMs, artifactPrefix: prefix, provider: prepared?.binding.providerRoute ?? 'glm', worker: entry.worker,
+      timeoutMs: providerTimeoutMs(state), artifactPrefix: prefix, provider: prepared?.binding.providerRoute ?? 'glm', worker: entry.worker,
       ...(prepared ? { environment: prepared.environment, redactionEnvironment: prepared.redactionEnvironment } : {}) }, resultFile);
       if (invocation) {
         invocation.telemetry = result.telemetry ?? { provider: prepared?.binding.providerRoute ?? 'glm', durationMs: Date.now() - started, status: 'unknown', scope: 'unknown' };
@@ -369,8 +393,9 @@ async function executeTask(state: WorkflowState, entry: WorkflowTaskState, comma
       entry.error = /^workflow_[a-z_]+$/.test(message) ? message : 'workflow_worker_failed';
       entry.status = 'failed';
       if (state.schemaVersion === 2) break;
-      if (resuming || entry.error === 'workflow_session_identity_mismatch') break;
-      if (entry.error === 'workflow_timeout' || entry.error === 'workflow_interrupted') break;
+      if (resuming) break;
+      // A wall-less provider can end without a complete stream; that is terminal, not a retry prompt.
+      if (nonRetryableWorkerError(entry.error)) break;
       // Any work or moved HEAD is retained for the lead; retry only pristine attempts.
       if (entry.worktree) {
         try { if (!clean(entry.worktree) || git(entry.worktree, ['rev-parse', 'HEAD']) !== entry.task.baseCommit) break; }
@@ -419,7 +444,7 @@ export async function runWorkflow(cwd: string, name: string, runtime?: WorkflowR
     // A killed owner is never silently re-spawned: retained running work requires inspection.
     if (state.tasks.some(entry => entry.status === 'running')) throw new Error('workflow_interrupted_worker_requires_inspection');
     const candidates = state.tasks.filter(entry => ['pending', 'failed'].includes(entry.status) && entry.attempts < state.options.maxAttempts
-      && !['workflow_timeout', 'workflow_interrupted', 'workflow_worker_modified_protected_refs', 'workflow_session_identity_mismatch'].includes(entry.error ?? '')
+      && !nonRetryableWorkerError(entry.error)
       && !(state.options.mode === 'balanced' && entry.invocations?.at(-1)?.mode === 'resume' && entry.invocations.at(-1)?.outcome === 'failed')
       && entry.task.dependencies.every(id => getTask(state, id).status === 'accepted'));
     if (!candidates.length) {
@@ -655,7 +680,7 @@ export async function reviewWorkflow(cwd: string, name: string, runtime?: Workfl
         : ['exec', '--sandbox', 'read-only', '--ephemeral', ...(balanced ? ['--json'] : []),
         ...(state.options.codexModel ? ['--model', state.options.codexModel] : []), '--output-schema', schemaFile, '--output-last-message', resultFile, '-'],
         cwd, stdin: request, ...(prepared ? { environment: prepared.environment, redactionEnvironment: prepared.redactionEnvironment } : {}),
-        timeoutMs: state.options.timeoutMs, artifactPrefix: prefix, provider: prepared?.binding.providerRoute ?? 'codex', ...(balanced ? { collectUsage: true } : {}) }, resultFile, prepared?.binding.providerRoute === 'claude');
+        timeoutMs: providerTimeoutMs(state), artifactPrefix: prefix, provider: prepared?.binding.providerRoute ?? 'codex', ...(balanced ? { collectUsage: true } : {}) }, resultFile, prepared?.binding.providerRoute === 'claude');
       if (attempt) {
         attempt.telemetry = result.telemetry ?? { provider: prepared?.binding.providerRoute ?? 'codex', durationMs: Date.now() - started, status: 'unknown', scope: 'unknown' };
         attempt.artifacts = result.artifacts;
@@ -729,6 +754,8 @@ export function workflowStatus(cwd: string, name: string): Record<string, unknow
   const state = readWorkflow(cwd, name);
   const versioned = state.schemaVersion === 2 ? state : undefined;
   const result = { name, profile: state.profile, mode: state.options.mode ?? 'v1', stage: state.stage, workers: state.options.workers, maxWorkers: state.options.maxWorkers,
+    // Report the saved selection only; no private runtime, environment or process detail is exposed.
+    providerPolicy: state.options.providerPolicy === 'supervised' ? 'supervised' : 'legacy',
     ...(versioned ? { schemaVersion: 2, bindings: versioned.bindings,
       substitutionCount: versioned.substitutions.length, omittedSubstitutions: Math.max(0, versioned.substitutions.length - 3),
       substitutions: versioned.substitutions.slice(-3).map(record => ({ sequence: record.sequence, role: record.role, from: record.from.id, to: record.to.id,

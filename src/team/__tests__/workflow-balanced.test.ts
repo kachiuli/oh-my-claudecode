@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -41,9 +41,9 @@ describe('balanced workflow with real repositories and provider processes', () =
       acceptanceCriteria: [`feature/${id}.txt exists and passes the declared check`], tests: [check], ...overrides,
     };
   }
-  function plan(tasks = [task('a')]): WorkflowPlan {
+  function plan(tasks = [task('a')], overrides: Partial<WorkflowPlan> = {}): WorkflowPlan {
     return { name, objective: 'Implement the feature safely', baseCommit: fixture.baseCommit,
-      integrationBranch: 'integration/balanced', tasks, verification: [check], sharedContext };
+      integrationBranch: 'integration/balanced', tasks, verification: [check], sharedContext, ...overrides };
   }
   function editState(change: (state: WorkflowState) => void) {
     const state = readWorkflow(fixture.cwd, name);
@@ -302,6 +302,79 @@ describe('balanced workflow with real repositories and provider processes', () =
       .rejects.toThrow('workflow_session_identity_changed');
     expect(fixture.events().filter(event => event.event === 'start')).toHaveLength(1);
   }, 15000);
+
+  it('persists only an explicit supervised policy and refuses a malformed saved value before any launch', async () => {
+    await initWorkflow(fixture.cwd, plan(), options);
+    expect(readWorkflow(fixture.cwd, name).options).not.toHaveProperty('providerPolicy');
+    expect(workflowStatus(fixture.cwd, name).providerPolicy).toBe('legacy');
+    const path = String(workflowStatus(fixture.cwd, name).stateFile);
+    const tampered = JSON.parse(readFileSync(path, 'utf8'));
+    tampered.options.providerPolicy = 'unsupervised';
+    writeFileSync(path, JSON.stringify(tampered));
+    await expect(runWorkflow(fixture.cwd, name)).rejects.toThrow('workflow_invalid_policy');
+    expect(() => readWorkflow(fixture.cwd, name)).toThrow('workflow_invalid_policy');
+    expect(fixture.events()).toEqual([]);
+  });
+
+  it('persists and reports the supervised policy that initialization selected', async () => {
+    await initWorkflow(fixture.cwd, plan(), { ...options, providerPolicy: 'supervised' });
+    expect(readWorkflow(fixture.cwd, name).options).toMatchObject({ providerPolicy: 'supervised', timeoutMs: 15000 });
+    expect(workflowStatus(fixture.cwd, name)).toMatchObject({ providerPolicy: 'supervised', mode: 'balanced', stage: 'implementation' });
+  });
+
+  it.each([null, true, 0, [], {}, 'legacy', 'Supervised', ' supervised'])(
+    'refuses the unsupported initialization policy %j before creating state or a branch', async policy => {
+      await expect(initWorkflow(fixture.cwd, plan(), { ...options, providerPolicy: policy as 'supervised' }))
+        .rejects.toThrow('workflow_invalid_policy');
+      expect(fixture.events()).toEqual([]);
+      expect(existsSync(join(fixture.cwd, '.omc/state/team', name))).toBe(false);
+      expect(fixture.git('branch', '--show-current')).toBe('main');
+    });
+
+  it('keeps a worker-declared check finite under supervised policy instead of removing its bound', async () => {
+    const slow = { command: process.execPath, args: ['-e', 'setTimeout(() => {}, 6000)'] };
+    await initWorkflow(fixture.cwd, plan([task('a', { tests: [slow] })]),
+      { ...options, timeoutMs: 900, maxAttempts: 1, providerPolicy: 'supervised' });
+    const started = Date.now();
+    await runWorkflow(fixture.cwd, name);
+    const elapsed = Date.now() - started;
+    const failed = readWorkflow(fixture.cwd, name).tasks[0]!;
+    expect(failed).toMatchObject({ status: 'failed', error: 'workflow_worker_test_failed', attempts: 1 });
+    // The provider claimed the checks passed; only the controller's own finite run can fail them.
+    expect(failed.handoff?.tests.every(test => test.passed)).toBe(true);
+    // The declared check sleeps for six seconds, so only a bounded local run can finish this quickly.
+    expect(elapsed).toBeLessThan(5000);
+  }, 30000);
+
+  it('keeps integrated verification finite under supervised policy instead of removing its bound', async () => {
+    const slow = { command: process.execPath, args: ['-e', 'setTimeout(() => {}, 6000)'] };
+    await initWorkflow(fixture.cwd, plan(undefined, { verification: [slow] }),
+      { ...options, timeoutMs: 900, maxAttempts: 1, providerPolicy: 'supervised' });
+    await runWorkflow(fixture.cwd, name);
+    await acceptWorkflowTask(fixture.cwd, name, 'a');
+    const started = Date.now();
+    await verifyWorkflow(fixture.cwd, name);
+    expect(Date.now() - started).toBeLessThan(5000);
+    expect(readWorkflow(fixture.cwd, name).verification?.passed).toBe(false);
+  }, 30000);
+
+  it('does not dispatch a second provider attempt for output_incomplete while an attempt remains', async () => {
+    fixture.configure({ tasks: { a: { outputIncomplete: true } } });
+    await initWorkflow(fixture.cwd, plan(), { ...options, timeoutMs: 2000, maxAttempts: 3, providerPolicy: 'supervised' });
+    await runWorkflow(fixture.cwd, name);
+    const failed = readWorkflow(fixture.cwd, name).tasks[0]!;
+    expect(failed).toMatchObject({ status: 'failed', error: 'workflow_output_incomplete', attempts: 1 });
+    expect(failed.invocations).toHaveLength(1);
+    expect(failed.invocations?.[0]).toMatchObject({ outcome: 'failed', error: 'workflow_output_incomplete' });
+    expect(fixture.events().filter(event => event.event === 'start')).toHaveLength(1);
+    expect(workerGit('rev-parse', 'HEAD')).toBe(fixture.baseCommit);
+    // The original attempt and its process artifacts remain inspectable.
+    expect(failed.handoff?.artifacts.map(artifact => artifact.kind).sort()).toEqual(['workflow-stderr', 'workflow-stdout']);
+    for (const artifact of failed.handoff!.artifacts) expect(existsSync(artifact.path)).toBe(true);
+    await runWorkflow(fixture.cwd, name);
+    expect(fixture.events().filter(event => event.event === 'start')).toHaveLength(1);
+    expect(readWorkflow(fixture.cwd, name).tasks[0]!.attempts).toBe(1);
+  }, 30000);
 
   it('requires inspection of another retained running worker before resuming failed work', async () => {
     fixture.configure({ tasks: { a: { pauseBeforeWork: true } } });

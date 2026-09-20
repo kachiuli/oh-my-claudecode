@@ -340,6 +340,63 @@ describe('team workflow CLI', () => {
     expect(process.exitCode).toBe(1);
   });
 
+  it('forwards the explicit supervised policy to legacy initialization', async () => {
+    await workflowCommand(['init', '--file', planFile(), '--provider-policy', 'supervised'], root);
+    expect(api.initWorkflow).toHaveBeenCalledWith(root, { name: 'feature' }, { providerPolicy: 'supervised' });
+    expect(api.initWorkflowV2).not.toHaveBeenCalled();
+  });
+
+  it('forwards the same supervised policy to role-substitution initialization', async () => {
+    await workflowCommand(['init', '--file', planFile(), '--profile', 'role-substitution',
+      '--bindings', bindingsFile(), '--provider-policy', 'supervised'], root);
+    expect(api.initWorkflowV2).toHaveBeenCalledWith(root, { name: 'feature' },
+      { lead: { id: 'external-lead' }, implementer: { id: 'claude-worker' }, reviewer: { id: 'claude-reviewer' } },
+      { mode: 'balanced', providerPolicy: 'supervised' });
+    expect(api.initWorkflow).not.toHaveBeenCalled();
+  });
+
+  it.each(['legacy', 'Supervised', 'supervised ', 'unsupervised', 'supervised,legacy', 'null'])(
+    'refuses the unsupported policy %j before initialization', async value => {
+      await expect(workflowCommand(['init', '--file', planFile(), '--provider-policy', value], root))
+        .rejects.toThrow('workflow_invalid_policy');
+      await expect(workflowCommand(['init', '--file', planFile(), '--profile', 'role-substitution',
+        '--bindings', bindingsFile(), '--provider-policy', value], root)).rejects.toThrow('workflow_invalid_policy');
+      expect(api.initWorkflow).not.toHaveBeenCalled(); expect(api.initWorkflowV2).not.toHaveBeenCalled();
+    });
+
+  it('refuses a missing or duplicate policy flag before initialization', async () => {
+    const file = planFile();
+    await expect(workflowCommand(['init', '--file', file, '--provider-policy'], root))
+      .rejects.toThrow('workflow_invalid_arguments');
+    await expect(workflowCommand(['init', '--file', file, '--provider-policy', 'supervised', '--provider-policy', 'supervised'], root))
+      .rejects.toThrow('workflow_invalid_arguments');
+    expect(api.initWorkflow).not.toHaveBeenCalled(); expect(api.initWorkflowV2).not.toHaveBeenCalled();
+  });
+
+  it('keeps the initialization options free of a policy when the flag is absent in both profiles', async () => {
+    await workflowCommand(['init', '--file', planFile()], root);
+    const legacy = api.initWorkflow.mock.calls[0] as unknown as [string, unknown, Record<string, unknown>];
+    expect(legacy[2]).toEqual({});
+    await workflowCommand(['init', '--file', planFile(), '--profile', 'role-substitution', '--bindings', bindingsFile()], root);
+    const substitution = api.initWorkflowV2.mock.calls[0] as unknown as [string, unknown, unknown, Record<string, unknown>];
+    expect(substitution[3]).not.toHaveProperty('providerPolicy');
+  });
+
+  it('documents the supervised policy flag for init only', async () => {
+    await workflowCommand(['--help'], root);
+    const help = vi.mocked(console.log).mock.calls.map(call => String(call[0])).join('\n');
+    expect(help.slice(help.indexOf('init --file'), help.indexOf('run <name>'))).toContain('--provider-policy supervised');
+    expect(help.split('\n').filter(line => line.includes('--provider-policy'))).toHaveLength(1);
+    await expect(workflowCommand(['run', 'feature', '--provider-policy', 'supervised'], root)).rejects.toThrow('workflow_unknown_option');
+    expect(api.runWorkflow).not.toHaveBeenCalled();
+  });
+
+  it.each(['run', 'verify', 'review', 'finish', 'status', 'usage', 'cleanup', 'accept'] as const)(
+    'rejects the initialization-only policy flag on later %s operations', async operation => {
+      await expect(workflowCommand([operation, 'feature', '--provider-policy', 'supervised'], root)).rejects.toThrow('workflow_unknown_option');
+      expect(api.runWorkflow).not.toHaveBeenCalled(); expect(api.reviewWorkflow).not.toHaveBeenCalled();
+    });
+
   it.each([
     ['run', 'feature', '--force', 'true'], ['review', 'feature', 'extra'],
     ['init', '--file', 'unused', '--workers', 'NaN'],
