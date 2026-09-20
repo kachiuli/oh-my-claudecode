@@ -5,22 +5,22 @@
   "provenance": {
     "base": "05c800f40d1ad53b42a78609d2667ef4f726808b",
     "planningHead": "0a91273e61dbbd47eb0af4c02844409251e08398",
-    "head": "377516f9bbccaf3c92d34cae73ea5e753bfe67fb",
-    "sourceSha256": "c1ca3a7737beae949f6e76faf4b7d2cf9ca3ac5a93e7fec400454b4b6d6744f0",
+    "head": "c7c78844f0f6e908067cf90ee3517f327c38b528",
+    "sourceSha256": "c2178036da91e34b8a62eab45fa010cf597d4a6366cfa08e20d21842c6de8c7e",
     "generatedAt": null,
     "generator": "scripts/generate-inventory-graph.mjs"
   },
   "base": "05c800f40d1ad53b42a78609d2667ef4f726808b",
   "planningHead": "0a91273e61dbbd47eb0af4c02844409251e08398",
-  "head": "377516f9bbccaf3c92d34cae73ea5e753bfe67fb",
-  "sourceSha256": "c1ca3a7737beae949f6e76faf4b7d2cf9ca3ac5a93e7fec400454b4b6d6744f0",
+  "head": "c7c78844f0f6e908067cf90ee3517f327c38b528",
+  "sourceSha256": "c2178036da91e34b8a62eab45fa010cf597d4a6366cfa08e20d21842c6de8c7e",
   "counts": {
     "public": {
       "skills": 39,
       "commands": 21,
-      "workflows": 8,
+      "workflows": 9,
       "agents": 20,
-      "total": 88
+      "total": 89
     },
     "internal": {
       "hookFiles": 296,
@@ -28,13 +28,13 @@
       "toolFiles": 61,
       "libFiles": 42,
       "templateHooks": 22,
-      "srcFiles": 1376,
-      "total": 1398
+      "srcFiles": 1394,
+      "total": 1416
     },
     "generated": {
-      "distFiles": 5032,
+      "distFiles": 5074,
       "bridgeFiles": 9,
-      "total": 5041
+      "total": 5083
     },
     "prompt": {
       "promptLikeFiles": 63
@@ -42,7 +42,7 @@
     "skills": 39,
     "commands": 21,
     "hookFiles": 296,
-    "workflows": 8,
+    "workflows": 9,
     "agentDefinitions": 18,
     "promptLikeFiles": 63
   },
@@ -141,7 +141,8 @@
       ".github/workflows/pr-check.yml",
       ".github/workflows/release.yml",
       ".github/workflows/stale.yml",
-      ".github/workflows/upgrade-test.yml"
+      ".github/workflows/upgrade-test.yml",
+      ".github/workflows/workflow-v14.yml"
     ]
   },
   "internal": {
@@ -809,6 +810,8 @@
       "scripts/setup-progress.sh",
       "scripts/skill-injector.mjs",
       "scripts/smoke-multirepo.mjs",
+      "scripts/smoke-native-project-hosts.mjs",
+      "scripts/smoke-project-hosts.mjs",
       "scripts/status.mjs",
       "scripts/subagent-tracker.mjs",
       "scripts/sync-metadata.ts",
@@ -2213,6 +2216,8 @@
       "dist/cli/commands/doctor-team-routing.d.ts.map",
       "dist/cli/commands/doctor-team-routing.js",
       "dist/cli/commands/doctor-team-routing.js.map",
+      "dist/cli/commands/orchestrator.d.ts",
+      "dist/cli/commands/orchestrator.js",
       "dist/cli/commands/ralphthon.d.ts",
       "dist/cli/commands/ralphthon.d.ts.map",
       "dist/cli/commands/ralphthon.js",
@@ -2225,6 +2230,8 @@
       "dist/cli/commands/session-search.d.ts.map",
       "dist/cli/commands/session-search.js",
       "dist/cli/commands/session-search.js.map",
+      "dist/cli/commands/team-workflow.d.ts",
+      "dist/cli/commands/team-workflow.js",
       "dist/cli/commands/team.d.ts",
       "dist/cli/commands/team.d.ts.map",
       "dist/cli/commands/team.js",
@@ -2263,6 +2270,8 @@
       "dist/cli/lookout.d.ts.map",
       "dist/cli/lookout.js",
       "dist/cli/lookout.js.map",
+      "dist/cli/project-launch.d.ts",
+      "dist/cli/project-launch.js",
       "dist/cli/team.d.ts",
       "dist/cli/team.d.ts.map",
       "dist/cli/team.js",
@@ -3863,6 +3872,18 @@
       "dist/hooks/wiki/types.d.ts.map",
       "dist/hooks/wiki/types.js",
       "dist/hooks/wiki/types.js.map",
+      "dist/hosts/adapters.d.ts",
+      "dist/hosts/adapters.js",
+      "dist/hosts/asset-ownership.d.ts",
+      "dist/hosts/asset-ownership.js",
+      "dist/hosts/codex-config.d.ts",
+      "dist/hosts/codex-config.js",
+      "dist/hosts/hooks.d.ts",
+      "dist/hosts/hooks.js",
+      "dist/hosts/project-ignore.d.ts",
+      "dist/hosts/project-ignore.js",
+      "dist/hosts/project-setup.d.ts",
+      "dist/hosts/project-setup.js",
       "dist/hud/__tests__/autopilot-profile.test.d.ts",
       "dist/hud/__tests__/autopilot-profile.test.d.ts.map",
       "dist/hud/__tests__/autopilot-profile.test.js",
@@ -4590,6 +4611,10 @@
       "dist/openclaw/types.d.ts.map",
       "dist/openclaw/types.js",
       "dist/openclaw/types.js.map",
+      "dist/orchestration/selection.d.ts",
+      "dist/orchestration/selection.js",
+      "dist/orchestration/state.d.ts",
+      "dist/orchestration/state.js",
       "dist/planning/__tests__/artifacts.test.d.ts",
       "dist/planning/__tests__/artifacts.test.d.ts.map",
       "dist/planning/__tests__/artifacts.test.js",
@@ -5286,6 +5311,8 @@
       "dist/team/git-worktree.d.ts.map",
       "dist/team/git-worktree.js",
       "dist/team/git-worktree.js.map",
+      "dist/team/glm-config.d.ts",
+      "dist/team/glm-config.js",
       "dist/team/governance.d.ts",
       "dist/team/governance.d.ts.map",
       "dist/team/governance.js",
@@ -5518,6 +5545,24 @@
       "dist/team/worker-restart.d.ts.map",
       "dist/team/worker-restart.js",
       "dist/team/worker-restart.js.map",
+      "dist/team/workflow-adapters.d.ts",
+      "dist/team/workflow-adapters.js",
+      "dist/team/workflow-contracts.d.ts",
+      "dist/team/workflow-contracts.js",
+      "dist/team/workflow-process.d.ts",
+      "dist/team/workflow-process.js",
+      "dist/team/workflow-prompt.d.ts",
+      "dist/team/workflow-prompt.js",
+      "dist/team/workflow-publication.d.ts",
+      "dist/team/workflow-publication.js",
+      "dist/team/workflow-ref-audit.d.ts",
+      "dist/team/workflow-ref-audit.js",
+      "dist/team/workflow-report.d.ts",
+      "dist/team/workflow-report.js",
+      "dist/team/workflow-usage.d.ts",
+      "dist/team/workflow-usage.js",
+      "dist/team/workflow.d.ts",
+      "dist/team/workflow.js",
       "dist/tools/__tests__/cancel-integration.test.d.ts",
       "dist/tools/__tests__/cancel-integration.test.d.ts.map",
       "dist/tools/__tests__/cancel-integration.test.js",
@@ -6182,7 +6227,8 @@
       ".github/workflows/pr-check.yml",
       ".github/workflows/release.yml",
       ".github/workflows/stale.yml",
-      ".github/workflows/upgrade-test.yml"
+      ".github/workflows/upgrade-test.yml",
+      ".github/workflows/workflow-v14.yml"
     ],
     "promptSources": [
       ".clawhip/state/prompt-submit.json",
@@ -6491,6 +6537,11 @@
         "id": ".github/workflows/upgrade-test.yml",
         "kind": "workflow",
         "path": ".github/workflows/upgrade-test.yml"
+      },
+      {
+        "id": ".github/workflows/workflow-v14.yml",
+        "kind": "workflow",
+        "path": ".github/workflows/workflow-v14.yml"
       },
       {
         "id": ".gitignore",
@@ -14193,6 +14244,16 @@
         "path": "dist/cli/commands/doctor-team-routing.js.map"
       },
       {
+        "id": "dist/cli/commands/orchestrator.d.ts",
+        "kind": "generated-dist",
+        "path": "dist/cli/commands/orchestrator.d.ts"
+      },
+      {
+        "id": "dist/cli/commands/orchestrator.js",
+        "kind": "generated-dist",
+        "path": "dist/cli/commands/orchestrator.js"
+      },
+      {
         "id": "dist/cli/commands/ralphthon.d.ts",
         "kind": "generated-dist",
         "path": "dist/cli/commands/ralphthon.d.ts"
@@ -14251,6 +14312,16 @@
         "id": "dist/cli/commands/session-search.js.map",
         "kind": "generated-dist",
         "path": "dist/cli/commands/session-search.js.map"
+      },
+      {
+        "id": "dist/cli/commands/team-workflow.d.ts",
+        "kind": "generated-dist",
+        "path": "dist/cli/commands/team-workflow.d.ts"
+      },
+      {
+        "id": "dist/cli/commands/team-workflow.js",
+        "kind": "generated-dist",
+        "path": "dist/cli/commands/team-workflow.js"
       },
       {
         "id": "dist/cli/commands/team.d.ts",
@@ -14441,6 +14512,16 @@
         "id": "dist/cli/lookout.js.map",
         "kind": "generated-dist",
         "path": "dist/cli/lookout.js.map"
+      },
+      {
+        "id": "dist/cli/project-launch.d.ts",
+        "kind": "generated-dist",
+        "path": "dist/cli/project-launch.d.ts"
+      },
+      {
+        "id": "dist/cli/project-launch.js",
+        "kind": "generated-dist",
+        "path": "dist/cli/project-launch.js"
       },
       {
         "id": "dist/cli/team.d.ts",
@@ -22443,6 +22524,66 @@
         "path": "dist/hooks/wiki/types.js.map"
       },
       {
+        "id": "dist/hosts/adapters.d.ts",
+        "kind": "generated-dist",
+        "path": "dist/hosts/adapters.d.ts"
+      },
+      {
+        "id": "dist/hosts/adapters.js",
+        "kind": "generated-dist",
+        "path": "dist/hosts/adapters.js"
+      },
+      {
+        "id": "dist/hosts/asset-ownership.d.ts",
+        "kind": "generated-dist",
+        "path": "dist/hosts/asset-ownership.d.ts"
+      },
+      {
+        "id": "dist/hosts/asset-ownership.js",
+        "kind": "generated-dist",
+        "path": "dist/hosts/asset-ownership.js"
+      },
+      {
+        "id": "dist/hosts/codex-config.d.ts",
+        "kind": "generated-dist",
+        "path": "dist/hosts/codex-config.d.ts"
+      },
+      {
+        "id": "dist/hosts/codex-config.js",
+        "kind": "generated-dist",
+        "path": "dist/hosts/codex-config.js"
+      },
+      {
+        "id": "dist/hosts/hooks.d.ts",
+        "kind": "generated-dist",
+        "path": "dist/hosts/hooks.d.ts"
+      },
+      {
+        "id": "dist/hosts/hooks.js",
+        "kind": "generated-dist",
+        "path": "dist/hosts/hooks.js"
+      },
+      {
+        "id": "dist/hosts/project-ignore.d.ts",
+        "kind": "generated-dist",
+        "path": "dist/hosts/project-ignore.d.ts"
+      },
+      {
+        "id": "dist/hosts/project-ignore.js",
+        "kind": "generated-dist",
+        "path": "dist/hosts/project-ignore.js"
+      },
+      {
+        "id": "dist/hosts/project-setup.d.ts",
+        "kind": "generated-dist",
+        "path": "dist/hosts/project-setup.d.ts"
+      },
+      {
+        "id": "dist/hosts/project-setup.js",
+        "kind": "generated-dist",
+        "path": "dist/hosts/project-setup.js"
+      },
+      {
         "id": "dist/hud/__tests__/autopilot-profile.test.d.ts",
         "kind": "generated-dist",
         "path": "dist/hud/__tests__/autopilot-profile.test.d.ts"
@@ -26078,6 +26219,26 @@
         "path": "dist/openclaw/types.js.map"
       },
       {
+        "id": "dist/orchestration/selection.d.ts",
+        "kind": "generated-dist",
+        "path": "dist/orchestration/selection.d.ts"
+      },
+      {
+        "id": "dist/orchestration/selection.js",
+        "kind": "generated-dist",
+        "path": "dist/orchestration/selection.js"
+      },
+      {
+        "id": "dist/orchestration/state.d.ts",
+        "kind": "generated-dist",
+        "path": "dist/orchestration/state.d.ts"
+      },
+      {
+        "id": "dist/orchestration/state.js",
+        "kind": "generated-dist",
+        "path": "dist/orchestration/state.js"
+      },
+      {
         "id": "dist/planning/__tests__/artifacts.test.d.ts",
         "kind": "generated-dist",
         "path": "dist/planning/__tests__/artifacts.test.d.ts"
@@ -29558,6 +29719,16 @@
         "path": "dist/team/git-worktree.js.map"
       },
       {
+        "id": "dist/team/glm-config.d.ts",
+        "kind": "generated-dist",
+        "path": "dist/team/glm-config.d.ts"
+      },
+      {
+        "id": "dist/team/glm-config.js",
+        "kind": "generated-dist",
+        "path": "dist/team/glm-config.js"
+      },
+      {
         "id": "dist/team/governance.d.ts",
         "kind": "generated-dist",
         "path": "dist/team/governance.d.ts"
@@ -30716,6 +30887,96 @@
         "id": "dist/team/worker-restart.js.map",
         "kind": "generated-dist",
         "path": "dist/team/worker-restart.js.map"
+      },
+      {
+        "id": "dist/team/workflow-adapters.d.ts",
+        "kind": "generated-dist",
+        "path": "dist/team/workflow-adapters.d.ts"
+      },
+      {
+        "id": "dist/team/workflow-adapters.js",
+        "kind": "generated-dist",
+        "path": "dist/team/workflow-adapters.js"
+      },
+      {
+        "id": "dist/team/workflow-contracts.d.ts",
+        "kind": "generated-dist",
+        "path": "dist/team/workflow-contracts.d.ts"
+      },
+      {
+        "id": "dist/team/workflow-contracts.js",
+        "kind": "generated-dist",
+        "path": "dist/team/workflow-contracts.js"
+      },
+      {
+        "id": "dist/team/workflow-process.d.ts",
+        "kind": "generated-dist",
+        "path": "dist/team/workflow-process.d.ts"
+      },
+      {
+        "id": "dist/team/workflow-process.js",
+        "kind": "generated-dist",
+        "path": "dist/team/workflow-process.js"
+      },
+      {
+        "id": "dist/team/workflow-prompt.d.ts",
+        "kind": "generated-dist",
+        "path": "dist/team/workflow-prompt.d.ts"
+      },
+      {
+        "id": "dist/team/workflow-prompt.js",
+        "kind": "generated-dist",
+        "path": "dist/team/workflow-prompt.js"
+      },
+      {
+        "id": "dist/team/workflow-publication.d.ts",
+        "kind": "generated-dist",
+        "path": "dist/team/workflow-publication.d.ts"
+      },
+      {
+        "id": "dist/team/workflow-publication.js",
+        "kind": "generated-dist",
+        "path": "dist/team/workflow-publication.js"
+      },
+      {
+        "id": "dist/team/workflow-ref-audit.d.ts",
+        "kind": "generated-dist",
+        "path": "dist/team/workflow-ref-audit.d.ts"
+      },
+      {
+        "id": "dist/team/workflow-ref-audit.js",
+        "kind": "generated-dist",
+        "path": "dist/team/workflow-ref-audit.js"
+      },
+      {
+        "id": "dist/team/workflow-report.d.ts",
+        "kind": "generated-dist",
+        "path": "dist/team/workflow-report.d.ts"
+      },
+      {
+        "id": "dist/team/workflow-report.js",
+        "kind": "generated-dist",
+        "path": "dist/team/workflow-report.js"
+      },
+      {
+        "id": "dist/team/workflow-usage.d.ts",
+        "kind": "generated-dist",
+        "path": "dist/team/workflow-usage.d.ts"
+      },
+      {
+        "id": "dist/team/workflow-usage.js",
+        "kind": "generated-dist",
+        "path": "dist/team/workflow-usage.js"
+      },
+      {
+        "id": "dist/team/workflow.d.ts",
+        "kind": "generated-dist",
+        "path": "dist/team/workflow.d.ts"
+      },
+      {
+        "id": "dist/team/workflow.js",
+        "kind": "generated-dist",
+        "path": "dist/team/workflow.js"
       },
       {
         "id": "dist/tools/__tests__/cancel-integration.test.d.ts",
@@ -32578,6 +32839,21 @@
         "path": "docs/TOOLS.md"
       },
       {
+        "id": "docs/WORKFLOW-V1.4-RELEASE-NOTES.md",
+        "kind": "other",
+        "path": "docs/WORKFLOW-V1.4-RELEASE-NOTES.md"
+      },
+      {
+        "id": "docs/WORKFLOW-V1.4-VERIFICATION.md",
+        "kind": "other",
+        "path": "docs/WORKFLOW-V1.4-VERIFICATION.md"
+      },
+      {
+        "id": "docs/WORKFLOW-V1.4.md",
+        "kind": "other",
+        "path": "docs/WORKFLOW-V1.4.md"
+      },
+      {
         "id": "docs/adr/03487-named-autopilot-stage-profiles.md",
         "kind": "other",
         "path": "docs/adr/03487-named-autopilot-stage-profiles.md"
@@ -32691,6 +32967,21 @@
         "id": "docs/design/project-session-manager.md",
         "kind": "other",
         "path": "docs/design/project-session-manager.md"
+      },
+      {
+        "id": "docs/design/workflow-v1.4-adr.md",
+        "kind": "other",
+        "path": "docs/design/workflow-v1.4-adr.md"
+      },
+      {
+        "id": "docs/design/workflow-v1.4-capabilities.md",
+        "kind": "other",
+        "path": "docs/design/workflow-v1.4-capabilities.md"
+      },
+      {
+        "id": "docs/design/workflow-v1.4-test-spec.md",
+        "kind": "other",
+        "path": "docs/design/workflow-v1.4-test-spec.md"
       },
       {
         "id": "docs/geobench.md",
@@ -32891,6 +33182,11 @@
         "id": "external:net",
         "kind": "external",
         "path": "net"
+      },
+      {
+        "id": "external:node:assert/strict",
+        "kind": "external",
+        "path": "node:assert/strict"
       },
       {
         "id": "external:node:async_hooks",
@@ -33676,6 +33972,16 @@
         "id": "scripts/smoke-multirepo.mjs",
         "kind": "script",
         "path": "scripts/smoke-multirepo.mjs"
+      },
+      {
+        "id": "scripts/smoke-native-project-hosts.mjs",
+        "kind": "script",
+        "path": "scripts/smoke-native-project-hosts.mjs"
+      },
+      {
+        "id": "scripts/smoke-project-hosts.mjs",
+        "kind": "script",
+        "path": "scripts/smoke-project-hosts.mjs"
       },
       {
         "id": "scripts/status.mjs",
@@ -35943,6 +36249,11 @@
         "path": "src/cli/__tests__/plugin-dir-capture.test.ts"
       },
       {
+        "id": "src/cli/__tests__/project-launch.test.ts",
+        "kind": "src",
+        "path": "src/cli/__tests__/project-launch.test.ts"
+      },
+      {
         "id": "src/cli/__tests__/self-improve-paths.test.ts",
         "kind": "src",
         "path": "src/cli/__tests__/self-improve-paths.test.ts"
@@ -36058,6 +36369,11 @@
         "path": "src/cli/commands/__tests__/doctor-team-routing.test.ts"
       },
       {
+        "id": "src/cli/commands/__tests__/orchestrator.test.ts",
+        "kind": "src",
+        "path": "src/cli/commands/__tests__/orchestrator.test.ts"
+      },
+      {
         "id": "src/cli/commands/__tests__/team-role-shorthand.test.ts",
         "kind": "src",
         "path": "src/cli/commands/__tests__/team-role-shorthand.test.ts"
@@ -36106,6 +36422,11 @@
         "id": "src/cli/commands/doctor-team-routing.ts",
         "kind": "src",
         "path": "src/cli/commands/doctor-team-routing.ts"
+      },
+      {
+        "id": "src/cli/commands/orchestrator.ts",
+        "kind": "src",
+        "path": "src/cli/commands/orchestrator.ts"
       },
       {
         "id": "src/cli/commands/ralphthon.ts",
@@ -36176,6 +36497,11 @@
         "id": "src/cli/lookout.ts",
         "kind": "src",
         "path": "src/cli/lookout.ts"
+      },
+      {
+        "id": "src/cli/project-launch.ts",
+        "kind": "src",
+        "path": "src/cli/project-launch.ts"
       },
       {
         "id": "src/cli/team.ts",
@@ -38353,6 +38679,46 @@
         "path": "src/hooks/wiki/types.ts"
       },
       {
+        "id": "src/hosts/__tests__/adapters-hooks.test.ts",
+        "kind": "src",
+        "path": "src/hosts/__tests__/adapters-hooks.test.ts"
+      },
+      {
+        "id": "src/hosts/__tests__/project-setup.test.ts",
+        "kind": "src",
+        "path": "src/hosts/__tests__/project-setup.test.ts"
+      },
+      {
+        "id": "src/hosts/adapters.ts",
+        "kind": "src",
+        "path": "src/hosts/adapters.ts"
+      },
+      {
+        "id": "src/hosts/asset-ownership.ts",
+        "kind": "src",
+        "path": "src/hosts/asset-ownership.ts"
+      },
+      {
+        "id": "src/hosts/codex-config.ts",
+        "kind": "src",
+        "path": "src/hosts/codex-config.ts"
+      },
+      {
+        "id": "src/hosts/hooks.ts",
+        "kind": "src",
+        "path": "src/hosts/hooks.ts"
+      },
+      {
+        "id": "src/hosts/project-ignore.ts",
+        "kind": "src",
+        "path": "src/hosts/project-ignore.ts"
+      },
+      {
+        "id": "src/hosts/project-setup.ts",
+        "kind": "src",
+        "path": "src/hosts/project-setup.ts"
+      },
+      {
         "id": "src/hud/__tests__/autopilot-profile.test.ts",
         "kind": "src",
         "path": "src/hud/__tests__/autopilot-profile.test.ts"
@@ -39348,6 +39714,21 @@
         "path": "src/openclaw/types.ts"
       },
       {
+        "id": "src/orchestration/__tests__/selection.test.ts",
+        "kind": "src",
+        "path": "src/orchestration/__tests__/selection.test.ts"
+      },
+      {
+        "id": "src/orchestration/selection.ts",
+        "kind": "src",
+        "path": "src/orchestration/selection.ts"
+      },
+      {
+        "id": "src/orchestration/state.ts",
+        "kind": "src",
+        "path": "src/orchestration/state.ts"
+      },
+      {
         "id": "src/planning/__tests__/artifacts.test.ts",
         "kind": "src",
         "path": "src/planning/__tests__/artifacts.test.ts"
@@ -40178,6 +40559,11 @@
         "path": "src/team/__tests__/workflow-contracts.test.ts"
       },
       {
+        "id": "src/team/__tests__/workflow-hosts.test.ts",
+        "kind": "src",
+        "path": "src/team/__tests__/workflow-hosts.test.ts"
+      },
+      {
         "id": "src/team/__tests__/workflow-process.test.ts",
         "kind": "src",
         "path": "src/team/__tests__/workflow-process.test.ts"
@@ -40616,6 +41002,16 @@
         "id": "src/team/workflow-prompt.ts",
         "kind": "src",
         "path": "src/team/workflow-prompt.ts"
+      },
+      {
+        "id": "src/team/workflow-publication.ts",
+        "kind": "src",
+        "path": "src/team/workflow-publication.ts"
+      },
+      {
+        "id": "src/team/workflow-ref-audit.ts",
+        "kind": "src",
+        "path": "src/team/workflow-ref-audit.ts"
       },
       {
         "id": "src/team/workflow-report.ts",
@@ -41221,6 +41617,11 @@
         "id": "templates/hooks/workflow-drift-guard.mjs",
         "kind": "template-hook",
         "path": "templates/hooks/workflow-drift-guard.mjs"
+      },
+      {
+        "id": "templates/hosts/orchestrator-guidance.md",
+        "kind": "other",
+        "path": "templates/hosts/orchestrator-guidance.md"
       },
       {
         "id": "templates/rules/README.md",
@@ -43457,6 +43858,76 @@
       {
         "from": "scripts/smoke-multirepo.mjs",
         "to": "external:node:url",
+        "kind": "imports"
+      },
+      {
+        "from": "scripts/smoke-native-project-hosts.mjs",
+        "to": "dist/cli/project-launch.js",
+        "kind": "imports"
+      },
+      {
+        "from": "scripts/smoke-native-project-hosts.mjs",
+        "to": "dist/hosts/project-setup.js",
+        "kind": "imports"
+      },
+      {
+        "from": "scripts/smoke-native-project-hosts.mjs",
+        "to": "dist/lib/worktree-paths.js",
+        "kind": "imports"
+      },
+      {
+        "from": "scripts/smoke-native-project-hosts.mjs",
+        "to": "dist/orchestration/selection.js",
+        "kind": "imports"
+      },
+      {
+        "from": "scripts/smoke-native-project-hosts.mjs",
+        "to": "external:node:assert/strict",
+        "kind": "imports"
+      },
+      {
+        "from": "scripts/smoke-native-project-hosts.mjs",
+        "to": "external:node:child_process",
+        "kind": "imports"
+      },
+      {
+        "from": "scripts/smoke-native-project-hosts.mjs",
+        "to": "external:node:fs",
+        "kind": "imports"
+      },
+      {
+        "from": "scripts/smoke-native-project-hosts.mjs",
+        "to": "external:node:os",
+        "kind": "imports"
+      },
+      {
+        "from": "scripts/smoke-native-project-hosts.mjs",
+        "to": "external:node:path",
+        "kind": "imports"
+      },
+      {
+        "from": "scripts/smoke-project-hosts.mjs",
+        "to": "external:node:assert/strict",
+        "kind": "imports"
+      },
+      {
+        "from": "scripts/smoke-project-hosts.mjs",
+        "to": "external:node:child_process",
+        "kind": "imports"
+      },
+      {
+        "from": "scripts/smoke-project-hosts.mjs",
+        "to": "external:node:fs",
+        "kind": "imports"
+      },
+      {
+        "from": "scripts/smoke-project-hosts.mjs",
+        "to": "external:node:os",
+        "kind": "imports"
+      },
+      {
+        "from": "scripts/smoke-project-hosts.mjs",
+        "to": "external:node:path",
         "kind": "imports"
       },
       {
@@ -51645,6 +52116,31 @@
         "kind": "imports"
       },
       {
+        "from": "src/cli/__tests__/project-launch.test.ts",
+        "to": "external:node:crypto",
+        "kind": "imports"
+      },
+      {
+        "from": "src/cli/__tests__/project-launch.test.ts",
+        "to": "external:vitest",
+        "kind": "imports"
+      },
+      {
+        "from": "src/cli/__tests__/project-launch.test.ts",
+        "to": "src/cli/project-launch.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/cli/__tests__/project-launch.test.ts",
+        "to": "src/orchestration/selection.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/cli/__tests__/project-launch.test.ts",
+        "to": "src/team/__tests__/helpers/workflow-fixture.ts",
+        "kind": "imports"
+      },
+      {
         "from": "src/cli/__tests__/self-improve-paths.test.ts",
         "to": "external:node:child_process",
         "kind": "imports"
@@ -52215,6 +52711,21 @@
         "kind": "type-imports"
       },
       {
+        "from": "src/cli/commands/__tests__/orchestrator.test.ts",
+        "to": "external:commander",
+        "kind": "imports"
+      },
+      {
+        "from": "src/cli/commands/__tests__/orchestrator.test.ts",
+        "to": "external:vitest",
+        "kind": "imports"
+      },
+      {
+        "from": "src/cli/commands/__tests__/orchestrator.test.ts",
+        "to": "src/cli/commands/orchestrator.ts",
+        "kind": "imports"
+      },
+      {
         "from": "src/cli/commands/__tests__/team-role-shorthand.test.ts",
         "to": "external:vitest",
         "kind": "imports"
@@ -52271,6 +52782,11 @@
       },
       {
         "from": "src/cli/commands/__tests__/team-workflow.test.ts",
+        "to": "external:node:child_process",
+        "kind": "imports"
+      },
+      {
+        "from": "src/cli/commands/__tests__/team-workflow.test.ts",
         "to": "external:node:fs",
         "kind": "imports"
       },
@@ -52293,6 +52809,16 @@
         "from": "src/cli/commands/__tests__/team-workflow.test.ts",
         "to": "src/cli/commands/team-workflow.ts",
         "kind": "imports"
+      },
+      {
+        "from": "src/cli/commands/__tests__/team-workflow.test.ts",
+        "to": "src/team/workflow-publication.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/cli/commands/__tests__/team-workflow.test.ts",
+        "to": "src/team/workflow-publication.ts",
+        "kind": "type-imports"
       },
       {
         "from": "src/cli/commands/__tests__/team.test.ts",
@@ -52515,6 +53041,26 @@
         "kind": "imports"
       },
       {
+        "from": "src/cli/commands/orchestrator.ts",
+        "to": "external:commander",
+        "kind": "type-imports"
+      },
+      {
+        "from": "src/cli/commands/orchestrator.ts",
+        "to": "src/hosts/hooks.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/cli/commands/orchestrator.ts",
+        "to": "src/orchestration/selection.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/cli/commands/orchestrator.ts",
+        "to": "src/orchestration/selection.ts",
+        "kind": "type-imports"
+      },
+      {
         "from": "src/cli/commands/ralphthon.ts",
         "to": "external:chalk",
         "kind": "imports"
@@ -52592,6 +53138,11 @@
       {
         "from": "src/cli/commands/team-workflow.ts",
         "to": "src/team/workflow-contracts.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/cli/commands/team-workflow.ts",
+        "to": "src/team/workflow-publication.ts",
         "kind": "imports"
       },
       {
@@ -52946,6 +53497,11 @@
       },
       {
         "from": "src/cli/index.ts",
+        "to": "src/cli/commands/orchestrator.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/cli/index.ts",
         "to": "src/cli/commands/ralphthon.ts",
         "kind": "imports"
       },
@@ -53006,6 +53562,11 @@
       },
       {
         "from": "src/cli/index.ts",
+        "to": "src/cli/project-launch.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/cli/index.ts",
         "to": "src/cli/win32-warning.ts",
         "kind": "imports"
       },
@@ -53023,6 +53584,11 @@
         "from": "src/cli/index.ts",
         "to": "src/features/auto-update.ts",
         "kind": "type-imports"
+      },
+      {
+        "from": "src/cli/index.ts",
+        "to": "src/hosts/project-setup.ts",
+        "kind": "imports"
       },
       {
         "from": "src/cli/index.ts",
@@ -53167,6 +53733,36 @@
       {
         "from": "src/cli/lookout.ts",
         "to": "src/features/lookout/index.ts",
+        "kind": "type-imports"
+      },
+      {
+        "from": "src/cli/project-launch.ts",
+        "to": "external:node:child_process",
+        "kind": "imports"
+      },
+      {
+        "from": "src/cli/project-launch.ts",
+        "to": "external:node:crypto",
+        "kind": "imports"
+      },
+      {
+        "from": "src/cli/project-launch.ts",
+        "to": "src/cli/launch.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/cli/project-launch.ts",
+        "to": "src/hosts/adapters.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/cli/project-launch.ts",
+        "to": "src/orchestration/selection.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/cli/project-launch.ts",
+        "to": "src/orchestration/selection.ts",
         "kind": "type-imports"
       },
       {
@@ -63660,6 +64256,221 @@
         "kind": "imports"
       },
       {
+        "from": "src/hosts/__tests__/adapters-hooks.test.ts",
+        "to": "external:node:child_process",
+        "kind": "imports"
+      },
+      {
+        "from": "src/hosts/__tests__/adapters-hooks.test.ts",
+        "to": "external:node:fs",
+        "kind": "imports"
+      },
+      {
+        "from": "src/hosts/__tests__/adapters-hooks.test.ts",
+        "to": "external:node:os",
+        "kind": "imports"
+      },
+      {
+        "from": "src/hosts/__tests__/adapters-hooks.test.ts",
+        "to": "external:node:path",
+        "kind": "imports"
+      },
+      {
+        "from": "src/hosts/__tests__/adapters-hooks.test.ts",
+        "to": "external:vitest",
+        "kind": "imports"
+      },
+      {
+        "from": "src/hosts/__tests__/adapters-hooks.test.ts",
+        "to": "src/hosts/adapters.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/hosts/__tests__/adapters-hooks.test.ts",
+        "to": "src/hosts/hooks.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/hosts/__tests__/adapters-hooks.test.ts",
+        "to": "src/orchestration/selection.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/hosts/__tests__/project-setup.test.ts",
+        "to": "external:node:child_process",
+        "kind": "imports"
+      },
+      {
+        "from": "src/hosts/__tests__/project-setup.test.ts",
+        "to": "external:node:crypto",
+        "kind": "imports"
+      },
+      {
+        "from": "src/hosts/__tests__/project-setup.test.ts",
+        "to": "external:node:fs",
+        "kind": "imports"
+      },
+      {
+        "from": "src/hosts/__tests__/project-setup.test.ts",
+        "to": "external:node:os",
+        "kind": "imports"
+      },
+      {
+        "from": "src/hosts/__tests__/project-setup.test.ts",
+        "to": "external:node:path",
+        "kind": "imports"
+      },
+      {
+        "from": "src/hosts/__tests__/project-setup.test.ts",
+        "to": "external:vitest",
+        "kind": "imports"
+      },
+      {
+        "from": "src/hosts/__tests__/project-setup.test.ts",
+        "to": "src/hosts/project-setup.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/hosts/__tests__/project-setup.test.ts",
+        "to": "src/orchestration/selection.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/hosts/adapters.ts",
+        "to": "src/lib/worktree-paths.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/hosts/adapters.ts",
+        "to": "src/orchestration/selection.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/hosts/adapters.ts",
+        "to": "src/orchestration/selection.ts",
+        "kind": "type-imports"
+      },
+      {
+        "from": "src/hosts/asset-ownership.ts",
+        "to": "external:node:crypto",
+        "kind": "imports"
+      },
+      {
+        "from": "src/hosts/asset-ownership.ts",
+        "to": "external:node:fs",
+        "kind": "imports"
+      },
+      {
+        "from": "src/hosts/asset-ownership.ts",
+        "to": "external:node:path",
+        "kind": "imports"
+      },
+      {
+        "from": "src/hosts/asset-ownership.ts",
+        "to": "src/lib/atomic-write.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/hosts/asset-ownership.ts",
+        "to": "src/lib/worktree-paths.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/hosts/asset-ownership.ts",
+        "to": "src/orchestration/selection.ts",
+        "kind": "type-imports"
+      },
+      {
+        "from": "src/hosts/hooks.ts",
+        "to": "external:node:fs",
+        "kind": "imports"
+      },
+      {
+        "from": "src/hosts/hooks.ts",
+        "to": "external:node:path",
+        "kind": "imports"
+      },
+      {
+        "from": "src/hosts/hooks.ts",
+        "to": "src/orchestration/selection.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/hosts/hooks.ts",
+        "to": "src/orchestration/selection.ts",
+        "kind": "type-imports"
+      },
+      {
+        "from": "src/hosts/project-ignore.ts",
+        "to": "external:node:path",
+        "kind": "imports"
+      },
+      {
+        "from": "src/hosts/project-ignore.ts",
+        "to": "src/hosts/asset-ownership.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/hosts/project-ignore.ts",
+        "to": "src/hosts/asset-ownership.ts",
+        "kind": "type-imports"
+      },
+      {
+        "from": "src/hosts/project-setup.ts",
+        "to": "external:node:child_process",
+        "kind": "imports"
+      },
+      {
+        "from": "src/hosts/project-setup.ts",
+        "to": "external:node:fs",
+        "kind": "imports"
+      },
+      {
+        "from": "src/hosts/project-setup.ts",
+        "to": "external:node:path",
+        "kind": "imports"
+      },
+      {
+        "from": "src/hosts/project-setup.ts",
+        "to": "src/hosts/asset-ownership.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/hosts/project-setup.ts",
+        "to": "src/hosts/asset-ownership.ts",
+        "kind": "type-imports"
+      },
+      {
+        "from": "src/hosts/project-setup.ts",
+        "to": "src/hosts/codex-config.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/hosts/project-setup.ts",
+        "to": "src/hosts/project-ignore.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/hosts/project-setup.ts",
+        "to": "src/orchestration/selection.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/hosts/project-setup.ts",
+        "to": "src/orchestration/selection.ts",
+        "kind": "type-imports"
+      },
+      {
+        "from": "src/hosts/project-setup.ts",
+        "to": "src/team/cli-detection.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/hosts/project-setup.ts",
+        "to": "src/team/cli-detection.ts",
+        "kind": "type-imports"
+      },
+      {
         "from": "src/hud/__tests__/autopilot-profile.test.ts",
         "to": "external:child_process",
         "kind": "imports"
@@ -68460,6 +69271,131 @@
         "kind": "type-imports"
       },
       {
+        "from": "src/orchestration/__tests__/selection.test.ts",
+        "to": "external:node:child_process",
+        "kind": "imports"
+      },
+      {
+        "from": "src/orchestration/__tests__/selection.test.ts",
+        "to": "external:node:fs",
+        "kind": "imports"
+      },
+      {
+        "from": "src/orchestration/__tests__/selection.test.ts",
+        "to": "external:node:os",
+        "kind": "imports"
+      },
+      {
+        "from": "src/orchestration/__tests__/selection.test.ts",
+        "to": "external:node:path",
+        "kind": "imports"
+      },
+      {
+        "from": "src/orchestration/__tests__/selection.test.ts",
+        "to": "external:vitest",
+        "kind": "imports"
+      },
+      {
+        "from": "src/orchestration/__tests__/selection.test.ts",
+        "to": "src/lib/worktree-paths.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/orchestration/__tests__/selection.test.ts",
+        "to": "src/orchestration/selection.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/orchestration/__tests__/selection.test.ts",
+        "to": "src/orchestration/selection.ts",
+        "kind": "type-imports"
+      },
+      {
+        "from": "src/orchestration/selection.ts",
+        "to": "external:node:crypto",
+        "kind": "imports"
+      },
+      {
+        "from": "src/orchestration/selection.ts",
+        "to": "external:node:fs",
+        "kind": "imports"
+      },
+      {
+        "from": "src/orchestration/selection.ts",
+        "to": "external:node:path",
+        "kind": "imports"
+      },
+      {
+        "from": "src/orchestration/selection.ts",
+        "to": "src/lib/atomic-write.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/orchestration/selection.ts",
+        "to": "src/lib/file-lock.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/orchestration/selection.ts",
+        "to": "src/lib/worktree-paths.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/orchestration/selection.ts",
+        "to": "src/orchestration/state.ts",
+        "kind": "exports"
+      },
+      {
+        "from": "src/orchestration/selection.ts",
+        "to": "src/orchestration/state.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/orchestration/selection.ts",
+        "to": "src/orchestration/state.ts",
+        "kind": "type-imports"
+      },
+      {
+        "from": "src/orchestration/selection.ts",
+        "to": "src/platform/index.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/orchestration/selection.ts",
+        "to": "src/team/cli-detection.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/orchestration/selection.ts",
+        "to": "src/team/cli-detection.ts",
+        "kind": "type-imports"
+      },
+      {
+        "from": "src/orchestration/state.ts",
+        "to": "external:node:crypto",
+        "kind": "imports"
+      },
+      {
+        "from": "src/orchestration/state.ts",
+        "to": "external:node:fs",
+        "kind": "imports"
+      },
+      {
+        "from": "src/orchestration/state.ts",
+        "to": "external:node:path",
+        "kind": "imports"
+      },
+      {
+        "from": "src/orchestration/state.ts",
+        "to": "src/lib/worktree-paths.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/orchestration/state.ts",
+        "to": "src/orchestration/selection.ts",
+        "kind": "type-imports"
+      },
+      {
         "from": "src/planning/__tests__/artifacts.test.ts",
         "to": "external:fs",
         "kind": "imports"
@@ -72950,6 +73886,51 @@
         "kind": "imports"
       },
       {
+        "from": "src/team/__tests__/workflow-hosts.test.ts",
+        "to": "external:node:fs",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-hosts.test.ts",
+        "to": "external:node:path",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-hosts.test.ts",
+        "to": "external:vitest",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-hosts.test.ts",
+        "to": "src/orchestration/selection.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-hosts.test.ts",
+        "to": "src/orchestration/selection.ts",
+        "kind": "type-imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-hosts.test.ts",
+        "to": "src/team/__tests__/helpers/workflow-fixture.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-hosts.test.ts",
+        "to": "src/team/__tests__/helpers/workflow-v2-fixture.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-hosts.test.ts",
+        "to": "src/team/workflow-contracts.ts",
+        "kind": "type-imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-hosts.test.ts",
+        "to": "src/team/workflow.ts",
+        "kind": "imports"
+      },
+      {
         "from": "src/team/__tests__/workflow-process.test.ts",
         "to": "external:node:fs",
         "kind": "imports"
@@ -76256,6 +77237,11 @@
       },
       {
         "from": "src/team/workflow-contracts.ts",
+        "to": "src/orchestration/selection.ts",
+        "kind": "type-imports"
+      },
+      {
+        "from": "src/team/workflow-contracts.ts",
         "to": "src/shared/artifact-descriptor.ts",
         "kind": "type-imports"
       },
@@ -76320,6 +77306,71 @@
         "kind": "type-imports"
       },
       {
+        "from": "src/team/workflow-prompt.ts",
+        "to": "src/team/workflow-publication.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow-publication.ts",
+        "to": "external:node:crypto",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow-publication.ts",
+        "to": "external:node:fs",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow-publication.ts",
+        "to": "external:node:path",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow-publication.ts",
+        "to": "src/team/fs-utils.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow-publication.ts",
+        "to": "src/team/state-paths.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow-publication.ts",
+        "to": "src/team/workflow-contracts.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow-publication.ts",
+        "to": "src/team/workflow-contracts.ts",
+        "kind": "type-imports"
+      },
+      {
+        "from": "src/team/workflow-publication.ts",
+        "to": "src/team/workflow-process.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow-publication.ts",
+        "to": "src/team/workflow-process.ts",
+        "kind": "type-imports"
+      },
+      {
+        "from": "src/team/workflow-ref-audit.ts",
+        "to": "external:node:child_process",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow-ref-audit.ts",
+        "to": "src/shared/artifact-descriptor.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow-ref-audit.ts",
+        "to": "src/shared/artifact-descriptor.ts",
+        "kind": "type-imports"
+      },
+      {
         "from": "src/team/workflow-report.ts",
         "to": "src/team/workflow-contracts.ts",
         "kind": "imports"
@@ -76376,8 +77427,23 @@
       },
       {
         "from": "src/team/workflow.ts",
+        "to": "src/orchestration/selection.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow.ts",
+        "to": "src/orchestration/selection.ts",
+        "kind": "type-imports"
+      },
+      {
+        "from": "src/team/workflow.ts",
         "to": "src/shared/artifact-descriptor.ts",
         "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow.ts",
+        "to": "src/shared/artifact-descriptor.ts",
+        "kind": "type-imports"
       },
       {
         "from": "src/team/workflow.ts",
@@ -76447,6 +77513,16 @@
       {
         "from": "src/team/workflow.ts",
         "to": "src/team/workflow-prompt.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow.ts",
+        "to": "src/team/workflow-publication.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow.ts",
+        "to": "src/team/workflow-ref-audit.ts",
         "kind": "imports"
       },
       {
@@ -79636,12 +80712,12 @@
       }
     ],
     "stats": {
-      "nodeCount": 7008,
-      "edgeCount": 7639,
-      "importEdgeCount": 6300,
+      "nodeCount": 7079,
+      "edgeCount": 7774,
+      "importEdgeCount": 6411,
       "registerEdgeCount": 60
     }
   },
-  "inventorySha256": "3d8eb7d9a7feade71ff71694027da0669f97c14c13825a6138ba65632a716e7b",
-  "manifestSha256": "15445bf9929612a993b46ec39a0eb83a676daa386908014fb8b28e0bfa5cb447"
+  "inventorySha256": "3b060be949c55191b9ac4d5bb848a98eb7309b835b64157ef9ad451591f272f7",
+  "manifestSha256": "dcae07dcc6f30b794de137c8eccc03285bb236bfce17ee64780639e6a79f431a"
 }
