@@ -9,6 +9,7 @@ This record distinguishes implementation, synthetic workflow tests, native CLI c
 - Included custom V1.3 source: `1a17a6845b2a87c5ba5b85a195dc3cae0d3bc07f`.
 - Read-only OMX donor: `cb955b0d5becbef76d2c1f0096b6e1f238e1e7f7`, version 0.21.5.
 - Package version: 5.4.0. The workflow label does not change the package version.
+- Full-suite source snapshot: `13b67c52da790976a99f6bc2d05e8c1d1f9e68f1` (implementation at `e810e25aa41e59fe67673a6bdfad4694b083648d` plus inventory). Later delivery changes remove out-of-closure generated declarations and update this evidence/inventory; application source is unchanged.
 - Final commit: recorded in the delivery response; this document cannot contain its own commit hash. `git rev-parse HEAD` identifies the delivered checkout.
 
 No push, pull request, merge, tag, publication, release, or issue closure was performed.
@@ -34,9 +35,9 @@ The implementation reuses the OMC controller, schemas, provider registry, explic
 | `README.md`, migration/compatibility guides, V1.4 guide/release notes and `docs/design/workflow-v1.4-*` | Adoption, rollback, architecture, donor boundaries and acceptance specification.                                |
 | Generated runtime closure and inventory                                                                 | Rebuilt shipped modules/bundles and repository inventory.                                                       |
 
-Use `git diff --name-only b0e93d57c264dab85a6605061d1c3e0ca73e0c06 HEAD` for the exact manifest, including generated files.
+The final delta contains 118 paths, including 65 shipped runtime artifacts. Use `git diff --name-only b0e93d57c264dab85a6605061d1c3e0ca73e0c06 HEAD` for the exact manifest, including generated files.
 
-The baseline already contains source/build drift in several shipped runtime modules. The build refreshes the required shipping closure, including those modules; unrelated generated tests and source maps are excluded from the delivery diff. No unrelated source implementation was rewritten to conceal that drift.
+The baseline already contains source/build drift in several shipped runtime modules. The build refreshes the required shipping closure, including those modules; unrelated generated tests, source maps and 20 new internal declaration files outside the base-authorized PR closure are excluded from the delivery diff. No unrelated source implementation was rewritten to conceal that drift.
 
 ## Evidence classes and support matrix
 
@@ -70,7 +71,13 @@ Commands ran from the isolated checkout. Logs are retained locally under `.tmp-v
 | Dependency security                   | `npm audit --omit=dev --json`                                                                                                                                               | Exit 0; **zero reported production vulnerabilities**.                                                                                           |
 | Native CLI checks                     | `node scripts/smoke-native-project-hosts.mjs <claude.exe> <codex.exe>`                                                                                                      | Exit 0; Claude plugin validation, Codex trusted-project MCP/marketplace parsing, both native help launches and lease release. No model request. |
 
-The concluding Linux, package, inventory, shipping and core-launch results are added after the final snapshot checks.
+Packaging used `npm pack --ignore-scripts --pack-destination .tmp-v14-evidence` after the successful build, followed by `npm run smoke:project-hosts -- <tarball>` on Windows and Linux. Both clean installations exited 0, including a real native SQLite query, dual setup, idempotent upgrade, repeated host switching, preserved user files and independent uninstall. CLI discovery executables in this smoke are synthetic; provider authentication is not exercised. The tested tarball's SHA-256 is `ce40f961594f86528e20fbff694286427601dc1d0532d5057026fb0084f4b23d`.
+
+The Linux command was `npm run test:run -- --maxWorkers=4`, after `npm run build`, in the same Debian/Node image used for the baseline. The final runner uses Docker `--init` so orphaned test children are reaped. Result: **758 passed files, 2 failed files, 2 skipped files; 14,783 passed tests, 10 failed tests, 22 skipped tests** (762 files / 14,815 tests), exit 1, 302.86 seconds. The ten failed test names exactly match the baseline below: **128 additional passing tests and no additional failures**. An earlier runner without an init process retained orphan zombies and was discarded; its affected process-reaping regression passed in the corrected runner and in the final full run.
+
+`npm run plugin:shipping:check-pr -- --base b0e93d57c264dab85a6605061d1c3e0ca73e0c06` passed from a clean Linux checkout: **1,264 required runtime artifacts, 65 generated changes**. The Windows invocation hits the existing script's native command-line length limit when passing the complete path list to Git (`spawnSync git ENAMETOOLONG`); the Linux result is the qualifying shipping check. The base-authorized closure excludes the 20 newly generated internal declarations that the broader local staging helper initially included.
+
+`npm run generate:inventory:verify` passes after regenerating the inventory for the delivered tracked file set. The separate command `node scripts/ci/check-no-committed-build-artifacts.mjs --base b0e93d57c264dab85a6605061d1c3e0ca73e0c06 --head <delivered-HEAD>` intentionally exits 1 with **OWNER_CONFIRMATION_REQUIRED**: the base-owned authorization manifest has no authorization for this candidate's generated delta. Passing shipping correctness does not satisfy that owner-controlled release policy.
 
 The same Linux runner on unmodified `main` produced **752 passed files, 2 failed files, 2 skipped files; 14,655 passed tests, 10 failed tests, 22 skipped tests** (756 files / 14,687 tests). All ten failures are the existing HUD emoji expectations in `src/__tests__/hud/call-counts.test.ts` and `src/__tests__/hud/windows-platform.test.ts`. Docker exposes a WSL kernel; production correctly chooses the ASCII fallback while these tests assume a non-WSL Linux kernel. Candidate results are compared with this baseline without modifying those tests.
 
@@ -89,4 +96,4 @@ Separate agents reviewed code they did not author. Confirmed findings were corre
 - Native user permissions, readable roots and network configuration remain native configuration. The launcher refuses explicit bypass/remote redirection; it does not implement a second operating-system sandbox.
 - Arbitrary OMX state import, donor-only UI/HUD/wiki/notification systems, Rust harnesses and sparkshell are deferred. No partial migration or competing OMX writer is enabled. See the [capability matrix](design/workflow-v1.4-capabilities.md).
 
-Review readiness and release readiness are separate decisions. Final readiness is stated only after the source-stable verification results below have been populated.
+**Ready for local engineering review, with the baseline test failures and validation limits disclosed. Not ready to merge or release.** No confirmed implementation review finding remains. Release acceptance still requires authenticated host/provider scenarios, hosted platform evidence (including macOS), and trusted generated-artifact authorization. Nothing has been pushed or published.
