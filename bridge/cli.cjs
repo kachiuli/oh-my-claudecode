@@ -119044,7 +119044,7 @@ function launchArguments(host, args) {
       argument
     ) || ["attach", "respawn", "remote-control", "cloud", "app-server"].includes(
       argument
-    )) {
+    ) || host === "codex" && ["app", "queue", "agents", "exec-server"].includes(argument) || host === "claude" && ["agents", "ultrareview"].includes(argument)) {
       throw new Error(
         "orchestrator_unmanaged_session_transport: launch a local fresh session or use --resume with a registered native session ID."
       );

@@ -27,11 +27,13 @@ Workflow V1.4 adds repository-scoped Claude Code and Codex lead hosts over the e
 
 ## Verified and unverified environments
 
+See the [verification record](WORKFLOW-V1.4-VERIFICATION.md) for exact local results, platform limits and release gates.
+
 The development environment used Codex CLI `0.155.0-alpha.9` and Claude Code `2.1.272` on Windows. Local parser/help/MCP and generated-asset smoke checks do not prove a live authenticated model call. Codex plugin installation/refresh, exact hook trust, hosted-tool hook delivery, provider credentials and model availability require separate authenticated evidence. Linux CI and macOS POSIX/tmux results must be reported from jobs that actually ran; a configured workflow is not a pass.
 
 Codex reports the `hooks` and `plugins` features as stable in the checked CLI. `plugin_hooks` is removed in that build, so this release uses the current plugin manifest/hook surface and does not infer support from the removed feature name. Codex project configuration loads only for a trusted project. Plugin-bundled hooks remain untrusted until the user accepts the exact definition, and `SessionEnd` is advisory. Hosted tools can bypass local tool hooks.
 
-Existing OMC notification launch options remain shared across both adopted hosts. Permission-bypass aliases such as `--madmax` and `--yolo` are refused, as are alternate remote, cloud, attach, teleport, safe and bare modes. Continuation is supported only through `omc launch --resume` with a native session recorded for the current host and selection. Native user/profile permissions, readable roots and network settings still apply; OMC's workflow gates independently enforce task write scopes and state ownership.
+Existing OMC notification launch options remain shared across both adopted hosts. Permission-bypass aliases such as `--madmax` and `--yolo` are refused, as are alternate remote, cloud, attach, teleport, background, safe and bare modes and native app/session-service entry points. Continuation is supported only through `omc launch --resume` with a native session recorded for the current host and selection. Native user/profile permissions, readable roots and network settings still apply; OMC's workflow gates independently enforce task write scopes and state ownership.
 
 ## Setup safety and rollback
 

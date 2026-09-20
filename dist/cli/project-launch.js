@@ -28,7 +28,10 @@ function launchArguments(host, args) {
     for (let index = 0; index < args.length; index++) {
         const argument = args[index];
         if (/^--(?:remote|remote-workspace|cloud|environment|teleport|from-pr)(?:=|$)/.test(argument) ||
-            ["attach", "respawn", "remote-control", "cloud", "app-server"].includes(argument)) {
+            ["attach", "respawn", "remote-control", "cloud", "app-server"].includes(argument) ||
+            (host === "codex" &&
+                ["app", "queue", "agents", "exec-server"].includes(argument)) ||
+            (host === "claude" && ["agents", "ultrareview"].includes(argument))) {
             throw new Error("orchestrator_unmanaged_session_transport: launch a local fresh session or use --resume with a registered native session ID.");
         }
         if (host === "claude" &&

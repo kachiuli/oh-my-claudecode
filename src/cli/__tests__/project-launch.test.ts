@@ -273,6 +273,27 @@ describe("project native orchestrator launch", () => {
     },
   );
 
+  it.each([
+    { host: "codex" as const, command: "app" },
+    { host: "codex" as const, command: "queue" },
+    { host: "codex" as const, command: "agents" },
+    { host: "codex" as const, command: "exec-server" },
+    { host: "claude" as const, command: "agents" },
+    { host: "claude" as const, command: "ultrareview" },
+  ])(
+    "refuses the unmanaged $host $command command",
+    async ({ host, command }) => {
+      await selectOrchestrator(fixture.cwd, host, { probe });
+      await expect(
+        launchProjectOrchestrator([command], {
+          cwd: fixture.cwd,
+          probe,
+          run: async () => 0,
+        }),
+      ).rejects.toThrow("orchestrator_unmanaged_session_transport");
+    },
+  );
+
   it("keeps OpenAI, Anthropic and GLM host credentials separate", () => {
     const environment = {
       OPENAI_API_KEY: "synthetic-o",
