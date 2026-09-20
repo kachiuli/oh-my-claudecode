@@ -198,7 +198,7 @@ export async function workflowCommand(args: string[], cwd = process.cwd()): Prom
     // The controller's own inclusive timeout range; the CLI refuses early, before either initializer runs.
     const timeout = flags.get('--timeout-ms');
     if (timeout !== undefined) {
-      const value = /^[1-9]\d*$/.test(timeout) ? Number(timeout) : Number.NaN;
+      const value = /^\d+$/.test(timeout) ? Number(timeout) : Number.NaN;
       if (!Number.isSafeInteger(value) || value < 100 || value > 3_600_000) throw new Error('workflow_invalid_limit');
       options.timeoutMs = value;
     }

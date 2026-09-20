@@ -226,13 +226,26 @@ describe('team workflow CLI', () => {
     expect(api.initWorkflow).toHaveBeenCalledWith(root, { name: 'feature' }, { timeoutMs: Number(value) });
   });
 
+  it.each(['0100', '00100', '03600000'])('forwards the zero-padded timeout %s as its numeric value', async value => {
+    await workflowCommand(['init', '--file', planFile(), '--timeout-ms', value], root);
+    expect(api.initWorkflow).toHaveBeenCalledWith(root, { name: 'feature' }, { timeoutMs: Number(value) });
+    expect(api.initWorkflowV2).not.toHaveBeenCalled();
+  });
+
   it.each([
-    'malformed', '1.5', '-1', '0', '99', '3600001', '9007199254740993', '+100', '1e3', ' 100', '100 ',
+    'malformed', '1.5', '-1', '0', '000', '99', '3600001', '9007199254740993', '+100', '1e3', ' 100', '100 ',
   ])('refuses the invalid timeout %j as an invalid limit before initialization', async value => {
     await expect(workflowCommand(['init', '--file', planFile(), '--timeout-ms', value], root))
       .rejects.toThrow('workflow_invalid_limit');
     expect(api.initWorkflow).not.toHaveBeenCalled(); expect(api.initWorkflowV2).not.toHaveBeenCalled();
   });
+
+  it.each(['0099', '03600001', '0009007199254740993'])(
+    'refuses the zero-padded out-of-range timeout %j as an invalid limit', async value => {
+      await expect(workflowCommand(['init', '--file', planFile(), '--timeout-ms', value], root))
+        .rejects.toThrow('workflow_invalid_limit');
+      expect(api.initWorkflow).not.toHaveBeenCalled(); expect(api.initWorkflowV2).not.toHaveBeenCalled();
+    });
 
   it('refuses a missing or duplicate timeout flag before initialization', async () => {
     const file = planFile();
