@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -14,7 +14,7 @@ import { handleHostHook } from "../hooks.js";
 const temporaryDirectories: string[] = [];
 
 function temporaryRepository(): string {
-  const root = mkdtempSync(join(tmpdir(), "omc-host-adapter-"));
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "omc-host-adapter-")));
   execFileSync("git", ["init", "-q"], { cwd: root, windowsHide: true });
   temporaryDirectories.push(root);
   return root;

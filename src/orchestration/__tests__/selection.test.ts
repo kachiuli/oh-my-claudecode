@@ -4,6 +4,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   utimesSync,
   writeFileSync,
@@ -44,7 +45,9 @@ describe("repository orchestrator selection", () => {
   let previousLeaseEnvironment: Record<string, string | undefined>;
 
   beforeEach(() => {
-    root = mkdtempSync(join(tmpdir(), "omc-orchestrator-selection-"));
+    root = realpathSync(
+      mkdtempSync(join(tmpdir(), "omc-orchestrator-selection-")),
+    );
     repo = join(root, "repo");
     mkdirSync(repo, { recursive: true });
     execFileSync("git", ["init"], { cwd: repo, stdio: "pipe" });

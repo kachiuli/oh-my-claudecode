@@ -12,7 +12,7 @@ This record distinguishes implementation, synthetic workflow tests, native CLI c
 - Full-suite source snapshot: `13b67c52da790976a99f6bc2d05e8c1d1f9e68f1` (implementation at `e810e25aa41e59fe67673a6bdfad4694b083648d` plus inventory). Later delivery changes remove out-of-closure generated declarations and update this evidence/inventory; application source is unchanged.
 - Final commit: recorded in the delivery response; this document cannot contain its own commit hash. `git rev-parse HEAD` identifies the delivered checkout.
 
-No push, pull request, merge, tag, publication, release, or issue closure was performed.
+The candidate is published as [PR #6](https://github.com/kachiuli/oh-my-claudecode/pull/6), targeting `main`. The owner subsequently authorized continuing through release. Release identity remains `workflow-v1.4`; this does not publish a new npm version or reuse a historical `v1.4.x` tag.
 
 ## Behavior and reuse
 
@@ -31,27 +31,35 @@ The implementation reuses the OMC controller, schemas, provider registry, explic
 | `src/lib/worktree-paths.ts` and tests                                                                   | Separate project-owned configuration paths from runtime state relocation.                                       |
 | `src/team/workflow*.ts`, workflow tests and fixture helpers                                             | Immutable host provenance, issue #4 publication, issue #5 ref audit, child authority and credential separation. |
 | `scripts/smoke-{project,native-project}-hosts.mjs`, `package.json`                                      | Isolated packaged installation and native offline compatibility checks.                                         |
-| `.github/workflows/workflow-v14.yml`                                                                    | Windows/Linux/macOS compatibility jobs; not dispatched.                                                         |
+| `.github/workflows/{ci,workflow-v14}.yml`                                                               | Windows/Linux/macOS host compatibility matrix, reused by the existing CI entry point.                           |
 | `README.md`, migration/compatibility guides, V1.4 guide/release notes and `docs/design/workflow-v1.4-*` | Adoption, rollback, architecture, donor boundaries and acceptance specification.                                |
 | Generated runtime closure and inventory                                                                 | Rebuilt shipped modules/bundles and repository inventory.                                                       |
 
-The final delta contains 118 paths, including 65 shipped runtime artifacts. Use `git diff --name-only b0e93d57c264dab85a6605061d1c3e0ca73e0c06 HEAD` for the exact manifest, including generated files.
+The candidate delta contains 119 paths, including 65 shipped runtime artifacts. Use `git diff --name-only b0e93d57c264dab85a6605061d1c3e0ca73e0c06 HEAD` for the exact manifest, including generated files. The base-owned authorization manifest is separate release-control metadata.
 
 The baseline already contains source/build drift in several shipped runtime modules. The build refreshes the required shipping closure, including those modules; unrelated generated tests, source maps and 20 new internal declaration files outside the base-authorized PR closure are excluded from the delivery diff. No unrelated source implementation was rewritten to conceal that drift.
 
 ## Evidence classes and support matrix
 
-| Surface                            | Synthetic/local evidence                                                                                                                                       | Authenticated/hosted evidence                                   |
-| ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
-| Claude lead                        | Native executable launch/parser/plugin checks, isolated setup, shared core and workflow tests                                                                  | No authenticated lead workflow in this run.                     |
-| Codex lead                         | Native executable launch/parser/MCP/marketplace checks, isolated setup, shared core and workflow tests                                                         | No authenticated lead workflow in this run.                     |
-| Claude/Codex workers and reviewers | Real subprocess fixtures exercise existing routes under both selected hosts                                                                                    | No live provider invocation in this run.                        |
-| GLM / Flash                        | Exact `glm-5.3`, `glm-5.3-flash`, `glm-5.3-flash[1m]` retained on explicit GLM route under each host; installed wrapper inspected without printing credentials | Current account entitlement and live model behavior unverified. |
-| Windows                            | Local Node 24.18.1 / npm 11.16.0; supported Windows suites, host/workflow regressions and isolated package installation                                        | New hosted job not run.                                         |
-| Linux                              | Debian bookworm, Node 24.18.1, non-root Docker runner with bash/git/jq/tmux and native SQLite                                                                  | Local container evidence; hosted job not run.                   |
-| macOS                              | CI job configured                                                                                                                                              | Not run; POSIX/tmux release acceptance remains open.            |
+| Surface                            | Synthetic/local evidence                                                                               | Authenticated/hosted evidence                                                                               |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------- |
+| Claude lead                        | Native executable launch/parser/plugin checks, isolated setup, shared core and workflow tests          | Live call rejected; stored login requires renewal.                                                          |
+| Codex lead                         | Native executable launch/parser/MCP/marketplace checks, isolated setup, shared core and workflow tests | Authenticated native lead initialized and read shared workflow state; lease released.                       |
+| Claude/Codex workers and reviewers | Real subprocess fixtures exercise existing routes under both selected hosts                            | Live workflow provider verification in progress.                                                            |
+| GLM / Flash                        | Exact `glm-5.3`, `glm-5.3-flash`, `glm-5.3-flash[1m]` retained on explicit GLM route under each host   | Exact Flash call passed; regular GLM and Flash `[1m]` returned HTTP 403. Endpoint verification in progress. |
+| Windows                            | Local Node 24.18.1 / npm 11.16.0; supported suites and isolated package installation                   | Hosted validation in progress.                                                                              |
+| Linux                              | Debian bookworm, Node 24.18.1, non-root Docker with bash/git/jq/tmux and native SQLite                 | Hosted host matrix passed; full suite passed 14,792 tests with one inventory drift failure.                 |
+| macOS                              | Hosted run reproduced canonical temporary-directory fixture mismatches                                 | Fixture correction under verification.                                                                      |
 
-The installed CLIs checked were Claude Code 2.1.272 and Codex 0.155.0-alpha.9. Temporary HOME, USERPROFILE, CLAUDE_CONFIG_DIR and CODEX_HOME paths isolated the smoke checks. Native plugin discovery and schema validation are stronger than fixtures but do not establish hook trust, model authentication or a completed native conversation. No credential-unavailability claim is made: authenticated requests were not exercised.
+The installed CLIs checked were Claude Code 2.1.272 and Codex 0.155.0-alpha.9. Temporary HOME, USERPROFILE, CLAUDE_CONFIG_DIR and CODEX_HOME paths isolated the offline smoke checks. Native plugin discovery and schema validation are stronger than fixtures but do not establish hook trust, model authentication or a completed native conversation.
+
+## Authenticated execution
+
+The native Codex lead completed `omc launch exec` using the existing ChatGPT authentication store, `gpt-5.6-luna`, low reasoning, `--ephemeral`, `--ignore-user-config`, `--ignore-rules`, and OMC's `workspace-write` sandbox. In a disposable repository, the model read the installed project skill and issued three successful OMC commands: orchestrator status, workflow initialization, and workflow status. Persisted state confirmed a pending task with zero attempts; the lease was released and the `native-host-process-exited` checkpoint recorded. This proves authenticated native lead mutation of the shared core, but this particular smoke did not dispatch a worker. An initial disposable output-schema error was corrected before the successful call; it was not a workflow task retry.
+
+The installed GLM wrapper completed a bounded live call for exact model `glm-5.3-flash`, with the expected response and exit 0. Exact `glm-5.3` returned HTTP 403 / code 1313 on that wrapper's configured route; exact `glm-5.3-flash[1m]` also returned HTTP 403. Endpoint verification is in progress before attributing these responses to a particular provider account or policy. No fallback model was requested, and neither rejected variant is counted as live-compatible by this probe.
+
+Claude's initial stored-login status was positive, but bounded model calls failed before any tool execution. A subsequent status check reported logged out. The attempted native Claude lead created no workflow state. Completing its authenticated workflow evidence requires a renewed login; offline compatibility and synthetic workflow tests remain separate evidence.
 
 ## Verification results
 
@@ -85,10 +93,12 @@ The same Linux runner on unmodified `main` produced **752 passed files, 2 failed
 
 Separate agents reviewed code they did not author. Confirmed findings were corrected with regressions, including publication capability binding and exact bytes, protected-ref ancestry, setup ownership and TOML collisions, provider credential/worker authority separation, native launch argument escapes, stale lead revocation and bounded handoff persistence. Independent final reviews approved the core, repository/workspace isolation, publication/ref audit and owned host installation. Installed native help also exposed background/session-manager/desktop/queued transports; the launcher refuses those unmanaged routes.
 
+Hosted macOS exposed nine fixture mismatches because its temporary directory has both `/var` and physical `/private/var` spellings. Four fixture constructors now use physical temporary roots, matching the production contract. An independent Linux symlinked-`TMPDIR` reproduction failed before the correction and passed afterward: 215 affected tests plus the specific workflow publication case. The same six affected Windows suites passed 274 tests. Production canonical-path and publication authority checks were unchanged.
+
 ## Remaining release gates and operational limits
 
 - Authenticated Claude/Codex lead workflows and live provider/model availability require separate evidence. Hook delivery depends on native support and exact user trust; core gates remain authoritative without hooks.
-- Hosted Windows/Linux and macOS jobs were not run because nothing was pushed or dispatched.
+- Hosted Windows/Linux/macOS validation is running through [CI](https://github.com/kachiuli/oh-my-claudecode/actions/runs/35540860164); initial macOS temporary-path fixture mismatches and inventory drift after CI wiring are being corrected before release acceptance.
 - The repository's generated-artifact authorization gate requires a trusted owner authorization for changed `dist/` and `bridge/` artifacts. A candidate-branch edit cannot authorize itself. The release does not modify that policy or manufacture an authorization.
 - Operation locks fail closed and are never automatically reaped. Crash recovery may require verifying all owners/providers are dead, removing only the exact abandoned operation lock, and recording explicit recovery. See the [operator guide](WORKFLOW-V1.4.md).
 - Uninstall refuses the active or final host. It preserves modified user-owned assets and shared workflow state.
@@ -96,4 +106,4 @@ Separate agents reviewed code they did not author. Confirmed findings were corre
 - Native user permissions, readable roots and network configuration remain native configuration. The launcher refuses explicit bypass/remote redirection; it does not implement a second operating-system sandbox.
 - Arbitrary OMX state import, donor-only UI/HUD/wiki/notification systems, Rust harnesses and sparkshell are deferred. No partial migration or competing OMX writer is enabled. See the [capability matrix](design/workflow-v1.4-capabilities.md).
 
-**Ready for local engineering review, with the baseline test failures and validation limits disclosed. Not ready to merge or release.** No confirmed implementation review finding remains. Release acceptance still requires authenticated host/provider scenarios, hosted platform evidence (including macOS), and trusted generated-artifact authorization. Nothing has been pushed or published.
+**Release candidate under verification in PR #6.** Release acceptance still requires completion of hosted validation, trusted generated-artifact authorization, and resolution or explicit acceptance of the disclosed authenticated host/provider limits. No tag or release has been published.

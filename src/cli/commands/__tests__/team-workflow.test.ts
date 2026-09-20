@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync, symlinkSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync, readFileSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { issueWorkflowPublication, type IssuedWorkflowPublication } from '../../../team/workflow-publication.js';
@@ -24,8 +24,8 @@ describe('team workflow CLI', () => {
   let privateRoot: string;
   beforeEach(() => {
     vi.clearAllMocks();
-    root = mkdtempSync(join(tmpdir(), 'omc-workflow-cli-'));
-    privateRoot = mkdtempSync(join(tmpdir(), 'omc-workflow-private-'));
+    root = realpathSync(mkdtempSync(join(tmpdir(), 'omc-workflow-cli-')));
+    privateRoot = realpathSync(mkdtempSync(join(tmpdir(), 'omc-workflow-private-')));
     execFileSync('git', ['init'], { cwd: root, stdio: 'pipe' });
     api.readWorkflow.mockReturnValue({ schemaVersion: 1 });
     vi.spyOn(console, 'log').mockImplementation(() => undefined);
