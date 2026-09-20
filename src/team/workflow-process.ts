@@ -117,7 +117,7 @@ export async function runWorkflowProcess(input: {
       outputComplete: streamClose,
       termination,
       directChild: !started ? 'not-started' : parentExit ? 'exited' : 'unconfirmed',
-      descendants: termination === 'not-requested' ? 'not-started' : 'unverified',
+      descendants: !started ? 'not-started' : 'unverified',
     });
     const finish = (code: number | null) => {
       if (finished) return;
@@ -154,10 +154,10 @@ export async function runWorkflowProcess(input: {
       }, SETTLEMENT_GRACE_MS);
     };
     const terminate = () => {
-      // A stop is requested at most once, and a parent that already exited is never signalled:
-      // its PID may have been reused and its descendants cannot be verified from here.
+      // A stop is requested at most once. Null mode never signals an exited parent;
+      // finite mode retains its existing inherited-group/tree termination path.
       if (termination !== 'not-requested') return;
-      if (parentExit) { scheduleReap(); return; }
+      if (noWall && parentExit) { scheduleReap(); return; }
       termination = 'attempted';
       if (child.pid) {
         try {

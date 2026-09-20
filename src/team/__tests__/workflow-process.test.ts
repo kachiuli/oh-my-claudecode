@@ -225,7 +225,7 @@ describe('explicit no-wall process execution', () => {
     const unbounded = await runUnbounded('setTimeout(() => process.stdout.write("completed"), 1200)', 'unbounded');
     expect(unbounded.passed).toBe(true);
     expect(unbounded.settlement).toEqual({ parentExitCode: 0, parentExitSignal: null, outputComplete: true,
-      termination: 'not-requested', directChild: 'exited', descendants: 'not-started' });
+      termination: 'not-requested', directChild: 'exited', descendants: 'unverified' });
     expect(readFileSync(unbounded.artifacts[0]!.path, 'utf8')).toBe('completed');
   });
 
@@ -248,7 +248,7 @@ describe('explicit no-wall process execution', () => {
     `, 'late');
     expect(result.passed).toBe(true);
     expect(result.settlement).toEqual({ parentExitCode: 0, parentExitSignal: null, outputComplete: true,
-      termination: 'not-requested', directChild: 'exited', descendants: 'not-started' });
+      termination: 'not-requested', directChild: 'exited', descendants: 'unverified' });
     expect(readFileSync(result.artifacts[0]!.path, 'utf8')).toBe('late-output');
   });
 
@@ -264,9 +264,23 @@ describe('explicit no-wall process execution', () => {
     expect(result.error).toBe('output_incomplete');
     // The exited parent already reported success; the abandoned pipes are what make this unsuccessful.
     expect(result.settlement).toEqual({ parentExitCode: 0, parentExitSignal: null, outputComplete: false,
-      termination: 'not-requested', directChild: 'exited', descendants: 'not-started' });
+      termination: 'not-requested', directChild: 'exited', descendants: 'unverified' });
     expect(result.artifacts).toHaveLength(2);
     expect(Date.now() - startedAt).toBeLessThan(30_000);
+  });
+
+  it.skipIf(process.platform === 'win32')('retains finite timeout termination of the inherited group after parent exit', async () => {
+    const marker = join(cwd, 'descendant-survived');
+    const descendant = `setTimeout(() => require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'survived'), 1500)`;
+    const code = `const {spawn} = require('node:child_process');
+      spawn(process.execPath, ['-e', ${JSON.stringify(descendant)}], {stdio: ['ignore', 'inherit', 'inherit']});
+      setTimeout(() => process.exit(0), 50);`;
+    const result = await runWorkflowProcess({ command: process.execPath, args: ['-e', code], cwd,
+      timeoutMs: 400, artifactPrefix: join(cwd, 'finite-parent-exit') });
+    expect(result).toMatchObject({ passed: false, error: 'timeout' });
+    expect(result.settlement).toBeUndefined();
+    // The descendant would have written this marker before its natural stream close.
+    expect(existsSync(marker)).toBe(false);
   });
 
   it('settles an explicit interruption once with bounded no-wall settlement metadata', async () => {
