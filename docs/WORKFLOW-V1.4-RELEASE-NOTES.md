@@ -2,6 +2,19 @@
 
 Workflow V1.4 adds repository-scoped Claude Code and Codex lead hosts over the existing OMC workflow core. It is implemented from the fork's `main` baseline `b0e93d57c264dab85a6605061d1c3e0ca73e0c06`. The package version remains 5.4.0.
 
+## Install this custom release
+
+Use the archive attached to the `workflow-v1.4` GitHub release:
+
+```sh
+npm install -g https://github.com/kachiuli/oh-my-claudecode/releases/download/workflow-v1.4/oh-my-claude-sisyphus-workflow-v1.4.tgz
+omc setup --host both --scope project
+omc orchestrator use codex
+omc launch
+```
+
+The archive keeps package version 5.4.0 and records the tagged source commit in `gitHead`. Its accompanying release evidence records the SHA-256 checksum and file manifest. This custom release does not replace the upstream npm registry package.
+
 ## Delivered behavior
 
 - Project setup, refresh, doctor and ownership-checked uninstall for Claude and Codex.
@@ -29,7 +42,9 @@ Workflow V1.4 adds repository-scoped Claude Code and Codex lead hosts over the e
 
 See the [verification record](WORKFLOW-V1.4-VERIFICATION.md) for exact local results, platform limits and release gates.
 
-The development environment used Codex CLI `0.155.0-alpha.9` and Claude Code `2.1.272` on Windows. Local parser/help/MCP and generated-asset smoke checks do not prove a live authenticated model call. Codex plugin installation/refresh, exact hook trust, hosted-tool hook delivery, provider credentials and model availability require separate authenticated evidence. Linux CI and macOS POSIX/tmux results must be reported from jobs that actually ran; a configured workflow is not a pass.
+Hosted Windows, Linux and macOS host tests and clean package lifecycle checks passed. The full supported Linux suite passed 14,793 tests with zero failures; four performance checks also passed. The development environment used Codex CLI `0.155.0-alpha.9` and Claude Code `2.1.272` on Windows.
+
+Authenticated native Codex initialized and read shared workflow state, dispatched a GLM Flash worker, released its lease and then switched Codex → Claude → Codex while preserving the failed workflow's bytes and history. An earlier direct `glm-5.3-flash` probe succeeded through the configured sanlangcode gateway, but the real worker request was refused for insufficient seat quota. Regular `glm-5.3` and Flash `[1m]` probes also returned HTTP 403. Claude's live workflow validation was deferred because credits were exhausted. No model fallback or task retry was used. Successful completion of the full paid provider/reviewer matrix remains unverified; credential-free subprocess regressions cover its implementation and the fixes for issues #4 and #5. No provider credentials were uploaded to CI.
 
 Codex reports the `hooks` and `plugins` features as stable in the checked CLI. `plugin_hooks` is removed in that build, so this release uses the current plugin manifest/hook surface and does not infer support from the removed feature name. Codex project configuration loads only for a trusted project. Plugin-bundled hooks remain untrusted until the user accepts the exact definition, and `SessionEnd` is advisory. Hosted tools can bypass local tool hooks.
 
