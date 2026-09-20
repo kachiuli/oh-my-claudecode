@@ -1,4 +1,4 @@
-import { linkSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, linkSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -204,4 +204,88 @@ describe('bounded one-shot workflow process', () => {
       expect(readFileSync(result.artifacts[0]!.path, 'utf8')).toContain('[REDACTED]');
     },
   );
+});
+
+describe('explicit no-wall process execution', () => {
+  let cwd: string;
+  beforeEach(() => { cwd = mkdtempSync(join(tmpdir(), 'omc-workflow-no-wall-')); });
+  // A helper that deliberately outlives the controller can still hold the directory as its cwd on Windows.
+  afterEach(() => rmSync(cwd, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
+  function runUnbounded(code: string, prefix: string) {
+    return runWorkflowProcess({ command: process.execPath, args: ['-e', code], cwd, timeoutMs: null,
+      artifactPrefix: join(cwd, prefix) });
+  }
+
+  it('leaves an explicitly unbounded process running past the finite deadline that still ends a bounded one', async () => {
+    const bounded = await runWorkflowProcess({ command: process.execPath, args: ['-e', 'setInterval(()=>{},1000)'], cwd,
+      timeoutMs: 400, artifactPrefix: join(cwd, 'bounded') });
+    expect(bounded).toMatchObject({ passed: false, error: 'timeout' });
+    // Bounded results keep their existing shape: no settlement metadata is invented for them.
+    expect(bounded.settlement).toBeUndefined();
+    const unbounded = await runUnbounded('setTimeout(() => process.stdout.write("completed"), 1200)', 'unbounded');
+    expect(unbounded.passed).toBe(true);
+    expect(unbounded.settlement).toEqual({ parentExitCode: 0, parentExitSignal: null, outputComplete: true,
+      termination: 'not-requested', directChild: 'exited', descendants: 'not-started' });
+    expect(readFileSync(unbounded.artifacts[0]!.path, 'utf8')).toBe('completed');
+  });
+
+  it.each([undefined, 0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1, 2147483648])(
+    'refuses the invalid lifetime bound %s before any artifact or child exists', async timeoutMs => {
+      const prefix = join(cwd, 'invalid');
+      await expect(runWorkflowProcess({ command: process.execPath, args: ['-e', 'process.stdout.write("spawned")'], cwd,
+        timeoutMs: timeoutMs as number, artifactPrefix: prefix })).rejects.toThrow('workflow_invalid_timeout');
+      expect(existsSync(`${prefix}.stdout.log`)).toBe(false);
+      expect(existsSync(`${prefix}.stderr.log`)).toBe(false);
+    },
+  );
+
+  it('keeps late inherited output that arrives after the parent exits inside the settlement grace', async () => {
+    const result = await runUnbounded(`
+      const { spawn } = require('node:child_process');
+      spawn(process.execPath, ['-e', 'setTimeout(() => process.stdout.write("late-output"), 400); setTimeout(() => process.exit(0), 600)'],
+        { stdio: ['ignore', 'inherit', 'inherit'], detached: true, windowsHide: true });
+      setTimeout(() => process.exit(0), 50);
+    `, 'late');
+    expect(result.passed).toBe(true);
+    expect(result.settlement).toEqual({ parentExitCode: 0, parentExitSignal: null, outputComplete: true,
+      termination: 'not-requested', directChild: 'exited', descendants: 'not-started' });
+    expect(readFileSync(result.artifacts[0]!.path, 'utf8')).toBe('late-output');
+  });
+
+  it('settles output_incomplete without a lifetime kill when inherited pipes outlive the grace', async () => {
+    const startedAt = Date.now();
+    const result = await runUnbounded(`
+      const { spawn } = require('node:child_process');
+      spawn(process.execPath, ['-e', 'setTimeout(() => {}, 3000)'],
+        { stdio: ['ignore', 'inherit', 'inherit'], detached: true, windowsHide: true, cwd: require('node:os').tmpdir() });
+      setTimeout(() => process.exit(0), 50);
+    `, 'incomplete');
+    expect(result.passed).toBe(false);
+    expect(result.error).toBe('output_incomplete');
+    // The exited parent already reported success; the abandoned pipes are what make this unsuccessful.
+    expect(result.settlement).toEqual({ parentExitCode: 0, parentExitSignal: null, outputComplete: false,
+      termination: 'not-requested', directChild: 'exited', descendants: 'not-started' });
+    expect(result.artifacts).toHaveLength(2);
+    expect(Date.now() - startedAt).toBeLessThan(30_000);
+  });
+
+  it('settles an explicit interruption once with bounded no-wall settlement metadata', async () => {
+    let started!: () => void;
+    const ready = new Promise<void>(resolve => { started = resolve; });
+    const running = runWorkflowProcess({ command: process.execPath, args: ['-e', 'process.stdout.write("ready"); setInterval(()=>{},1000)'],
+      cwd, timeoutMs: null, artifactPrefix: join(cwd, 'interrupted'), onStdout: started });
+    await ready;
+    process.emit('SIGTERM');
+    const result = await running;
+    expect(result).toMatchObject({ passed: false, error: 'interrupted' });
+    expect(readFileSync(result.artifacts[0]!.path, 'utf8')).toBe('ready');
+    expect(Object.keys(result.settlement!).sort())
+      .toEqual(['descendants', 'directChild', 'outputComplete', 'parentExitCode', 'parentExitSignal', 'termination']);
+    expect(['attempted', 'failed']).toContain(result.settlement!.termination);
+    expect(result.settlement!.descendants).toBe('unverified');
+    expect(['exited', 'unconfirmed']).toContain(result.settlement!.directChild);
+    // Settlement metadata carries no command text, output or provider content.
+    expect(JSON.stringify(result.settlement)).not.toContain('ready');
+    expect(JSON.stringify(result.settlement)).not.toContain('interrupted');
+  });
 });
