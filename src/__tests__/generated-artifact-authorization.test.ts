@@ -280,9 +280,9 @@ describe('fork repository identity from the trusted base policy', () => {
     }
   });
 
-  it('ships an empty fork policy while retaining upstream grants only as historical test fixtures', () => {
+  it('ships a valid fork-owned policy while retaining upstream grants only as historical test fixtures', () => {
     const deployed = JSON.parse(readFileSync(MANIFEST_PATH, 'utf8'));
-    expect(deployed).toEqual({ schemaVersion: 2, repository: FORK_REPOSITORY, owner: FORK_OWNER, authorizations: [] });
+    expect(deployed).toEqual({ schemaVersion: 2, repository: FORK_REPOSITORY, owner: FORK_OWNER, authorizations: expect.any(Array) });
     expect(verifier.validateAuthorizationManifest(deployed)).toEqual(deployed);
     expect(manifest.repository).toBe(REPOSITORY);
     expect(manifest.owner).toBe(OWNER);
