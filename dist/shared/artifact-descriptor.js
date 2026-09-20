@@ -26,7 +26,7 @@ export function createArtifactDescriptorFromPath(path, options) {
 }
 export function writeTextArtifact(options) {
     mkdirSync(dirname(options.path), { recursive: true });
-    writeFileSync(options.path, options.content, { encoding: 'utf-8', mode: 0o600 });
+    writeFileSync(options.path, options.content, { encoding: 'utf-8', mode: 0o600, flag: options.exclusive ? 'wx' : 'w' });
     return createArtifactDescriptorFromPath(options.path, options);
 }
 export function createArtifactHandoff(options) {

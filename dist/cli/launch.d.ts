@@ -164,5 +164,10 @@ export declare function postLaunch(_cwd: string, _sessionId: string): Promise<vo
  * from `args` — it must still forward to Claude Code's plugin loader untouched.
  */
 export declare function parsePluginDirArg(args: string[]): string | null;
+/** Consume wrapper notification options once for both legacy and project host launches. */
+export declare function extractOmcLaunchOptions(args: string[]): {
+    args: string[];
+    environment: Record<string, string>;
+};
 export declare function launchCommand(args: string[]): Promise<void>;
 //# sourceMappingURL=launch.d.ts.map

@@ -1007,6 +1007,27 @@ export function parsePluginDirArg(args) {
     }
     return null;
 }
+/** Consume wrapper notification options once for both legacy and project host launches. */
+export function extractOmcLaunchOptions(args) {
+    const notify = extractNotifyFlag(args);
+    const openclaw = extractOpenClawFlag(notify.remainingArgs);
+    const telegram = extractTelegramFlag(openclaw.remainingArgs);
+    const discord = extractDiscordFlag(telegram.remainingArgs);
+    const slack = extractSlackFlag(discord.remainingArgs);
+    const webhook = extractWebhookFlag(slack.remainingArgs);
+    const environment = {};
+    if (!notify.notifyEnabled)
+        environment.OMC_NOTIFY = '0';
+    const toggles = [
+        ['OMC_OPENCLAW', openclaw.openclawEnabled], ['OMC_TELEGRAM', telegram.telegramEnabled],
+        ['OMC_DISCORD', discord.discordEnabled], ['OMC_SLACK', slack.slackEnabled], ['OMC_WEBHOOK', webhook.webhookEnabled],
+    ];
+    for (const [key, enabled] of toggles) {
+        if (enabled !== undefined)
+            environment[key] = enabled ? '1' : '0';
+    }
+    return { args: webhook.remainingArgs, environment };
+}
 export async function launchCommand(args) {
     // Capture --plugin-dir <path> so the HUD wrapper (and any other env-aware
     // child of Claude Code) can resolve the active plugin root via OMC_PLUGIN_ROOT.
@@ -1015,51 +1036,8 @@ export async function launchCommand(args) {
     if (pluginDir) {
         process.env[OMC_PLUGIN_ROOT_ENV] = pluginDir;
     }
-    // Extract OMC-specific --notify flag before passing remaining args to Claude CLI
-    const { notifyEnabled, remainingArgs } = extractNotifyFlag(args);
-    if (!notifyEnabled) {
-        process.env.OMC_NOTIFY = '0';
-    }
-    // Extract OMC-specific --openclaw flag (presence-based, no value consumption)
-    const { openclawEnabled, remainingArgs: argsAfterOpenclaw } = extractOpenClawFlag(remainingArgs);
-    if (openclawEnabled === true) {
-        process.env.OMC_OPENCLAW = '1';
-    }
-    else if (openclawEnabled === false) {
-        process.env.OMC_OPENCLAW = '0';
-    }
-    // Extract OMC-specific --telegram flag (presence-based)
-    const { telegramEnabled, remainingArgs: argsAfterTelegram } = extractTelegramFlag(argsAfterOpenclaw);
-    if (telegramEnabled === true) {
-        process.env.OMC_TELEGRAM = '1';
-    }
-    else if (telegramEnabled === false) {
-        process.env.OMC_TELEGRAM = '0';
-    }
-    // Extract OMC-specific --discord flag (presence-based)
-    const { discordEnabled, remainingArgs: argsAfterDiscord } = extractDiscordFlag(argsAfterTelegram);
-    if (discordEnabled === true) {
-        process.env.OMC_DISCORD = '1';
-    }
-    else if (discordEnabled === false) {
-        process.env.OMC_DISCORD = '0';
-    }
-    // Extract OMC-specific --slack flag (presence-based)
-    const { slackEnabled, remainingArgs: argsAfterSlack } = extractSlackFlag(argsAfterDiscord);
-    if (slackEnabled === true) {
-        process.env.OMC_SLACK = '1';
-    }
-    else if (slackEnabled === false) {
-        process.env.OMC_SLACK = '0';
-    }
-    // Extract OMC-specific --webhook flag (presence-based)
-    const { webhookEnabled, remainingArgs: argsAfterWebhook } = extractWebhookFlag(argsAfterSlack);
-    if (webhookEnabled === true) {
-        process.env.OMC_WEBHOOK = '1';
-    }
-    else if (webhookEnabled === false) {
-        process.env.OMC_WEBHOOK = '0';
-    }
+    const options = extractOmcLaunchOptions(args);
+    Object.assign(process.env, options.environment);
     const cwd = process.cwd();
     // Pre-flight: check for nested session
     if (process.env.CLAUDECODE) {
@@ -1079,7 +1057,7 @@ export async function launchCommand(args) {
     else {
         process.env.CLAUDE_CONFIG_DIR = launchConfigDir;
     }
-    const normalizedArgs = normalizeClaudeLaunchArgs(argsAfterWebhook);
+    const normalizedArgs = normalizeClaudeLaunchArgs(options.args);
     const sessionId = `omc-${Date.now()}-${crypto.randomUUID().replace(/-/g, '').slice(0, 8)}`;
     // Phase 1: preLaunch
     try {

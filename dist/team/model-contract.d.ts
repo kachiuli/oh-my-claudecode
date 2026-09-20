@@ -1,6 +1,6 @@
 import type { WorkerLaunchDescriptor } from './types.js';
 import type { ExternalModelsDefaults } from '../shared/types.js';
-export type CliAgentType = 'claude' | 'codex' | 'gemini' | 'cursor' | 'grok' | 'antigravity';
+export type CliAgentType = 'claude' | 'codex' | 'gemini' | 'cursor' | 'grok' | 'antigravity' | 'glm';
 export interface CliAgentContract {
     agentType: CliAgentType;
     binary: string;

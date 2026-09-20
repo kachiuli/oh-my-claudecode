@@ -49,7 +49,7 @@ function substitutedState() {
 }
 
 describe('versioned workflow contracts', () => {
-  it.each(['claude-fable-5-1[1m]', 'opus[1m]', 'glm-5.3', 'gpt-6-astra'])('preserves the selected model %s without rewriting its context alias', model => {
+  it.each(['claude-fable-5-1[1m]', 'opus[1m]', 'glm-5.3', 'glm-5.3-flash', 'glm-5.3-flash[1m]', 'gpt-6-astra'])('preserves the selected model %s without rewriting its context alias', model => {
     expect(parseWorkflowBinding({ ...binding(), model }).model).toBe(model);
   });
   it.each(['opus[1m]\n', 'opus[[1m]]', 'opus[]', 'opus[1m];run', 'opus token=example'])('rejects a malformed model literal %s', model => {
@@ -162,6 +162,35 @@ describe('versioned workflow contracts', () => {
     expect(() => validateWorkflowStateTransition(reserved, completedState())).not.toThrow();
     const changed = completedState(); changed.tasks[0]!.invocations[0]!.mode = 'resume';
     expect(() => validateWorkflowStateTransition(reserved, changed)).toThrow(/workflow_/);
+  });
+  it('retains host history through selection changes and refuses relabelling reserved or legacy attempts', () => {
+    for (const schemaVersion of [1, 2]) {
+      const raw = { ...completedState(), schemaVersion, profile: schemaVersion === 1 ? 'claude-glm-codex' : 'role-substitution' };
+      Object.assign(raw.tasks[0]!.invocations[0]!, { orchestrationHost: 'claude', error: 'workflow_invocation_incomplete', outcome: 'failed' });
+      Object.assign(raw.reviewAttempts[0]!, { orchestrationHost: 'codex' });
+      const bytes = JSON.stringify(raw);
+      expect(parseWorkflowState(raw)).toEqual(raw);
+      expect(JSON.stringify(raw)).toBe(bytes);
+      expect(() => validateWorkflowStateTransition(raw, structuredClone(raw))).not.toThrow();
+      for (const field of ['worker', 'review']) {
+        const changed = structuredClone(raw);
+        Object.assign(field === 'worker' ? changed.tasks[0]!.invocations[0]! : changed.reviewAttempts[0]!, { orchestrationHost: field === 'worker' ? 'codex' : 'claude' });
+        expect(() => validateWorkflowStateTransition(raw, changed)).toThrow('workflow_orchestration_history_rewritten');
+      }
+    }
+    const legacy = completedState();
+    const backfilled = structuredClone(legacy);
+    Object.assign(backfilled.tasks[0]!.invocations[0]!, { orchestrationHost: 'claude' });
+    expect(() => validateWorkflowStateTransition(legacy, backfilled)).toThrow('workflow_orchestration_history_rewritten');
+  });
+  it('rejects unknown host provenance without deriving the provider from a model name', () => {
+    const raw = completedState();
+    Object.assign(raw.tasks[0]!.invocations[0]!, { orchestrationHost: 'glm' });
+    expect(() => parseWorkflowState(raw)).toThrow('workflow_invalid_orchestration_host');
+    const selected = parseWorkflowBinding({ ...binding('implementer', 'glm'), model: 'glm-5.3-flash[1m]' });
+    expect(selected.providerRoute).toBe('glm');
+    expect(selected.model).toBe('glm-5.3-flash[1m]');
+    expect(parseWorkflowBinding({ ...binding('implementer', 'claude'), model: 'glm-5.3-flash[1m]' }).providerRoute).toBe('claude');
   });
   it('keeps the optional provider policy absent when omitted and unchanged when present in both schemas', () => {
     for (const policy of [undefined, 'supervised'] as const) {

@@ -1,0 +1,131 @@
+# Workflow V1.4 repository hosts
+
+Workflow V1.4 lets one repository use Claude Code or Codex as the interactive OMC lead. The selected host is independent of workflow provider bindings: changing the lead does not change which provider implements or reviews a task. The npm package version remains 5.4.0; `workflow-v1.4` is the workflow release label.
+
+## Install both project hosts
+
+Run setup from the repository root. Project setup does not modify the user's global Claude, Codex, Anthropic, OpenAI, or Z.AI configuration.
+
+```sh
+omc setup --host both --scope project --dry-run
+omc setup --host both --scope project
+omc doctor hosts
+omc orchestrator status
+```
+
+Setup is idempotent. Refresh managed projections after updating the installed OMC package:
+
+```sh
+omc update --host both --scope project
+```
+
+Setup refuses unowned generated-file collisions, symbolic links, hard-linked targets, malformed receipts, and modified managed blocks. A failed setup or configuration update rolls back every asset mutation made by that operation. Successful changes retain point-in-time backups under `.omc/hosts/backups/`.
+
+Setup adds an owned `.gitignore` block for `.omc/state/` and `.omc/hosts/`. In a repository without broader ignore rules, `.omc/orchestrator.json` remains visible so the supported-host declaration can be committed. Existing user ignore rules for other paths keep their original meaning. If the repository already ignores all of `.omc`, deliberately stage the shared declaration with `git add -f .omc/orchestrator.json`.
+
+## Installed surfaces
+
+| Path                                                                                      | Purpose and ownership                                                                                                                                 |
+| ----------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `.omc/orchestrator.json`                                                                  | Repository-local configuration: supported hosts and optional default.                                                                                 |
+| `.gitignore`                                                                              | Marker-bounded rules that ignore local `.omc/state/` and `.omc/hosts/` data. Existing rules are retained.                                             |
+| Effective OMC state root, `state/orchestrator/repositories/<repository-key>/runtime.json` | Ignored selection, lease and checkpoint for one physical Git checkout. `OMC_STATE_DIR` and workspace-root resolution can relocate this runtime state. |
+| Effective OMC state root, `state/orchestrator/operation.lock`                             | Operation gate shared by repositories that use the same workspace state root.                                                                         |
+| `.omc/hosts/receipt.json`                                                                 | Hashes and exact managed content used by update, doctor and uninstall.                                                                                |
+| `.omc/hosts/claude/plugin/`                                                               | Project Claude plugin with OMC skill, role agents, MCP pointer and lifecycle hooks.                                                                   |
+| `.omc/hosts/codex/plugin/`                                                                | Project Codex compatibility plugin with OMC skill and lifecycle hooks.                                                                                |
+| `.agents/plugins/marketplace.json`                                                        | Repository marketplace entry for the Codex plugin. Existing marketplace entries and the marketplace name are retained.                                |
+| `CLAUDE.md`, `AGENTS.md`                                                                  | Marker-bounded projections of the same shared guidance source. Surrounding user text is retained.                                                     |
+| `.codex/config.toml`                                                                      | Marker-bounded OMC MCP server and repository plugin enablement. Existing settings are retained.                                                       |
+| `.codex/hooks.json`                                                                       | Exact managed native lifecycle entries merged with existing user hooks.                                                                               |
+| `.agents/skills/omc-orchestration/`                                                       | Codex skill fallback when the repository plugin has not yet been refreshed or installed.                                                              |
+| `.codex/agents/`                                                                          | Codex-native projections of the installed OMC role catalog. Model settings are not pinned.                                                            |
+
+A parent `.omc-workspace` marker relocates runtime and session files to the shared workspace state root. Configuration, managed assets and native launch cwd remain in the physical Git checkout. Each checkout uses a stable key derived from its canonical root, so selecting a host or recording a native session in one sibling repository does not change another sibling's selection. The shared operation lock still serializes mutations of shared workflow state.
+
+The Claude launcher passes the managed plugin with `--plugin-dir`. Codex discovers the repository marketplace and project enablement in a trusted repository. Codex may require a restart or marketplace refresh before a changed local plugin copy is loaded. Native and plugin hooks require the user's exact hook-definition trust. The OMC operation, lease, publication and protected-ref gates remain authoritative when hooks are unavailable, disabled, untrusted, or bypassed by a hosted tool.
+
+## Select and launch
+
+```sh
+omc orchestrator use codex
+omc launch
+
+omc orchestrator use claude
+omc launch
+```
+
+`omc launch` starts the selected native executable directly with argument arrays and inherited stdio. It does not invoke a shell. The existing OMC notification options (`--notify`, `--openclaw`, `--telegram`, `--discord`, `--slack`, and `--webhook`) remain available and are translated before the native host starts.
+
+For Codex, OMC fixes the working directory at the repository root and defaults to `workspace-write`; an explicit `read-only` sandbox remains read-only. Explicit workspace expansion, remote-host redirection, sandbox bypass flags, sandbox-changing `-c` overrides, and conflicting `--full-auto` plus `read-only` are refused. Existing native user/profile configuration still applies, including its permission, readable-root, and network settings. Core workflow gates separately enforce OMC task write scopes, leases, result publication, and protected refs.
+
+Claude keeps the user's model and permission settings while adding the managed project plugin. Adopted project hosts reject `--madmax`, `--yolo`, and native permission-bypass aliases. Alternate remote, cloud, attach, teleport, safe, and bare modes are unsupported because they do not preserve the registered local lead session and repository lease. The only supported continuation form is `omc launch --resume <native-session-id>`.
+
+To resume, use only a native session that OMC recorded for the same host and selection:
+
+```sh
+omc launch --resume <native-session-id>
+```
+
+Host sessions are not provider worker sessions. A Claude session cannot resume as Codex, a session recorded in one repository cannot resume another repository, and a host switch starts a fresh native conversation while keeping the OMC workflow checkpoint.
+
+## Switch safely
+
+After the old host exits and the repository is quiescent, select the other host with `omc orchestrator use`. Selection fails while a provider process, active attempt, operation lock, or host lease remains.
+
+From the active host session, an explicit handoff records a safe boundary and revokes that session before selecting the destination:
+
+```sh
+omc orchestrator handoff codex --checkpoint completed-stage --workflow <name> --reference <evidence>
+```
+
+Accepted checkpoint kinds are `before-work`, `completed-stage`, `paused`, and `checkpointed`. A stale or cross-host native session cannot mutate the controller after handoff.
+
+If a lead process crashes, first verify that the recorded owner PID, every related provider process, and the workflow are quiescent. Then recover the abandoned lease:
+
+```sh
+omc orchestrator recover --checkpoint paused --workflow <name> --reference <evidence>
+```
+
+The operation lock intentionally does not auto-expire. A crash while holding it prevents `recover` from acquiring the gate. Only after verifying that the recorded PID and all provider processes are dead and no workflow operation is running, remove the exact `operation.lock` under the effective `state/orchestrator/` directory, then run `omc orchestrator recover`. The default location is `.omc/state/orchestrator/operation.lock`; state-root configuration can relocate it. Do not remove other state files or a directory tree.
+
+## Provider and model independence
+
+Host selection never infers a provider from a model name. Existing explicit workflow bindings remain authoritative. The Z.AI identifiers supported by this release are preserved exactly:
+
+- `glm-5.3`
+- `glm-5.3-flash`
+- `glm-5.3-flash[1m]`
+
+OMC does not normalize suffixes or route by model-name substring. OpenAI, Anthropic and Z.AI authentication stays in each provider's private configuration. Setup and diagnostics do not read or print credential values.
+
+## Uninstall and migration
+
+Select or install another host before removing an inactive host:
+
+```sh
+omc orchestrator use codex
+omc uninstall --host claude --scope project
+```
+
+Uninstall removes only content that still matches the receipt. It preserves modified managed files, user text, user hooks, other marketplace entries, the other host and shared workflow state. Removing the active host or the final supported host fails closed.
+
+Existing OMC workflow state needs no migration. Reads do not backfill historical host fields, and project adoption does not rewrite existing workflows. `.omx` belongs to a different product schema: Workflow V1.4 does not import arbitrary OMX state and refuses simultaneous live OMX/OMC ownership. Finish an existing OMX workflow in OMX, then initialize or resume the OMC workflow separately.
+
+## Diagnose lifecycle support
+
+`omc doctor hosts` verifies the receipt, managed content, native CLI discovery and reported Codex hook capability. Its lifecycle result describes support detected from the local CLI, not proof that a user trusted a hook, installed a marketplace copy, authenticated a provider, or completed a live model call. A healthy report therefore complements, but does not replace, authenticated release evidence.
+
+Primary references:
+
+- [Codex advanced configuration](https://learn.chatgpt.com/docs/config-file/config-advanced)
+- [Codex hooks](https://learn.chatgpt.com/docs/hooks)
+- [Codex plugin packaging and repository marketplaces](https://developers.openai.com/plugins/build/plugins)
+- [Codex skills](https://learn.chatgpt.com/docs/build-skills)
+- [Codex AGENTS.md](https://learn.chatgpt.com/docs/agent-configuration/agents-md)
+- [Codex subagents](https://learn.chatgpt.com/docs/agent-configuration/subagents)
+- [Claude Code plugins](https://code.claude.com/docs/en/plugins)
+- [Claude Code hooks](https://code.claude.com/docs/en/hooks)
+- [Z.AI GLM-5.3](https://docs.z.ai/guides/llm/glm-5.3)
+- [Z.AI GLM-5.3 Flash](https://docs.z.ai/guides/vlm/glm-5.3-flash)
+- [Z.AI latest-model aliases](https://docs.z.ai/devpack/latest-model)

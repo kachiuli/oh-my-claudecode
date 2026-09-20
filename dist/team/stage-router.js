@@ -110,6 +110,8 @@ function resolveExternalModel(provider, raw, cfg) {
     }
     const defaults = cfg.externalModels?.defaults;
     const model = (value) => typeof value === 'string' && value.trim() ? value.trim() : undefined;
+    if (provider === 'glm')
+        return model(defaults?.glmModel) ?? '';
     if (provider === 'codex') {
         return model(defaults?.codexModel) ?? BUILTIN_EXTERNAL_MODEL_DEFAULTS.codexModel;
     }

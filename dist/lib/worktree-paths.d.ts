@@ -103,6 +103,7 @@ export declare function withWorktreePathRenderScope<T>(fn: () => T): T;
 export type GitShowToplevelProbe = (cwd: string) => string | Buffer;
 export declare function setGitShowToplevelProbeForTests(probe?: GitShowToplevelProbe): void;
 export declare function findGitMetadataDir(start: string): string | null;
+export declare function expandPathForCompare(path: string): string | null;
 export declare function probeGitTopLevel(cwd: string): GitTopLevelProbe;
 /**
  * Resolve a literal Git top-level with positive, metadata-validated caching.
@@ -175,6 +176,12 @@ export declare function getProjectIdentifier(worktreeRoot?: string): string;
  * @returns Absolute path to the omc root directory
  */
 export declare function getOmcRoot(worktreeRoot?: string): string;
+/**
+ * Resolve project-owned installation/configuration files under a resolved project root.
+ * These assets stay with the checkout even when OMC_STATE_DIR relocates runtime state.
+ * Session and workflow state must use the existing state resolvers instead.
+ */
+export declare function resolveProjectOmcPath(relativePath: string, projectRoot: string): string;
 /**
  * Resolve a relative path under .omc/ to an absolute path.
  * Validates the path is within the omc boundary.

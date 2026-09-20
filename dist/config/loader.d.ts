@@ -23,7 +23,7 @@ export declare const DEFAULT_CONFIG: PluginConfig;
 /**
  * Configuration file locations
  */
-export declare function getConfigPaths(): {
+export declare function getConfigPaths(cwd?: string): {
     user: string;
     project: string;
 };
@@ -43,7 +43,7 @@ export declare function validateTeamConfig(config: PluginConfig): void;
 /** Validate the closed v1 workflow block without changing legacy config validation. */
 export declare function validateAutopilotWorkflows(config: unknown, source: string): void;
 export declare function validateAutopilotConfig(config: PluginConfig): void;
-export declare function loadConfig(): PluginConfig;
+export declare function loadConfig(cwd?: string): PluginConfig;
 export declare function compactOmcStartupGuidance(content: string): string;
 /**
  * Find and load AGENTS.md or CLAUDE.md files for context injection

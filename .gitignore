@@ -3,6 +3,7 @@ node_modules/
 .DS_Store
 !.omc/
 .omc/*
+!.omc/orchestrator.json
 !.omc/skills/
 !.omc/skills/**
 .idea/

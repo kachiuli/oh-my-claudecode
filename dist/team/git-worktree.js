@@ -11,14 +11,14 @@
  * dirty team worktrees are preserved, and cleanup never force-removes dirty
  * worker changes.
  */
-import { existsSync, realpathSync, readFileSync, readdirSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { atomicWriteJson, ensureDirWithMode, validateResolvedPath } from './fs-utils.js';
 import { validateWorktreeRemovalTarget } from '../lib/worktree-cleanup-safety.js';
 import { sanitizeName } from './tmux-session.js';
 import { withFileLockSync } from '../lib/file-lock.js';
-import { getOmcRoot } from '../lib/worktree-paths.js';
+import { expandPathForCompare, getOmcRoot } from '../lib/worktree-paths.js';
 /** Get canonical native team worktree path for a worker. */
 export function getWorktreePath(repoRoot, teamName, workerName) {
     return join(getOmcRoot(repoRoot), 'team', sanitizeName(teamName), 'worktrees', sanitizeName(workerName));
@@ -52,12 +52,7 @@ function assertCleanLeaderWorktree(repoRoot) {
     }
 }
 function canonicalPathForComparison(path) {
-    try {
-        return realpathSync(path);
-    }
-    catch {
-        return resolve(path);
-    }
+    return expandPathForCompare(path) ?? resolve(path);
 }
 function getRegisteredWorktreeBranch(repoRoot, wtPath) {
     try {

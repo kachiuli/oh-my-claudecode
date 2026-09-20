@@ -89,7 +89,9 @@ describe('balanced workflow with real repositories and provider processes', () =
     expect(worker!.args).not.toContain('--resume');
     expect(reviewer!.args).not.toContain('--json');
     expect(reviewer!.args).toContain('read-only');
-    expect(readWorkflow(fixture.cwd, name).tasks[0]!.invocations).toBeUndefined();
+    expect(readWorkflow(fixture.cwd, name).tasks[0]!.invocations).toEqual([
+      expect.objectContaining({ attempt: 1, mode: 'fresh', orchestrationHost: 'claude', outcome: 'completed' }),
+    ]);
   }, 20000);
 
   it('shares a stable instruction/context prefix while keeping complete contracts and separate task sessions', async () => {

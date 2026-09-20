@@ -4,6 +4,8 @@ import { validateTeamName } from './team-name.js';
 import { normalizeToCcAlias } from '../features/delegation-enforcer.js';
 import { isBedrock, isVertexAI, isProviderSpecificModelId } from '../config/models.js';
 import { isExternalLLMDisabled } from '../lib/security-config.js';
+import { getGlmConfig, resolveGlmExecutable } from './glm-config.js';
+import { loadConfig } from '../config/loader.js';
 const resolvedPathCache = new Map();
 const UNTRUSTED_PATH_PATTERNS = [
     /^\/tmp(\/|$)/,
@@ -121,6 +123,17 @@ export function shouldUseClaudeBareMode(env = process.env) {
     return typeof env.ANTHROPIC_API_KEY === 'string' && env.ANTHROPIC_API_KEY.trim().length > 0;
 }
 const CONTRACTS = {
+    glm: {
+        agentType: 'glm',
+        binary: 'claude-glm',
+        installInstructions: 'Configure a local claude-glm executable and a separate Claude Code GLM profile.',
+        supportsPromptMode: true,
+        promptModeFlag: '-p',
+        buildLaunchArgs(model, extraFlags = []) {
+            return ['--dangerously-skip-permissions', ...(model ? ['--model', model] : []), ...extraFlags];
+        },
+        parseOutput(rawOutput) { return rawOutput.trim(); },
+    },
     claude: {
         agentType: 'claude',
         binary: 'claude',
@@ -268,7 +281,7 @@ export function getContract(agentType) {
         throw new Error(`External LLM provider "${agentType}" is blocked by security policy (disableExternalLLM). ` +
             `Only Claude workers are allowed in the current security configuration.`);
     }
-    return contract;
+    return agentType === 'glm' ? { ...contract, binary: getGlmConfig(loadConfig()).command } : contract;
 }
 function validateBinaryRef(binary) {
     if (isAbsolute(binary))
@@ -301,6 +314,12 @@ function resolveBinaryPath(binary) {
 export function isCliAvailable(agentType) {
     const contract = getContract(agentType);
     try {
+        if (agentType === 'glm') {
+            const result = spawnSync(resolveGlmExecutable(contract.binary), ['--version'], {
+                timeout: 5000, shell: false, windowsHide: true, stdio: 'ignore',
+            });
+            return result.status === 0;
+        }
         const resolvedBinary = resolveBinaryPath(contract.binary);
         if (process.platform === 'win32' && /\.(cmd|bat)$/i.test(resolvedBinary)) {
             const comspec = process.env.COMSPEC || 'cmd.exe';
@@ -329,6 +348,8 @@ export function validateCliAvailable(agentType) {
 }
 export function resolveValidatedBinaryPath(agentType) {
     const contract = getContract(agentType);
+    if (agentType === 'glm')
+        return resolveGlmExecutable(contract.binary);
     return resolveCliBinaryPath(contract.binary);
 }
 export function buildLaunchArgs(agentType, config) {
@@ -411,6 +432,8 @@ const WORKER_MODEL_ENV_ALLOWLIST = [
     'OMC_GROK_DEFAULT_MODEL',
     'OMC_EXTERNAL_MODELS_DEFAULT_ANTIGRAVITY_MODEL',
     'OMC_ANTIGRAVITY_DEFAULT_MODEL',
+    'OMC_EXTERNAL_MODELS_DEFAULT_GLM_MODEL',
+    'OMC_GLM_DEFAULT_MODEL',
 ];
 export function getWorkerEnv(teamName, workerName, agentType, env = process.env) {
     validateTeamName(teamName);
@@ -493,6 +516,7 @@ export function resolveDefaultWorkerModel(agentType, env = process.env, defaults
     if (agentType === 'claude')
         return resolveClaudeWorkerModel(env);
     const providerConfigKeys = {
+        glm: 'glmModel',
         codex: 'codexModel',
         gemini: 'geminiModel',
         antigravity: 'antigravityModel',
@@ -520,7 +544,7 @@ export function normalizeExternalModelsDefaults(defaults) {
     if (!defaults || typeof defaults !== 'object')
         return undefined;
     const normalized = {};
-    for (const key of ['codexModel', 'geminiModel', 'grokModel', 'antigravityModel', 'cursorModel']) {
+    for (const key of ['codexModel', 'geminiModel', 'grokModel', 'antigravityModel', 'cursorModel', 'glmModel']) {
         const value = defaults[key];
         if (typeof value === 'string' && value.trim())
             normalized[key] = value.trim();
@@ -536,6 +560,7 @@ export function resolveExternalModelsDefaults(defaults, env = process.env) {
     for (const [provider, key] of [
         ['CODEX', 'codexModel'], ['GEMINI', 'geminiModel'], ['GROK', 'grokModel'],
         ['CURSOR', 'cursorModel'], ['ANTIGRAVITY', 'antigravityModel'],
+        ['GLM', 'glmModel'],
     ]) {
         if (normalized[key])
             continue;

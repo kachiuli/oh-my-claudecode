@@ -5,6 +5,7 @@ const DEFAULT_CAPABILITIES = {
     'mcp-codex': ['code-review', 'security-review', 'architecture', 'refactoring'],
     'mcp-gemini': ['ui-design', 'documentation', 'research', 'code-edit'],
     'tmux-claude': ['code-edit', 'testing', 'general'],
+    'tmux-glm': ['code-edit', 'testing', 'general'],
     'tmux-codex': ['code-review', 'security-review', 'architecture', 'refactoring'],
     'tmux-gemini': ['ui-design', 'documentation', 'research', 'code-edit'],
     'tmux-cursor': ['code-edit', 'refactoring', 'general'],

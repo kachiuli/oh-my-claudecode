@@ -14,10 +14,11 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmuxExec } from '../tmux-utils.js';
 import { getOmcRoot } from '../../lib/worktree-paths.js';
+import { workflowCommand } from './team-workflow.js';
 const HELP_TOKENS = new Set(['--help', '-h', 'help']);
 const MIN_WORKER_COUNT = 1;
 const MAX_WORKER_COUNT = 20;
-const VALID_TEAM_CLI_AGENT_TYPES = new Set(['claude', 'codex', 'gemini', 'grok', 'cursor', 'antigravity']);
+const VALID_TEAM_CLI_AGENT_TYPES = new Set(['claude', 'codex', 'gemini', 'grok', 'cursor', 'antigravity', 'glm']);
 const DEFAULT_TEAM_CLI_AGENT_TYPE = 'claude';
 const TEAM_HELP = `
 Usage: omc team [N:agent-type[:role]] [--new-window] [--auto-merge] [--no-decompose] "<task description>"
@@ -25,6 +26,7 @@ Usage: omc team [N:agent-type[:role]] [--new-window] [--auto-merge] [--no-decomp
        omc team shutdown <team-name> [--force]
        omc team api <operation> [--input <json>] [--json]
        omc team api --help
+       omc team workflow --help
 
 Examples:
   omc team 3:claude "fix failing tests"
@@ -303,9 +305,9 @@ function normalizeWorkerSpecSegment(match) {
     return { count, agentType: 'claude', role: token };
 }
 /** @internal Exported for testing */
-export function parseTeamArgs(tokens, defaultAgentType = 'claude') {
+export function parseTeamArgs(tokens, defaultAgentType = 'claude', defaultWorkerCount = 3) {
     const args = [...tokens];
-    let workerCount = 3;
+    let workerCount = defaultWorkerCount;
     let agentTypes = [];
     let workerSpecs = [];
     let json = false;
@@ -842,6 +844,10 @@ export async function teamCommand(args) {
         return;
     }
     // omc team api <operation> ...
+    if (subcommand === 'workflow') {
+        await workflowCommand(args.slice(1), cwd);
+        return;
+    }
     if (subcommand === 'api') {
         await handleTeamApi(args.slice(1), cwd);
         return;
@@ -869,7 +875,8 @@ export async function teamCommand(args) {
         // Honor team.ops.defaultAgentType when user hasn't supplied N:agent-type.
         const cfg = loadConfig();
         const defaultAgentType = cfg.team?.ops?.defaultAgentType ?? DEFAULT_TEAM_CLI_AGENT_TYPE;
-        const parsed = parseTeamArgs(args, defaultAgentType);
+        const { getGlmConfig } = await import('../../team/glm-config.js');
+        const parsed = parseTeamArgs(args, defaultAgentType, defaultAgentType === 'glm' ? getGlmConfig(cfg).defaultWorkers : 3);
         await handleTeamStart(parsed, cwd);
     }
     catch (error) {

@@ -11,7 +11,7 @@ English | [한국어](README.ko.md) | [中文](README.zh.md) | [日本語](READM
 [![Sponsor](https://img.shields.io/badge/Sponsor-❤️-red?style=flat&logo=github)](https://github.com/sponsors/Yeachan-Heo)
 [![Discord](https://img.shields.io/discord/1452487457085063218?color=5865F2&logo=discord&logoColor=white&label=Discord)](https://discord.gg/wSyUQYfhAw)
 
-> **For Codex users:** Check out [oh-my-codex](https://github.com/Yeachan-Heo/oh-my-codex) — the same orchestration experience for OpenAI Codex CLI.
+> **workflow-v1.4 candidate:** This fork can use Claude Code or Codex as the repository's OMC lead, with independent Claude, Codex, GLM, and GLM Flash worker/reviewer bindings. See the [project setup and switching guide](docs/WORKFLOW-V1.4.md) and [release notes and verification limits](docs/WORKFLOW-V1.4-RELEASE-NOTES.md). Codex integration adapts selected capabilities from [oh-my-codex](https://github.com/kachiuli/oh-my-codex).
 
 > **Liked OmC but found it a bit overkill? Try [gajae-code](https://github.com/Yeachan-Heo/gajae-code).**
 > Keeps Claude OAuth as-is while being faster, cheaper, simpler, and more powerful — with an SDK-based integration path built for OpenClaw, Hermes, Grokbot, and similar agent runtimes.

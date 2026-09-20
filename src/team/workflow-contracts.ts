@@ -1,6 +1,7 @@
 import type { ArtifactDescriptor } from '../shared/artifact-descriptor.js';
 import type { WorkflowTelemetry } from './workflow-usage.js';
 import { isDeepStrictEqual } from 'node:util';
+import type { OrchestratorHost } from '../orchestration/selection.js';
 
 export type WorkflowRole = 'lead' | 'implementer' | 'reviewer';
 export type WorkflowProviderRoute = 'claude' | 'glm' | 'codex';
@@ -89,6 +90,8 @@ export interface WorkflowTaskState {
   invocations?: WorkflowInvocation[];
 }
 export interface WorkflowInvocation {
+  /** Snapshot of the lead host; omitted historical records are never backfilled. */
+  readonly orchestrationHost?: OrchestratorHost;
   attempt: number;
   mode: 'fresh' | 'resume';
   model?: string;
@@ -102,6 +105,7 @@ export interface WorkflowInvocation {
   telemetry: WorkflowTelemetry;
 }
 export interface WorkflowReviewAttempt {
+  readonly orchestrationHost?: OrchestratorHost;
   pass: number;
   head: string;
   model?: string;
@@ -257,6 +261,7 @@ function timestamp(value: unknown): string {
 }
 function boundAttempt(value: unknown, role: 'implementer' | 'reviewer', ordinal: number): Record<string, unknown> {
   const raw = object(value);
+  validateOrchestrationHost(raw.orchestrationHost);
   const binding = parseWorkflowBinding(raw.binding);
   const invocationId = boundedText(raw.invocationId, 36);
   if (!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(invocationId)) throw new Error('workflow_invalid_invocation_id');
@@ -268,8 +273,12 @@ function boundAttempt(value: unknown, role: 'implementer' | 'reviewer', ordinal:
   if (role === 'implementer' && !['fresh', 'resume'].includes(String(raw.mode))) throw new Error('workflow_invalid_invocation_mode');
   const parsed = { ...raw, startedAt: timestamp(raw.startedAt), binding, invocationId };
   // The outcome/telemetry may settle later; the reserved identity may not change.
-  Object.defineProperties(parsed, { binding: { writable: false, configurable: false }, invocationId: { writable: false, configurable: false } });
+  Object.defineProperties(parsed, { binding: { writable: false, configurable: false }, invocationId: { writable: false, configurable: false },
+    ...(raw.orchestrationHost === undefined ? {} : { orchestrationHost: { writable: false, configurable: false } }) });
   return parsed;
+}
+function validateOrchestrationHost(value: unknown): void {
+  if (value !== undefined && value !== 'claude' && value !== 'codex') throw new Error('workflow_invalid_orchestration_host');
 }
 function reviewProvenance(value: unknown, binding: WorkflowRoleBinding): WorkflowReviewProvenance {
   const raw = exactObject(value, ['relation', 'authorIds', 'reviewerId', 'context']);
@@ -303,6 +312,11 @@ export function parseWorkflowState(value: unknown): VersionedWorkflowState {
   if (options.mode !== undefined && !['v1', 'balanced'].includes(String(options.mode))) throw new Error('workflow_invalid_mode');
   // Validate any present policy for both schemas; omission is never rewritten into a saved value.
   parseWorkflowProviderPolicy(options.providerPolicy);
+  for (const task of raw.tasks) {
+    const invocations = object(task).invocations;
+    if (Array.isArray(invocations)) for (const invocation of invocations) validateOrchestrationHost(object(invocation).orchestrationHost);
+  }
+  if (Array.isArray(raw.reviewAttempts)) for (const attempt of raw.reviewAttempts) validateOrchestrationHost(object(attempt).orchestrationHost);
   const rejected = new Set(raw.tasks.filter(entry => object(entry).status === 'rejected').map(entry => safeWorkflowId(object(object(entry).task).id)));
   const plan = parseWorkflowPlan(raw.plan, rejected);
   // Preserve legacy shape and optional fields exactly; this is not a migration.
@@ -385,6 +399,17 @@ export function parseWorkflowState(value: unknown): VersionedWorkflowState {
 export function validateWorkflowStateTransition(previous: unknown, next: unknown): void {
   const before = parseWorkflowState(previous); const after = parseWorkflowState(next);
   if (before.schemaVersion !== after.schemaVersion) throw new Error('workflow_implicit_migration_forbidden');
+  // Host provenance is immutable for both legacy and role-substitution workflows.
+  const preserveHosts = (old: Array<WorkflowInvocation | WorkflowReviewAttempt>, current: Array<WorkflowInvocation | WorkflowReviewAttempt>) => {
+    for (const [index, entry] of old.entries()) {
+      if (!current[index] || entry.orchestrationHost !== current[index].orchestrationHost) throw new Error('workflow_orchestration_history_rewritten');
+    }
+  };
+  for (const task of before.tasks) {
+    const replacement = after.tasks.find(entry => entry.task.id === task.task.id);
+    preserveHosts(task.invocations ?? [], replacement?.invocations ?? []);
+  }
+  preserveHosts(before.reviewAttempts ?? [], after.reviewAttempts ?? []);
   if (before.schemaVersion !== 2 || after.schemaVersion !== 2) return;
   if (before.cwd !== after.cwd || before.plan.name !== after.plan.name || before.plan.baseCommit !== after.plan.baseCommit
     || before.plan.integrationBranch !== after.plan.integrationBranch) throw new Error('workflow_state_identity_changed');

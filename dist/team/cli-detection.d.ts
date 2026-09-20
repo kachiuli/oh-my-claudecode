@@ -1,4 +1,5 @@
 export { isCliAvailable, validateCliAvailable, getContract, type CliAgentType } from './model-contract.js';
+import { type GlmConfig } from './glm-config.js';
 export interface CliInfo {
     available: boolean;
     version?: string;
@@ -18,5 +19,13 @@ export declare function probeCli(binary: string, platform?: NodeJS.Platform): Cl
  * status-zero version process rather than to successful path resolution.
  */
 export declare function detectCli(binary: string): CliInfo;
-export declare function detectAllClis(): Record<string, CliInfo>;
+export declare function detectAllClis(options?: {
+    glm?: GlmConfig;
+}): Record<string, CliInfo>;
+/** Wrapper output is deliberately omitted: diagnostics need no credentials or transcript. */
+export declare function probeGlmCli(config: GlmConfig): CliProbeResult & {
+    launchable: boolean;
+    modelOverride: boolean;
+    fallback: false;
+};
 //# sourceMappingURL=cli-detection.d.ts.map

@@ -3,7 +3,7 @@ export interface WorkerCadenceContext {
     teamName: string;
     workerName: string;
     worktreePath: string;
-    agentType: 'claude' | 'codex' | 'gemini' | 'cursor' | 'grok' | 'antigravity';
+    agentType: 'claude' | 'codex' | 'gemini' | 'cursor' | 'grok' | 'antigravity' | 'glm';
     enabled: boolean;
 }
 /** Service ownership fence supplied by the persistent runtime owner. */

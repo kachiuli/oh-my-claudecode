@@ -40,6 +40,8 @@ export interface CreateArtifactDescriptorOptions {
 export interface WriteTextArtifactOptions extends CreateArtifactDescriptorOptions {
     path: string;
     content: string;
+    /** Refuse existing files/links at untrusted artifact boundaries. Existing callers retain overwrite behavior. */
+    exclusive?: boolean;
 }
 export interface CreateArtifactHandoffOptions {
     body: string;
