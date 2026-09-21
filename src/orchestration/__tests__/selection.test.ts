@@ -26,7 +26,6 @@ import {
   readOrchestratorStatus,
   recordOrchestratorSession,
   recoverOrchestratorLease,
-  registerOrchestratorLeaseProcess,
   releaseOrchestratorLease,
   resolveOrchestratorPaths,
   selectOrchestrator,
@@ -464,7 +463,7 @@ describe("repository orchestrator selection", () => {
     ).toMatchObject({ host: "codex" });
   });
 
-  it("recovers a crashed lease explicitly and refuses live owners or known children", async () => {
+  it("refuses live and legacy-unverifiable lease recovery", async () => {
     await adopt();
     const lease = await acquireOrchestratorLease(repo, {
       host: "claude",
@@ -472,28 +471,30 @@ describe("repository orchestrator selection", () => {
     });
     await expect(
       recoverOrchestratorLease(repo, { kind: "checkpointed" }),
-    ).rejects.toThrow("orchestrator_lease_owner_alive");
+    ).rejects.toThrow("orchestrator_lease_process_not_confirmed_dead");
 
-    await registerOrchestratorLeaseProcess(repo, lease, 2147483646);
     const runtimePath = resolveOrchestratorPaths(repo).state;
     const runtime = JSON.parse(readFileSync(runtimePath, "utf8")) as {
-      lease: { ownerPid: number; relatedPids: number[] };
+      lease: {
+        ownerProcessStartedAt?: string | null;
+        relatedProcesses?: unknown[];
+        processRegistration?: string;
+      };
     };
-    expect(runtime.lease.relatedPids).toContain(2147483646);
-    runtime.lease.ownerPid = 2147483647;
-    runtime.lease.relatedPids = [process.pid];
+    delete runtime.lease.ownerProcessStartedAt;
+    delete runtime.lease.relatedProcesses;
+    delete runtime.lease.processRegistration;
     writeFileSync(runtimePath, JSON.stringify(runtime));
-    await expect(
-      recoverOrchestratorLease(repo, { kind: "checkpointed" }),
-    ).rejects.toThrow("orchestrator_lease_owner_alive");
-
-    runtime.lease.relatedPids = [];
-    writeFileSync(runtimePath, JSON.stringify(runtime));
+    const legacyBytes = readFileSync(runtimePath);
     await expect(
       recoverOrchestratorLease(repo, {
         kind: "checkpointed",
-        reference: "operator-confirmed-crash",
+        reference: "legacy-owner",
       }),
+    ).rejects.toThrow("orchestrator_lease_processes_unverifiable");
+    expect(readFileSync(runtimePath)).toEqual(legacyBytes);
+    await expect(
+      releaseOrchestratorLease(repo, lease, { kind: "before-work" }),
     ).resolves.toBeUndefined();
     expect(readOrchestratorStatus(repo, { probe: available }).lease).toBeNull();
   });

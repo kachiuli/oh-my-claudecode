@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
+import { lstatSync, readFileSync, realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { findWorkspaceRoot, getGitTopLevel, getOmcRoot, resolveProjectOmcPath, } from "../lib/worktree-paths.js";
 const HOSTS = ["claude", "codex"];
@@ -150,8 +150,14 @@ export function parseRepositoryConfig(value) {
 }
 export function readOrchestratorRepositoryConfig(cwd) {
     const path = resolveOrchestratorPaths(cwd).config;
-    if (!existsSync(path))
-        return null;
+    try {
+        lstatSync(path);
+    }
+    catch (error) {
+        if (error.code === "ENOENT")
+            return null;
+        throw new Error("orchestrator_invalid_config");
+    }
     return parseRepositoryConfig(readBoundedJson(path, CONFIG_BYTES, "orchestrator_invalid_config"));
 }
 function parseLocalSelection(value) {
@@ -173,6 +179,9 @@ function parseLease(value) {
         "tokenHash",
         "ownerPid",
         "relatedPids",
+        "ownerProcessStartedAt",
+        "relatedProcesses",
+        "processRegistration",
         "acquiredAt",
     ], "orchestrator_invalid_state");
     if (!isHost(raw.host))
@@ -189,6 +198,31 @@ function parseLease(value) {
         new Set(raw.relatedPids).size !== raw.relatedPids.length) {
         throw new Error("orchestrator_invalid_state");
     }
+    const relatedPids = raw.relatedPids.map(Number);
+    const ownerProcessStartedAt = parsePersistedProcessStartIdentity(raw.ownerProcessStartedAt);
+    let relatedProcesses;
+    if (raw.relatedProcesses !== undefined) {
+        if (!Array.isArray(raw.relatedProcesses) ||
+            raw.relatedProcesses.length !== relatedPids.length) {
+            throw new Error("orchestrator_invalid_state");
+        }
+        relatedProcesses = Object.freeze(raw.relatedProcesses.map((value, index) => {
+            const process = exactObject(value, ["pid", "processStartedAt"], "orchestrator_invalid_state");
+            if (!Number.isSafeInteger(process.pid) ||
+                Number(process.pid) <= 0 ||
+                Number(process.pid) !== relatedPids[index]) {
+                throw new Error("orchestrator_invalid_state");
+            }
+            return Object.freeze({
+                pid: Number(process.pid),
+                processStartedAt: parsePersistedProcessStartIdentity(process.processStartedAt, true),
+            });
+        }));
+    }
+    if (raw.processRegistration !== undefined &&
+        !["not-started", "pending", "complete"].includes(String(raw.processRegistration))) {
+        throw new Error("orchestrator_invalid_state");
+    }
     return Object.freeze({
         host: raw.host,
         sessionId: parseSessionId(raw.sessionId),
@@ -196,9 +230,31 @@ function parseLease(value) {
         selectionRevision: parseRevision(raw.selectionRevision, "orchestrator_invalid_state"),
         tokenHash,
         ownerPid: Number(raw.ownerPid),
-        relatedPids: Object.freeze(raw.relatedPids.map(Number)),
+        relatedPids: Object.freeze(relatedPids),
+        ...(raw.ownerProcessStartedAt === undefined
+            ? {}
+            : { ownerProcessStartedAt }),
+        ...(relatedProcesses === undefined ? {} : { relatedProcesses }),
+        ...(raw.processRegistration === undefined
+            ? {}
+            : {
+                processRegistration: raw.processRegistration,
+            }),
         acquiredAt: parseTimestamp(raw.acquiredAt, "orchestrator_invalid_state"),
     });
+}
+function parsePersistedProcessStartIdentity(value, required = false) {
+    if (value === undefined && !required)
+        return undefined;
+    if (value === null)
+        return null;
+    if (typeof value !== "string" ||
+        value.length < 3 ||
+        value.length > 1024 ||
+        !/^[a-z0-9_-]{1,32}:[^\0\r\n]+$/i.test(value)) {
+        throw new Error("orchestrator_invalid_state");
+    }
+    return value;
 }
 function parseCheckpointRecord(value) {
     const raw = exactObject(value, ["host", "sessionId", "selectionRevision", "checkpoint", "at"], "orchestrator_invalid_state");
@@ -209,6 +265,48 @@ function parseCheckpointRecord(value) {
         sessionId: parseSessionId(raw.sessionId),
         selectionRevision: parseRevision(raw.selectionRevision, "orchestrator_invalid_state"),
         checkpoint: parseCheckpoint(raw.checkpoint),
+        at: parseTimestamp(raw.at, "orchestrator_invalid_state"),
+    });
+}
+function parseRecoveryRecord(value) {
+    const raw = exactObject(value, [
+        "id",
+        "host",
+        "selectionRevision",
+        "checkpoint",
+        "recoveredOperationLock",
+        "recoveredLease",
+        "operationOwner",
+        "at",
+    ], "orchestrator_invalid_state");
+    if (!isHost(raw.host) ||
+        typeof raw.recoveredOperationLock !== "boolean" ||
+        typeof raw.recoveredLease !== "boolean") {
+        throw new Error("orchestrator_invalid_state");
+    }
+    let operationOwner;
+    if (raw.operationOwner !== undefined) {
+        const owner = exactObject(raw.operationOwner, ["pid", "processStartedAt", "nonce"], "orchestrator_invalid_state");
+        if (!Number.isSafeInteger(owner.pid) || Number(owner.pid) <= 0) {
+            throw new Error("orchestrator_invalid_state");
+        }
+        const processStartedAt = parsePersistedProcessStartIdentity(owner.processStartedAt, true);
+        if (processStartedAt === null)
+            throw new Error("orchestrator_invalid_state");
+        operationOwner = Object.freeze({
+            pid: Number(owner.pid),
+            processStartedAt,
+            nonce: parseUuid(owner.nonce, "orchestrator_invalid_state"),
+        });
+    }
+    return Object.freeze({
+        id: parseUuid(raw.id, "orchestrator_invalid_state"),
+        host: raw.host,
+        selectionRevision: parseRevision(raw.selectionRevision, "orchestrator_invalid_state"),
+        checkpoint: parseCheckpoint(raw.checkpoint),
+        recoveredOperationLock: raw.recoveredOperationLock,
+        recoveredLease: raw.recoveredLease,
+        ...(operationOwner === undefined ? {} : { operationOwner }),
         at: parseTimestamp(raw.at, "orchestrator_invalid_state"),
     });
 }
@@ -239,9 +337,26 @@ function parseHandoff(value) {
 }
 export function readRuntimeState(cwd) {
     const path = resolveOrchestratorPaths(cwd).state;
-    if (!existsSync(path))
-        return Object.freeze({ schemaVersion: 1 });
-    const raw = exactObject(readBoundedJson(path, STATE_BYTES, "orchestrator_invalid_state"), ["schemaVersion", "selection", "lease", "lastCheckpoint", "handoffs"], "orchestrator_invalid_state");
+    return readRuntimeStateFile(path);
+}
+export function readRuntimeStateFile(path) {
+    try {
+        lstatSync(path);
+    }
+    catch (error) {
+        if (error.code === "ENOENT") {
+            return Object.freeze({ schemaVersion: 1 });
+        }
+        throw new Error("orchestrator_invalid_state");
+    }
+    const raw = exactObject(readBoundedJson(path, STATE_BYTES, "orchestrator_invalid_state"), [
+        "schemaVersion",
+        "selection",
+        "lease",
+        "lastCheckpoint",
+        "lastRecovery",
+        "handoffs",
+    ], "orchestrator_invalid_state");
     if (raw.schemaVersion !== 1)
         throw new Error("orchestrator_invalid_state");
     if (raw.handoffs !== undefined &&
@@ -257,6 +372,9 @@ export function readRuntimeState(cwd) {
         ...(raw.lastCheckpoint === undefined
             ? {}
             : { lastCheckpoint: parseCheckpointRecord(raw.lastCheckpoint) }),
+        ...(raw.lastRecovery === undefined
+            ? {}
+            : { lastRecovery: parseRecoveryRecord(raw.lastRecovery) }),
         ...(raw.handoffs === undefined
             ? {}
             : { handoffs: Object.freeze(raw.handoffs.map(parseHandoff)) }),
@@ -289,10 +407,19 @@ export function assertNoCompetingOmx(paths) {
         if (!root)
             continue;
         const omxRoot = join(root, ".omx");
-        if (existsSync(join(omxRoot, "state")) ||
-            existsSync(join(omxRoot, "setup-scope.json"))) {
+        if (pathEntryExists(join(omxRoot, "state")) ||
+            pathEntryExists(join(omxRoot, "setup-scope.json"))) {
             throw new Error("orchestrator_competing_omx_state_requires_explicit_import");
         }
+    }
+}
+function pathEntryExists(path) {
+    try {
+        lstatSync(path);
+        return true;
+    }
+    catch (error) {
+        return error.code !== "ENOENT";
     }
 }
 export function activeFrom(config, state) {

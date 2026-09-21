@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { acquireOrchestratorLease, assertActiveOrchestratorAvailable, assertOrchestratorSession, orchestratorLeaseEnvironment, probeOrchestratorCli, readOrchestratorRepositoryConfig, releaseOrchestratorLease, resolveOrchestratorPaths, registerOrchestratorLeaseProcess, } from "../orchestration/selection.js";
+import { acquireOrchestratorLease, assertActiveOrchestratorAvailable, assertOrchestratorSession, beginOrchestratorLeaseProcessRegistration, orchestratorLeaseEnvironment, probeOrchestratorCli, readOrchestratorRepositoryConfig, releaseOrchestratorLease, resolveOrchestratorPaths, registerOrchestratorLeaseProcess, } from "../orchestration/selection.js";
 import { buildHostLaunchArgs } from "../hosts/adapters.js";
 import { extractOmcLaunchOptions } from "./launch.js";
 /** Exclude credentials and session context belonging to a different native host. */
@@ -135,6 +135,7 @@ export async function launchProjectOrchestrator(args, options = {}) {
         if (requested.resumeId)
             assertOrchestratorSession(repositoryRoot, active.host, requested.resumeId);
         const hostArgs = buildHostLaunchArgs(active.host, repositoryRoot, requested.args, requested.resumeId);
+        await beginOrchestratorLeaseProcessRegistration(repositoryRoot, lease);
         const code = await (options.run ?? runNativeHost)(cli.path, hostArgs, {
             cwd: repositoryRoot,
             env: { ...environment, ...orchestratorLeaseEnvironment(lease) },

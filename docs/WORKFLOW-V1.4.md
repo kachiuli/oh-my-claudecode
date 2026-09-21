@@ -2,6 +2,8 @@
 
 Workflow V1.4 lets one repository use Claude Code or Codex as the interactive OMC lead. The selected host is independent of workflow provider bindings: changing the lead does not change which provider implements or reviews a task. The npm package version remains 5.4.0; `workflow-v1.4` is the workflow release label.
 
+The explicit operation-lock recovery, advisory hook diagnostics and Windows shipping fixes below are maintenance changes after the original `workflow-v1.4` tag. They are not included in that tag's published archive.
+
 ## Install both project hosts
 
 Run setup from the repository root. Project setup does not modify the user's global Claude, Codex, Anthropic, OpenAI, or Z.AI configuration.
@@ -81,13 +83,15 @@ omc orchestrator handoff codex --checkpoint completed-stage --workflow <name> --
 
 Accepted checkpoint kinds are `before-work`, `completed-stage`, `paused`, and `checkpointed`. A stale or cross-host native session cannot mutate the controller after handoff.
 
-If a lead process crashes, first verify that the recorded owner PID, every related provider process, and the workflow are quiescent. Then recover the abandoned lease:
+If a lead or operation process crashes, stop any remaining host or provider work, then request explicit recovery:
 
 ```sh
 omc orchestrator recover --checkpoint paused --workflow <name> --reference <evidence>
 ```
 
-The operation lock intentionally does not auto-expire. A crash while holding it prevents `recover` from acquiring the gate. Only after verifying that the recorded PID and all provider processes are dead and no workflow operation is running, remove the exact `operation.lock` under the effective `state/orchestrator/` directory, then run `omc orchestrator recover`. The default location is `.omc/state/orchestrator/operation.lock`; state-root configuration can relocate it. Do not remove other state files or a directory tree.
+`recover` can clear a verifiably abandoned operation lock as well as a host lease. It checks process identities, repository ownership, registered host processes, sibling repository leases and shared workflow activity before changing state. Recovery also handles an operation that crashed without creating a lease, such as setup or selection. It records the supplied checkpoint and recovery evidence without completing tasks or rewriting workflow history.
+
+Normal commands never expire or reap operation locks. Recovery refuses live or unverifiable owners, incomplete process registration, active work, malformed or legacy lock records, and ownership conflicts. An abandoned recovery claim also remains blocked; a second crash during recovery requires inspection. These refusals preserve the files for diagnosis rather than guessing that their owners are gone. Run recovery from the owning physical checkout and retain the error and state for investigation; do not delete state directories to force progress.
 
 ## Provider and model independence
 
@@ -114,7 +118,19 @@ Existing OMC workflow state needs no migration. Reads do not backfill historical
 
 ## Diagnose lifecycle support
 
-`omc doctor hosts` verifies the receipt, managed content, native CLI discovery and reported Codex hook capability. Its lifecycle result describes support detected from the local CLI, not proof that a user trusted a hook, installed a marketplace copy, authenticated a provider, or completed a live model call. A healthy report therefore complements, but does not replace, authenticated release evidence.
+`omc doctor hosts` verifies the receipt, managed content, native CLI discovery and reported Codex hook capability. Each host's `hookDiagnostics` separates CLI capability, installed definitions and accepted hook execution. `nativeTrust` remains `not-established`: OMC does not inspect or change the host's private trust store.
+
+For a Codex CLI that reports hook support, open the repository as a trusted project and review new or changed definitions with `/hooks`. Approve the definitions in Codex, exercise a lifecycle event, then rerun `omc doctor hosts`. If the CLI is missing or does not advertise support, follow the installation or upgrade guidance first. Installation or a healthy asset check alone does not establish hook approval. Refresh or restart Codex when a changed local plugin has not yet loaded.
+
+Execution evidence is advisory. It is scoped to the physical repository, host, configuration, selection and managed hook definitions; changing those makes older evidence stale. An `observed` result records an accepted hook event, but does not prove present native trust, provider authentication or a successful model call. Missing, stale, malformed or unavailable observations never grant or revoke workflow authority. If runtime selection cannot be read, asset diagnostics remain available and recommend `omc orchestrator status` for investigation. The core operation, lease and publication checks continue to apply.
+
+## Verify shipping files on Windows
+
+The shipping verifier reads the committed Git tree using a bounded command and compares the exact required paths locally. Staging passes literal paths through Git's NUL-delimited input, avoiding Windows command-line limits while preserving spaces, Unicode and pathspec characters. The same shipping regression suite runs on Windows, Linux and macOS.
+
+```sh
+npm run plugin:shipping:verify
+```
 
 Primary references:
 

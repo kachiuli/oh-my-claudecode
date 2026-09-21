@@ -7,6 +7,7 @@
  * generated directory.
  */
 import { spawnSync } from 'node:child_process';
+import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
 import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync, mkdtempSync, rmSync } from 'node:fs';
 import { dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
@@ -559,9 +560,14 @@ function formatPaths(paths) {
 }
 
 export function buildStageArguments(paths) {
-  const normalized = [...new Set(paths)].sort(comparePaths);
+  const normalized = [...new Set(paths.map(path => normalizeRepoPath(path, 'stage path')))];
   if (normalized.length === 0) return null;
-  return ['add', '-f', '--', ...normalized];
+  return ['--literal-pathspecs', 'add', '-f', '--pathspec-from-file=-', '--pathspec-file-nul'];
+}
+
+function buildStageInput(paths) {
+  const normalized = [...new Set(paths.map(path => normalizeRepoPath(path, 'stage path')))].sort(comparePaths);
+  return normalized.length === 0 ? null : Buffer.from(`${normalized.join('\0')}\0`, 'utf8');
 }
 
 // This local maintainer diagnostic executes candidate runtime/coordinator content.
@@ -595,7 +601,13 @@ function requiredGeneratedPaths(surface) {
 
 function trackedPathsAtHead(root, paths) {
   if (paths.length === 0) return new Set();
-  return new Set(gitNullPaths(root, ['ls-tree', '-r', '--name-only', '-z', 'HEAD', '--', ...paths]));
+  const expected = new Set(paths);
+  const roots = GENERATED_ROOTS.filter(generatedRoot => paths.some(path => isWithin(path, generatedRoot)));
+  if (roots.length === 0) return new Set();
+  return new Set(
+    gitNullPaths(root, ['ls-tree', '-r', '--name-only', '-z', 'HEAD', '--', ...roots])
+      .filter(path => expected.has(path)),
+  );
 }
 
 function collectRuntimeClosureAtCommit(root, commit) {
@@ -703,9 +715,13 @@ function stage(root) {
   const stagePaths = [...new Set([...surface.stagePaths, ...deletedPreviousClosurePaths])].sort(comparePaths);
   const args = buildStageArguments(stagePaths);
   if (args) {
-    const result = spawnSync('git', args, { cwd: root, stdio: 'inherit' });
-    if (result.error) fail(`git ${args.join(' ')} could not start: ${result.error.message}`);
-    if (result.status !== 0) fail(`git ${args.join(' ')} failed with exit ${result.status}`);
+    const result = spawnSync('git', args, {
+      cwd: root,
+      input: buildStageInput(stagePaths),
+      stdio: ['pipe', 'inherit', 'inherit'],
+    });
+    if (result.error) fail(`git add could not start: ${result.error.message}`);
+    if (result.status !== 0) fail(`git add failed with exit ${result.status}`);
   }
   const expected = new Set(stagePaths);
   const cached = cachedGeneratedPaths(root);
