@@ -10,7 +10,63 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+const capabilityMocks = vi.hoisted(() => ({
+  codexProbe: undefined as
+    | {
+        found: boolean;
+        path?: string;
+        version?: string;
+        error?: string;
+      }
+    | undefined,
+  codexNativeHooks: undefined as boolean | undefined,
+}));
+
+vi.mock("../../team/cli-detection.js", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../../team/cli-detection.js")>();
+  return {
+    ...actual,
+    probeCli: (binary: string, platform?: NodeJS.Platform) => {
+      if (capabilityMocks.codexProbe !== undefined) {
+        return binary === "codex"
+          ? capabilityMocks.codexProbe
+          : { found: false, error: "test CLI unavailable" };
+      }
+      return actual.probeCli(binary, platform);
+    },
+  };
+});
+
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
+  return {
+    ...actual,
+    spawnSync: (...args: unknown[]) => {
+      const [command, commandArgs] = args;
+      if (
+        command === "omc-test-codex" &&
+        Array.isArray(commandArgs) &&
+        commandArgs[0] === "features" &&
+        commandArgs[1] === "list" &&
+        capabilityMocks.codexNativeHooks !== undefined
+      ) {
+        const stdout = `hooks stable ${capabilityMocks.codexNativeHooks}\n`;
+        return {
+          pid: 0,
+          output: [null, stdout, ""],
+          stdout,
+          stderr: "",
+          status: 0,
+          signal: null,
+        };
+      }
+      return Reflect.apply(actual.spawnSync, undefined, args);
+    },
+  };
+});
 import {
   configureOrchestratorRepository,
   readOrchestratorRepositoryConfig,
@@ -54,6 +110,8 @@ function isIgnored(root: string, path: string): boolean {
 }
 
 afterEach(() => {
+  capabilityMocks.codexProbe = undefined;
+  capabilityMocks.codexNativeHooks = undefined;
   for (const directory of temporaryDirectories.splice(0)) {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -519,24 +577,66 @@ describe("project host setup", () => {
     expect(result.issues).toContain("modified managed block: .gitignore");
   });
 
-  it("separates installed hook definitions from native trust and unobserved execution", async () => {
-    const root = temporaryRepository();
-    await setupProjectHosts(root, ["codex"], { packageRoot: PACKAGE_ROOT });
-
-    const result = await doctorProjectHosts(root);
-
-    expect(result.hosts.codex.hookDiagnostics).toMatchObject({
-      definition: "installed",
-      nativeTrust: "not-established",
-      execution: {
-        status: "unobserved",
+  it.each([
+    {
+      capability: "supported" as const,
+      probe: {
+        found: true,
+        path: "omc-test-codex",
+        version: "codex test",
       },
-      advisory: true,
-    });
-    expect(result.hosts.codex.hookDiagnostics.guidance.join(" ")).toContain(
-      "/hooks",
-    );
-  });
+      nativeHooks: true,
+      lifecycle: "native-hooks",
+      guidance: "/hooks",
+    },
+    {
+      capability: "unsupported" as const,
+      probe: {
+        found: true,
+        path: "omc-test-codex",
+        version: "codex test",
+      },
+      nativeHooks: false,
+      lifecycle: "cli-gate-fallback",
+      guidance: "does not advertise native hook support",
+    },
+    {
+      capability: "cli-unavailable" as const,
+      probe: { found: false, error: "test CLI unavailable" },
+      nativeHooks: false,
+      lifecycle: "cli-gate-fallback",
+      guidance: "Install Codex",
+    },
+  ])(
+    "separates installed hook definitions from $capability capability, native trust, and unobserved execution",
+    async ({ capability, probe, nativeHooks, lifecycle, guidance }) => {
+      capabilityMocks.codexProbe = probe;
+      capabilityMocks.codexNativeHooks = nativeHooks;
+      const root = temporaryRepository();
+      await setupProjectHosts(root, ["codex"], {
+        packageRoot: PACKAGE_ROOT,
+      });
+
+      const result = await doctorProjectHosts(root);
+
+      expect(result.hosts.codex).toMatchObject({
+        lifecycle,
+        nativeHooksSupported: nativeHooks,
+        hookDiagnostics: {
+          capability,
+          definition: "installed",
+          nativeTrust: "not-established",
+          execution: {
+            status: "unobserved",
+          },
+          advisory: true,
+        },
+      });
+      const text = result.hosts.codex.hookDiagnostics.guidance.join(" ");
+      expect(text).toContain(guidance);
+      if (capability !== "supported") expect(text).not.toContain("/hooks");
+    },
+  );
 
   it("keeps diagnostics available before an explicit host selection", async () => {
     const root = temporaryRepository();
