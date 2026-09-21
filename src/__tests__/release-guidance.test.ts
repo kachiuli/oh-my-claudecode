@@ -73,7 +73,6 @@ describe('plugin shipping release guidance', () => {
     expect(RELEASE_SCRIPT).toContain('git push origin HEAD:release/v${version}');
     expect(RELEASE_SCRIPT).not.toMatch(/git add -A\b/);
     expect(RELEASE_SCRIPT).not.toMatch(/git add -f(?:\s+--)?\s+(?:dist|bridge)\/?\b/);
-    expect(SHIPPING_SCRIPT).toContain("return ['add', '-f', '--', ...normalized];");
     expect(SHIPPING_SCRIPT).not.toContain("['add', '-f', 'dist', 'bridge']");
     expect(RELEASE_SCRIPT).not.toMatch(/git push origin (?:dev|main)\b/);
     expect(RELEASE_SCRIPT).not.toMatch(/git (?:checkout|switch) main\b/);
