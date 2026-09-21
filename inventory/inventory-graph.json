@@ -5,15 +5,15 @@
   "provenance": {
     "base": "05c800f40d1ad53b42a78609d2667ef4f726808b",
     "planningHead": "0a91273e61dbbd47eb0af4c02844409251e08398",
-    "head": "d8703a49c49a34b86f9096d7c704426ee74a91e5",
-    "sourceSha256": "1a9fb847345eba5bb21d66ece343e3b4ec9922f7f2d00ece6b148a0645462681",
+    "head": "0740e6fe90afa045ca378fffaa966491b0c3750b",
+    "sourceSha256": "1eb663ac73c51a3b83a1039af48723a43baae9e89cc873b9d8806d10eb05761b",
     "generatedAt": null,
     "generator": "scripts/generate-inventory-graph.mjs"
   },
   "base": "05c800f40d1ad53b42a78609d2667ef4f726808b",
   "planningHead": "0a91273e61dbbd47eb0af4c02844409251e08398",
-  "head": "d8703a49c49a34b86f9096d7c704426ee74a91e5",
-  "sourceSha256": "1a9fb847345eba5bb21d66ece343e3b4ec9922f7f2d00ece6b148a0645462681",
+  "head": "0740e6fe90afa045ca378fffaa966491b0c3750b",
+  "sourceSha256": "1eb663ac73c51a3b83a1039af48723a43baae9e89cc873b9d8806d10eb05761b",
   "counts": {
     "public": {
       "skills": 39,
@@ -28,13 +28,13 @@
       "toolFiles": 61,
       "libFiles": 42,
       "templateHooks": 22,
-      "srcFiles": 1394,
-      "total": 1416
+      "srcFiles": 1400,
+      "total": 1422
     },
     "generated": {
-      "distFiles": 5054,
+      "distFiles": 5057,
       "bridgeFiles": 9,
-      "total": 5063
+      "total": 5066
     },
     "prompt": {
       "promptLikeFiles": 63
@@ -3872,6 +3872,7 @@
       "dist/hosts/adapters.js",
       "dist/hosts/asset-ownership.js",
       "dist/hosts/codex-config.js",
+      "dist/hosts/hook-observation.js",
       "dist/hosts/hooks.js",
       "dist/hosts/project-ignore.js",
       "dist/hosts/project-setup.js",
@@ -4602,6 +4603,8 @@
       "dist/openclaw/types.d.ts.map",
       "dist/openclaw/types.js",
       "dist/openclaw/types.js.map",
+      "dist/orchestration/operation-lock.js",
+      "dist/orchestration/quiescence.js",
       "dist/orchestration/selection.js",
       "dist/orchestration/state.js",
       "dist/planning/__tests__/artifacts.test.d.ts",
@@ -22504,6 +22507,11 @@
         "path": "dist/hosts/codex-config.js"
       },
       {
+        "id": "dist/hosts/hook-observation.js",
+        "kind": "generated-dist",
+        "path": "dist/hosts/hook-observation.js"
+      },
+      {
         "id": "dist/hosts/hooks.js",
         "kind": "generated-dist",
         "path": "dist/hosts/hooks.js"
@@ -26152,6 +26160,16 @@
         "id": "dist/openclaw/types.js.map",
         "kind": "generated-dist",
         "path": "dist/openclaw/types.js.map"
+      },
+      {
+        "id": "dist/orchestration/operation-lock.js",
+        "kind": "generated-dist",
+        "path": "dist/orchestration/operation-lock.js"
+      },
+      {
+        "id": "dist/orchestration/quiescence.js",
+        "kind": "generated-dist",
+        "path": "dist/orchestration/quiescence.js"
       },
       {
         "id": "dist/orchestration/selection.js",
@@ -33074,6 +33092,11 @@
         "path": "node:async_hooks"
       },
       {
+        "id": "external:node:buffer",
+        "kind": "external",
+        "path": "node:buffer"
+      },
+      {
         "id": "external:node:child_process",
         "kind": "external",
         "path": "node:child_process"
@@ -38584,6 +38607,11 @@
         "path": "src/hosts/codex-config.ts"
       },
       {
+        "id": "src/hosts/hook-observation.ts",
+        "kind": "src",
+        "path": "src/hosts/hook-observation.ts"
+      },
+      {
         "id": "src/hosts/hooks.ts",
         "kind": "src",
         "path": "src/hosts/hooks.ts"
@@ -39594,9 +39622,34 @@
         "path": "src/openclaw/types.ts"
       },
       {
+        "id": "src/orchestration/__tests__/operation-lock.test.ts",
+        "kind": "src",
+        "path": "src/orchestration/__tests__/operation-lock.test.ts"
+      },
+      {
+        "id": "src/orchestration/__tests__/operation-recovery.test.ts",
+        "kind": "src",
+        "path": "src/orchestration/__tests__/operation-recovery.test.ts"
+      },
+      {
+        "id": "src/orchestration/__tests__/recovery-quiescence.test.ts",
+        "kind": "src",
+        "path": "src/orchestration/__tests__/recovery-quiescence.test.ts"
+      },
+      {
         "id": "src/orchestration/__tests__/selection.test.ts",
         "kind": "src",
         "path": "src/orchestration/__tests__/selection.test.ts"
+      },
+      {
+        "id": "src/orchestration/operation-lock.ts",
+        "kind": "src",
+        "path": "src/orchestration/operation-lock.ts"
+      },
+      {
+        "id": "src/orchestration/quiescence.ts",
+        "kind": "src",
+        "path": "src/orchestration/quiescence.ts"
       },
       {
         "id": "src/orchestration/selection.ts",
@@ -43107,6 +43160,11 @@
       },
       {
         "from": "scripts/plugin-shipping-surface.mjs",
+        "to": "external:node:buffer",
+        "kind": "imports"
+      },
+      {
+        "from": "scripts/plugin-shipping-surface.mjs",
         "to": "external:node:child_process",
         "kind": "imports"
       },
@@ -43808,6 +43866,11 @@
       {
         "from": "scripts/smoke-project-hosts.mjs",
         "to": "external:node:path",
+        "kind": "imports"
+      },
+      {
+        "from": "scripts/smoke-project-hosts.mjs",
+        "to": "external:node:url",
         "kind": "imports"
       },
       {
@@ -64207,6 +64270,16 @@
       },
       {
         "from": "src/hosts/__tests__/project-setup.test.ts",
+        "to": "src/hosts/hook-observation.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/hosts/__tests__/project-setup.test.ts",
+        "to": "src/hosts/hooks.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/hosts/__tests__/project-setup.test.ts",
         "to": "src/hosts/project-setup.ts",
         "kind": "imports"
       },
@@ -64261,6 +64334,41 @@
         "kind": "type-imports"
       },
       {
+        "from": "src/hosts/hook-observation.ts",
+        "to": "external:node:fs",
+        "kind": "imports"
+      },
+      {
+        "from": "src/hosts/hook-observation.ts",
+        "to": "external:node:path",
+        "kind": "imports"
+      },
+      {
+        "from": "src/hosts/hook-observation.ts",
+        "to": "src/hosts/asset-ownership.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/hosts/hook-observation.ts",
+        "to": "src/lib/atomic-write.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/hosts/hook-observation.ts",
+        "to": "src/orchestration/selection.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/hosts/hook-observation.ts",
+        "to": "src/orchestration/selection.ts",
+        "kind": "type-imports"
+      },
+      {
+        "from": "src/hosts/hook-observation.ts",
+        "to": "src/orchestration/state.ts",
+        "kind": "imports"
+      },
+      {
         "from": "src/hosts/hooks.ts",
         "to": "external:node:fs",
         "kind": "imports"
@@ -64269,6 +64377,16 @@
         "from": "src/hosts/hooks.ts",
         "to": "external:node:path",
         "kind": "imports"
+      },
+      {
+        "from": "src/hosts/hooks.ts",
+        "to": "src/hosts/hook-observation.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/hosts/hooks.ts",
+        "to": "src/hosts/hook-observation.ts",
+        "kind": "type-imports"
       },
       {
         "from": "src/hosts/hooks.ts",
@@ -64324,6 +64442,16 @@
         "from": "src/hosts/project-setup.ts",
         "to": "src/hosts/codex-config.ts",
         "kind": "imports"
+      },
+      {
+        "from": "src/hosts/project-setup.ts",
+        "to": "src/hosts/hook-observation.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/hosts/project-setup.ts",
+        "to": "src/hosts/hook-observation.ts",
+        "kind": "type-imports"
       },
       {
         "from": "src/hosts/project-setup.ts",
@@ -69151,6 +69279,131 @@
         "kind": "type-imports"
       },
       {
+        "from": "src/orchestration/__tests__/operation-lock.test.ts",
+        "to": "external:node:crypto",
+        "kind": "imports"
+      },
+      {
+        "from": "src/orchestration/__tests__/operation-lock.test.ts",
+        "to": "external:node:fs",
+        "kind": "imports"
+      },
+      {
+        "from": "src/orchestration/__tests__/operation-lock.test.ts",
+        "to": "external:node:os",
+        "kind": "imports"
+      },
+      {
+        "from": "src/orchestration/__tests__/operation-lock.test.ts",
+        "to": "external:node:path",
+        "kind": "imports"
+      },
+      {
+        "from": "src/orchestration/__tests__/operation-lock.test.ts",
+        "to": "external:vitest",
+        "kind": "imports"
+      },
+      {
+        "from": "src/orchestration/__tests__/operation-lock.test.ts",
+        "to": "src/orchestration/operation-lock.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/orchestration/__tests__/operation-recovery.test.ts",
+        "to": "external:node:child_process",
+        "kind": "imports"
+      },
+      {
+        "from": "src/orchestration/__tests__/operation-recovery.test.ts",
+        "to": "external:node:child_process",
+        "kind": "type-imports"
+      },
+      {
+        "from": "src/orchestration/__tests__/operation-recovery.test.ts",
+        "to": "external:node:events",
+        "kind": "imports"
+      },
+      {
+        "from": "src/orchestration/__tests__/operation-recovery.test.ts",
+        "to": "external:node:fs",
+        "kind": "imports"
+      },
+      {
+        "from": "src/orchestration/__tests__/operation-recovery.test.ts",
+        "to": "external:node:os",
+        "kind": "imports"
+      },
+      {
+        "from": "src/orchestration/__tests__/operation-recovery.test.ts",
+        "to": "external:node:path",
+        "kind": "imports"
+      },
+      {
+        "from": "src/orchestration/__tests__/operation-recovery.test.ts",
+        "to": "external:node:url",
+        "kind": "imports"
+      },
+      {
+        "from": "src/orchestration/__tests__/operation-recovery.test.ts",
+        "to": "external:vitest",
+        "kind": "imports"
+      },
+      {
+        "from": "src/orchestration/__tests__/operation-recovery.test.ts",
+        "to": "src/lib/worktree-paths.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/orchestration/__tests__/operation-recovery.test.ts",
+        "to": "src/orchestration/selection.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/orchestration/__tests__/recovery-quiescence.test.ts",
+        "to": "external:node:crypto",
+        "kind": "imports"
+      },
+      {
+        "from": "src/orchestration/__tests__/recovery-quiescence.test.ts",
+        "to": "external:node:fs",
+        "kind": "imports"
+      },
+      {
+        "from": "src/orchestration/__tests__/recovery-quiescence.test.ts",
+        "to": "external:node:os",
+        "kind": "imports"
+      },
+      {
+        "from": "src/orchestration/__tests__/recovery-quiescence.test.ts",
+        "to": "external:node:path",
+        "kind": "imports"
+      },
+      {
+        "from": "src/orchestration/__tests__/recovery-quiescence.test.ts",
+        "to": "external:vitest",
+        "kind": "imports"
+      },
+      {
+        "from": "src/orchestration/__tests__/recovery-quiescence.test.ts",
+        "to": "src/lib/worktree-paths.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/orchestration/__tests__/recovery-quiescence.test.ts",
+        "to": "src/orchestration/quiescence.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/orchestration/__tests__/recovery-quiescence.test.ts",
+        "to": "src/orchestration/state.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/orchestration/__tests__/recovery-quiescence.test.ts",
+        "to": "src/team/team-owner-epoch.ts",
+        "kind": "imports"
+      },
+      {
         "from": "src/orchestration/__tests__/selection.test.ts",
         "to": "external:node:child_process",
         "kind": "imports"
@@ -69191,6 +69444,61 @@
         "kind": "type-imports"
       },
       {
+        "from": "src/orchestration/operation-lock.ts",
+        "to": "external:node:crypto",
+        "kind": "imports"
+      },
+      {
+        "from": "src/orchestration/operation-lock.ts",
+        "to": "external:node:fs",
+        "kind": "imports"
+      },
+      {
+        "from": "src/orchestration/operation-lock.ts",
+        "to": "external:node:path",
+        "kind": "imports"
+      },
+      {
+        "from": "src/orchestration/operation-lock.ts",
+        "to": "src/team/team-owner-epoch.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/orchestration/quiescence.ts",
+        "to": "external:node:fs",
+        "kind": "imports"
+      },
+      {
+        "from": "src/orchestration/quiescence.ts",
+        "to": "external:node:path",
+        "kind": "imports"
+      },
+      {
+        "from": "src/orchestration/quiescence.ts",
+        "to": "src/lib/worktree-paths.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/orchestration/quiescence.ts",
+        "to": "src/orchestration/state.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/orchestration/quiescence.ts",
+        "to": "src/orchestration/state.ts",
+        "kind": "type-imports"
+      },
+      {
+        "from": "src/orchestration/quiescence.ts",
+        "to": "src/team/monitor.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/orchestration/quiescence.ts",
+        "to": "src/team/team-owner-epoch.ts",
+        "kind": "imports"
+      },
+      {
         "from": "src/orchestration/selection.ts",
         "to": "external:node:crypto",
         "kind": "imports"
@@ -69202,22 +69510,22 @@
       },
       {
         "from": "src/orchestration/selection.ts",
-        "to": "external:node:path",
-        "kind": "imports"
-      },
-      {
-        "from": "src/orchestration/selection.ts",
         "to": "src/lib/atomic-write.ts",
         "kind": "imports"
       },
       {
         "from": "src/orchestration/selection.ts",
-        "to": "src/lib/file-lock.ts",
+        "to": "src/lib/worktree-paths.ts",
         "kind": "imports"
       },
       {
         "from": "src/orchestration/selection.ts",
-        "to": "src/lib/worktree-paths.ts",
+        "to": "src/orchestration/operation-lock.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/orchestration/selection.ts",
+        "to": "src/orchestration/quiescence.ts",
         "kind": "imports"
       },
       {
@@ -69237,11 +69545,6 @@
       },
       {
         "from": "src/orchestration/selection.ts",
-        "to": "src/platform/index.ts",
-        "kind": "imports"
-      },
-      {
-        "from": "src/orchestration/selection.ts",
         "to": "src/team/cli-detection.ts",
         "kind": "imports"
       },
@@ -69249,6 +69552,11 @@
         "from": "src/orchestration/selection.ts",
         "to": "src/team/cli-detection.ts",
         "kind": "type-imports"
+      },
+      {
+        "from": "src/orchestration/selection.ts",
+        "to": "src/team/team-owner-epoch.ts",
+        "kind": "imports"
       },
       {
         "from": "src/orchestration/state.ts",
@@ -80592,12 +80900,12 @@
       }
     ],
     "stats": {
-      "nodeCount": 7059,
-      "edgeCount": 7774,
-      "importEdgeCount": 6411,
+      "nodeCount": 7069,
+      "edgeCount": 7825,
+      "importEdgeCount": 6457,
       "registerEdgeCount": 60
     }
   },
-  "inventorySha256": "3b060be949c55191b9ac4d5bb848a98eb7309b835b64157ef9ad451591f272f7",
-  "manifestSha256": "8e725b6aad3fcbc0d2429847a4570d458893dca872c1acdd053ac8a3f101e796"
+  "inventorySha256": "996600f1c38029801aac32ef6352886a2de0be018ec4a386ab92142da7693628",
+  "manifestSha256": "3a24171646b527d4d6f91d6b48d3f7b01917b12ec86bdbc66f3e853376797990"
 }
