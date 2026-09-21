@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 /**
- * Candidate-side containment only. This credential-free Git classifier is
+ * Candidate-side detection only. This credential-free Git classifier is
  * replaceable by a pull-request branch and never authorizes generated files.
+ * A detected candidate generated delta is reported informationally instead of
+ * failing the run; only invalid inputs and Git failures are errors.
  */
 import { spawnSync } from 'node:child_process';
 
@@ -79,10 +81,10 @@ function main() {
   const paths = diff.stdout.toString('utf8').split('\0').filter(Boolean);
   if (paths.length === 0) process.exit(0);
 
-  process.stderr.write(
-    `OWNER_CONFIRMATION_REQUIRED: candidate generated delta: ${paths.map(diagnosticPath).join(', ')}\n`,
+  process.stdout.write(
+    `INFORMATIONAL: candidate generated delta: ${paths.map(diagnosticPath).join(', ')}\n` +
+    'Merge approval is decided separately by the required "Authorize generated artifacts from base trust root" check.\n',
   );
-  process.exit(1);
 }
 
 main();

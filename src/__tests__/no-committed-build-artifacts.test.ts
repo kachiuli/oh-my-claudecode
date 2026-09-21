@@ -42,14 +42,15 @@ afterEach(() => {
   while (roots.length > 0) rmSync(roots.pop()!, { recursive: true, force: true });
 });
 
-describe('no committed build artifacts candidate classifier', () => {
+describe('candidate generated change detector', () => {
   it('uses only Node built-ins and Git, with no approval capability', () => {
     expect(CLASSIFIER_SOURCE).toContain("import { spawnSync } from 'node:child_process'");
     expect(CLASSIFIER_SOURCE).toContain("'diff', '--name-only', '-z', '--no-renames'");
     expect(CLASSIFIER_SOURCE).toContain('never authorizes generated files');
+    expect(CLASSIFIER_SOURCE).toContain('only invalid inputs and Git failures are errors');
     expect(CLASSIFIER_SOURCE).not.toMatch(/GH_TOKEN|github|npm |plugin:shipping|coordinator/);
   });
-  it('allows source-only and base-only generated deltas', () => {
+  it('passes source-only and base-only generated deltas', () => {
     const root = fixture();
     const common = git(root, ['rev-parse', 'HEAD']).trim();
     writeFileSync(join(root, 'source.txt'), 'candidate\n');
@@ -64,15 +65,20 @@ describe('no committed build artifacts candidate classifier', () => {
     expect(run(root, base, head).status).toBe(0);
   });
 
-  it('holds candidate generated deltas with a control-safe path diagnostic', () => {
+  it('reports candidate generated deltas informationally with a control-safe path diagnostic', () => {
     const root = fixture();
     const base = git(root, ['rev-parse', 'HEAD']).trim();
     mkdirSync(join(root, 'bridge'), { recursive: true });
-    writeFileSync(join(root, 'bridge', 'candidate\nname.cjs'), 'candidate\n');
+    // Windows forbids control characters in filenames; retain newline coverage on POSIX.
+    const filename = process.platform === 'win32' ? 'candidate name.cjs' : 'candidate\nname.cjs';
+    writeFileSync(join(root, 'bridge', filename), 'candidate\n');
     const head = commit(root, 'candidate artifact');
     const result = run(root, base, head);
-    expect(result.status).toBe(1);
-    expect(result.stderr).toContain('OWNER_CONFIRMATION_REQUIRED: candidate generated delta: "bridge/candidate\\nname.cjs"');
+    expect(result.status).toBe(0);
+    const diagnostic = process.platform === 'win32' ? '"bridge/candidate name.cjs"' : '"bridge/candidate\\nname.cjs"';
+    expect(result.stdout).toContain(`INFORMATIONAL: candidate generated delta: ${diagnostic}`);
+    expect(result.stdout).toContain('Merge approval is decided separately by the required "Authorize generated artifacts from base trust root" check.');
+    expect(result.stderr).toBe('');
   });
 
   it('rejects malformed, unavailable, duplicate, unknown, and mismatched head inputs', () => {
