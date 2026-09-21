@@ -4,6 +4,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -45,14 +46,14 @@ function writeJson(path: string, value: unknown): void {
   writeFileSync(path, JSON.stringify(value), "utf8");
 }
 
-function fixture(): RecoveryFixture {
-  const root = mkdtempSync(join(tmpdir(), "omc-recovery-quiescence-"));
-  temporaryDirectories.push(root);
+function fixtureAt(candidate: string): RecoveryFixture {
+  const root = realpathSync(candidate);
   writeFileSync(join(root, ".omc-workspace"), "{}", "utf8");
   process.env.OMC_STATE_DIR = join(root, "central-state");
   clearWorktreeCache();
-  const stateRoot = join(getOmcRoot(root), "state");
-  const currentKey = resolveOrchestratorPaths(root).repositoryKey;
+  const paths = resolveOrchestratorPaths(root);
+  const stateRoot = join(getOmcRoot(paths.repositoryRoot), "state");
+  const currentKey = paths.repositoryKey;
   const siblingKey = `${currentKey[0] === "a" ? "b" : "a"}`.repeat(64);
   return {
     root,
@@ -61,6 +62,14 @@ function fixture(): RecoveryFixture {
     repositoryStates: join(stateRoot, "orchestrator", "repositories"),
     siblingKey,
   };
+}
+
+function fixture(): RecoveryFixture {
+  const root = realpathSync(
+    mkdtempSync(join(tmpdir(), "omc-recovery-quiescence-")),
+  );
+  temporaryDirectories.push(root);
+  return fixtureAt(root);
 }
 
 function worker(operationalState: "active" | "stopped" = "stopped") {
@@ -248,6 +257,32 @@ afterEach(() => {
 });
 
 describe("orchestrator recovery quiescence", () => {
+  it("reads fixture state through a canonical directory alias", () => {
+    const container = realpathSync(
+      mkdtempSync(join(tmpdir(), "omc-recovery-quiescence-alias-")),
+    );
+    temporaryDirectories.push(container);
+    const actual = join(container, "actual");
+    const alias = join(container, "alias");
+    mkdirSync(actual);
+    symlinkSync(actual, alias, "junction");
+    const testFixture = fixtureAt(alias);
+    const productionStateRoot = join(
+      getOmcRoot(resolveOrchestratorPaths(alias).repositoryRoot),
+      "state",
+    );
+    expect(testFixture.root).toBe(realpathSync(actual));
+    expect(testFixture.stateRoot).toBe(productionStateRoot);
+    writeJson(
+      join(testFixture.teamRoot, "workflow.json"),
+      workflowState("running"),
+    );
+
+    expect(() => assertOrchestratorRecoveryQuiescent(alias)).toThrow(
+      "orchestrator_active_attempt",
+    );
+  });
+
   it("refuses a live idle worker while allowing its unclaimed pending task once stopped", () => {
     const testFixture = fixture();
     const config = join(testFixture.teamRoot, "config.json");
