@@ -34,7 +34,7 @@ describe('plugin shipping release guidance', () => {
     );
   });
 
-  it('keeps candidate artifact containment non-authoritative and credential-free', () => {
+  it('keeps candidate artifact detection non-authoritative, credential-free and informational', () => {
     const ciJobs = CI_WORKFLOW.slice(0, CI_WORKFLOW.indexOf('\n  release:'));
     expect(PACKAGE_JSON.scripts?.['plugin:shipping:check-pr']).toBe(
       'node scripts/plugin-shipping-surface.mjs check-pr',
@@ -42,6 +42,9 @@ describe('plugin shipping release guidance', () => {
     expect(CI_WORKFLOW).toMatch(/permissions:\n\s+contents: read/);
     expect(CI_WORKFLOW).not.toMatch(/pull-requests:\s*write/);
     expect(CI_WORKFLOW).toContain('ref: ${{ github.event.pull_request.head.sha }}');
+    expect(CI_WORKFLOW).toContain('name: Detect Candidate Generated Changes');
+    expect(CI_WORKFLOW).toContain('name: Report candidate generated changes');
+    expect(CI_WORKFLOW).not.toContain('OWNER_CONFIRMATION_REQUIRED');
     expect(CI_WORKFLOW).toContain(
       'node scripts/ci/check-no-committed-build-artifacts.mjs --base "$BASE_SHA" --head "$HEAD_SHA"',
     );
@@ -53,11 +56,13 @@ describe('plugin shipping release guidance', () => {
     expect(ciJobs).not.toContain('claude-md-coordinator');
     expect(CONTRIBUTING).toContain('credential-free, candidate-side classifier');
     expect(CONTRIBUTING).toContain('non-authoritative for every contributor and maintainer');
+    expect(CONTRIBUTING).toContain('reports any candidate `dist/` or `bridge/` delta as an informational message');
+    expect(CONTRIBUTING).toContain('never fails the run for a generated change');
     expect(CONTRIBUTING).toContain('workflow root **W**');
     expect(CONTRIBUTING).toContain('verifier/manifest root **B**');
     expect(CONTRIBUTING).toContain('final PR head **H**');
     expect(CONTRIBUTING).toContain('fresh eligible event');
-    expect(CONTRIBUTING).toContain('remove this ordinary candidate check from required checks or supersede it');
+    expect(CONTRIBUTING).toContain('must not be treated as required coverage for generated changes');
     expect(CONTRIBUTING).not.toContain('cryptographically signed by that owner');
     expect(CONTRIBUTING).not.toContain('plugin:shipping:stage');
   });

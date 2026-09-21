@@ -234,10 +234,11 @@ jobs:
           retention-days: 7
 
   no-committed-build-artifacts:
-    name: No Committed Build Artifacts
+    name: Detect Candidate Generated Changes
     runs-on: ubuntu-latest
-    # This candidate-side classifier is credential-free containment only; it
-    # never authorizes generated artifacts or supplies merge approval.
+    # This credential-free candidate detector only reports generated changes
+    # informationally; it never authorizes generated artifacts, supplies merge
+    # approval, or fails a run over a generated delta.
     if: github.event_name == 'pull_request'
     steps:
       - uses: actions/checkout@v4
@@ -251,7 +252,7 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Hold candidate generated changes
+      - name: Report candidate generated changes
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}

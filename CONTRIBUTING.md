@@ -246,7 +246,7 @@ npm run build
 
 Runs the complete pipeline: `tsc` → esbuild bundles → docs composition → all bridge artifacts.
 
-### Generated `dist/` and `bridge/` changes are held
+### Generated `dist/` and `bridge/` changes are detected and reported
 
 `npm run build` regenerates `dist/` and `bridge/`. **Do not commit these build artifacts in ordinary PRs.** They are gitignored, but tracked `bridge/*.cjs` bundles can appear modified after a rebuild. Committing them inflates the diff, causes merge conflicts, and obscures the source change.
 
@@ -256,9 +256,9 @@ Before committing, restore them:
 git restore dist/ bridge/
 ```
 
-The ordinary PR **No Committed Build Artifacts** job is a credential-free, candidate-side classifier. It is replaceable by the PR branch, is non-authoritative for every contributor and maintainer, and holds any candidate `dist/` or `bridge/` delta with `OWNER_CONFIRMATION_REQUIRED`; it cannot approve a generated change or authorize a merge.
+The ordinary PR **Detect Candidate Generated Changes** job is a credential-free, candidate-side classifier. It is replaceable by the PR branch, is non-authoritative for every contributor and maintainer, and reports any candidate `dist/` or `bridge/` delta as an informational message; it never fails the run for a generated change and cannot approve one or authorize a merge. Invalid inputs and Git failures still fail the job.
 
-A generated delta remains held until owners provide protected split-root authorization: workflow root **W** is the reviewed workflow commit on default `main`; verifier/manifest root **B** is the detached protected `dev` event-base commit. The protected evidence must bind the final PR head **H**, its unique merge base, and complete generated delta records, then be evaluated in a fresh eligible event after B exists. Before merge, target-branch governance must remove this ordinary candidate check from required checks or supersede it with the required protected split-root check.
+Authorizing a generated delta remains a protected split-root decision: workflow root **W** is the reviewed workflow commit on default `main`; verifier/manifest root **B** is the detached protected target-branch (`main` or `dev`) event-base commit. The protected evidence must bind the final PR head **H**, its unique merge base, and complete generated delta records, then be evaluated in a fresh eligible event after B exists. Because the ordinary candidate check only reports, it must not be treated as required coverage for generated changes. Require **Authorize generated artifacts from base trust root**, supplied by GitHub Actions, in target-branch protection; enforce it for administrators too.
 
 ---
 
