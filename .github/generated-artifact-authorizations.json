@@ -406,6 +406,80 @@
           "previousFilename": null
         }
       ]
+    },
+    {
+      "pullNumber": 8,
+      "targetRef": "main",
+      "mergeBaseSha": "f12b3d80a8db13e91be59d13a39b10b04f65601e",
+      "headSha": "63c28a1fe64a9ab1a9b7f81892adebb759e40c9c",
+      "owner": "kachiuli",
+      "expiresAt": "2026-09-28T00:46:33.333Z",
+      "generatedDelta": {
+        "count": 10,
+        "sha256": "90564198364abe1e72f4a57a3e59994089a18d30d428f659893b489fa8b3e99b"
+      },
+      "generatedFiles": [
+        {
+          "status": "modified",
+          "filename": "bridge/cli.cjs",
+          "sha": "e78ce3afef0d21f1d86d00eba79a80470380cad2",
+          "previousFilename": null
+        },
+        {
+          "status": "modified",
+          "filename": "dist/cli/commands/orchestrator.js",
+          "sha": "e3568366a500a83be4b3153df9e2fb142a06ec8d",
+          "previousFilename": null
+        },
+        {
+          "status": "modified",
+          "filename": "dist/cli/project-launch.js",
+          "sha": "2d04472546a73a7ac876391bcaa2c8153e44d261",
+          "previousFilename": null
+        },
+        {
+          "status": "added",
+          "filename": "dist/hosts/hook-observation.js",
+          "sha": "57d30489d0ad566297ffbf0c5aa53917c44f21e0",
+          "previousFilename": null
+        },
+        {
+          "status": "modified",
+          "filename": "dist/hosts/hooks.js",
+          "sha": "65f3dbcd9d03545539ff90c3c8392f992a0a1836",
+          "previousFilename": null
+        },
+        {
+          "status": "modified",
+          "filename": "dist/hosts/project-setup.js",
+          "sha": "508825ec4e043eea2d66860315082234fd0a6b08",
+          "previousFilename": null
+        },
+        {
+          "status": "added",
+          "filename": "dist/orchestration/operation-lock.js",
+          "sha": "fcccda0cd6a78ceaa2b4e584861577b2ba7aab1a",
+          "previousFilename": null
+        },
+        {
+          "status": "added",
+          "filename": "dist/orchestration/quiescence.js",
+          "sha": "5e5216136d5c18c268c0e1179f7f13785a1d998d",
+          "previousFilename": null
+        },
+        {
+          "status": "modified",
+          "filename": "dist/orchestration/selection.js",
+          "sha": "f3a9425bee75769115e2776f2c0bda4d6b279bd8",
+          "previousFilename": null
+        },
+        {
+          "status": "modified",
+          "filename": "dist/orchestration/state.js",
+          "sha": "f31785f79339156e32a1e4521fa7e1b399286d09",
+          "previousFilename": null
+        }
+      ]
     }
   ]
 }
