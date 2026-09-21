@@ -4,6 +4,7 @@ import {
   acquireOrchestratorLease,
   assertActiveOrchestratorAvailable,
   assertOrchestratorSession,
+  beginOrchestratorLeaseProcessRegistration,
   orchestratorLeaseEnvironment,
   probeOrchestratorCli,
   readOrchestratorRepositoryConfig,
@@ -235,6 +236,7 @@ export async function launchProjectOrchestrator(
       requested.args,
       requested.resumeId,
     );
+    await beginOrchestratorLeaseProcessRegistration(repositoryRoot, lease);
     const code = await (options.run ?? runNativeHost)(cli.path, hostArgs, {
       cwd: repositoryRoot,
       env: { ...environment, ...orchestratorLeaseEnvironment(lease) },

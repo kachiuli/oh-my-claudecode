@@ -1,17 +1,14 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual, } from "node:crypto";
-import { existsSync, lstatSync, readdirSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { existsSync } from "node:fs";
 import { atomicWriteJson } from "../lib/atomic-write.js";
-import { acquireFileLock, releaseFileLock } from "../lib/file-lock.js";
-import { getOmcRoot, resolveSessionStatePaths } from "../lib/worktree-paths.js";
-import { isProcessAlive } from "../platform/index.js";
+import { resolveSessionStatePaths } from "../lib/worktree-paths.js";
 import { probeCli } from "../team/cli-detection.js";
-import { activeFrom, assertNoCompetingOmx, assertRuntimeStateWritable, boundedText, exactObject, isHost, parseCheckpoint, parseRepositoryConfig, parseRevision, parseSessionId, parseTimestamp, parseUuid, readBoundedJson, readOrchestratorRepositoryConfig, readRuntimeState, repositoryRoot, resolveOrchestratorPaths, } from "./state.js";
+import { currentProcessStartIdentity } from "../team/team-owner-epoch.js";
+import { cachedCurrentProcessStartIdentity, releaseOrchestratorOperationLock, tryAcquireOrchestratorOperationLock, withExplicitOrchestratorOperationRecovery, } from "./operation-lock.js";
+import { assertLeaseProcessesRecoverable, assertOrchestratorQuiescent, assertOrchestratorRecoveryQuiescent, } from "./quiescence.js";
+import { activeFrom, assertNoCompetingOmx, assertRuntimeStateWritable, boundedText, exactObject, isHost, parseCheckpoint, parseRepositoryConfig, parseRevision, parseSessionId, parseTimestamp, parseUuid, readBoundedJson, readOrchestratorRepositoryConfig, readRuntimeState, resolveOrchestratorPaths, } from "./state.js";
 export { readOrchestratorRepositoryConfig, resolveOrchestratorPaths, } from "./state.js";
-const WORKFLOW_BYTES = 16 * 1024 * 1024;
 const SMALL_STATE_BYTES = 16 * 1024;
-const MAX_QUIESCENCE_ENTRIES = 4096;
-const NEVER_REAP_STALE_LOCK_MS = Number.MAX_SAFE_INTEGER;
 export const ORCHESTRATOR_ENV = Object.freeze({
     host: "OMC_ORCHESTRATOR_HOST",
     selectionRevision: "OMC_ORCHESTRATOR_SELECTION_REVISION",
@@ -35,16 +32,9 @@ async function writeRuntimeState(cwd, state) {
     await atomicWriteJson(resolveOrchestratorPaths(cwd).state, state);
 }
 async function withOperationGate(cwd, action) {
-    if (process.env.OMC_TEAM_WORKER ||
-        process.env.OMC_TEAM_WORKER_NAME ||
-        process.env.OMC_TEAM_WORKTREE_PATH) {
-        throw new Error("workflow_lead_authority_required");
-    }
+    assertWorkflowLeadAuthority();
     const paths = resolveOrchestratorPaths(cwd);
-    const handle = await acquireFileLock(paths.operationLock, {
-        timeoutMs: 0,
-        staleLockMs: NEVER_REAP_STALE_LOCK_MS,
-    });
+    const handle = tryAcquireOrchestratorOperationLock(paths);
     if (!handle)
         throw new Error("orchestrator_operation_locked");
     try {
@@ -57,7 +47,7 @@ async function withOperationGate(cwd, action) {
         return await action(paths);
     }
     finally {
-        releaseFileLock(handle);
+        releaseOrchestratorOperationLock(handle);
     }
 }
 function credentialsTokenHash(token) {
@@ -147,76 +137,13 @@ function assertHostAvailable(host, probe) {
         throw new Error(`orchestrator_host_unavailable: ${host}. ${INSTALL_GUIDANCE[host]}`);
     }
 }
-function walkQuiescenceTree(directory, visit, budget) {
-    if (!existsSync(directory))
-        return;
-    const rootInfo = lstatSync(directory);
-    if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink())
-        throw new Error("orchestrator_quiescence_unverified");
-    for (const entry of readdirSync(directory, { withFileTypes: true })) {
-        budget.remaining--;
-        if (budget.remaining < 0)
-            throw new Error("orchestrator_quiescence_scan_overflow");
-        const path = join(directory, entry.name);
-        if (entry.isSymbolicLink())
-            throw new Error("orchestrator_quiescence_unverified");
-        if (entry.isDirectory())
-            walkQuiescenceTree(path, visit, budget);
-        else if (entry.isFile())
-            visit(path);
-    }
-}
-function assertWorkflowFileQuiescent(path) {
-    const raw = readBoundedJson(path, WORKFLOW_BYTES, "orchestrator_quiescence_unverified");
-    if (!raw || typeof raw !== "object" || Array.isArray(raw))
-        throw new Error("orchestrator_quiescence_unverified");
-    const tasks = raw.tasks;
-    if (!Array.isArray(tasks))
-        throw new Error("orchestrator_quiescence_unverified");
-    if (tasks.some((task) => task &&
-        typeof task === "object" &&
-        !Array.isArray(task) &&
-        task.status === "running")) {
-        throw new Error("orchestrator_active_attempt");
-    }
-}
-function assertTaskFileQuiescent(path) {
-    const raw = readBoundedJson(path, SMALL_STATE_BYTES, "orchestrator_quiescence_unverified");
-    if (!raw || typeof raw !== "object" || Array.isArray(raw))
-        throw new Error("orchestrator_quiescence_unverified");
-    const task = raw;
-    const terminal = ["completed", "failed", "cancelled"].includes(String(task.status));
-    if (task.status === "running" ||
-        task.status === "in_progress" ||
-        (!terminal && task.claim !== undefined)) {
-        throw new Error("orchestrator_active_attempt");
-    }
-}
-function assertQuiescent(cwd) {
-    const stateRoot = join(getOmcRoot(repositoryRoot(cwd)), "state");
-    const inspect = (path) => {
-        const name = basename(path);
-        if (name.endsWith(".lock") ||
-            name.startsWith(".lock-") ||
-            name.endsWith("-lock")) {
-            throw new Error("orchestrator_workflow_locked");
-        }
-        if (name === "workflow.json")
-            assertWorkflowFileQuiescent(path);
-        if (/^task-[^.]+\.json$/.test(name) && basename(dirname(path)) === "tasks")
-            assertTaskFileQuiescent(path);
-    };
-    const budget = { remaining: MAX_QUIESCENCE_ENTRIES };
-    walkQuiescenceTree(join(stateRoot, "team"), inspect, budget);
-    walkQuiescenceTree(join(stateRoot, "team-recovery"), inspect, budget);
-}
 export async function updateOrchestratorRepositoryConfig(cwd, transform) {
     return withOperationGate(cwd, async (paths) => {
         assertNoCompetingOmx(paths);
         const state = readRuntimeState(cwd);
         if (state.lease)
             throw new Error("orchestrator_active_lease");
-        assertQuiescent(cwd);
+        assertOrchestratorQuiescent(cwd);
         const current = readOrchestratorRepositoryConfig(cwd);
         const config = parseRepositoryConfig(await transform(current));
         if (state.selection &&
@@ -247,7 +174,7 @@ export async function selectOrchestrator(cwd, target, options = {}) {
         const state = readRuntimeState(cwd);
         if (state.lease)
             throw new Error("orchestrator_active_lease");
-        assertQuiescent(cwd);
+        assertOrchestratorQuiescent(cwd);
         if (state.selection?.host === target)
             return activeFrom(config, state);
         const selectedAt = new Date().toISOString();
@@ -276,6 +203,20 @@ export function readOrchestratorStatus(cwd, options = {}) {
             acquiredAt: state.lease.acquiredAt,
         })
         : null;
+    const lastRecovery = state.lastRecovery
+        ? Object.freeze({
+            id: state.lastRecovery.id,
+            host: state.lastRecovery.host,
+            selectionRevision: state.lastRecovery.selectionRevision,
+            checkpoint: state.lastRecovery.checkpoint,
+            recoveredOperationLock: state.lastRecovery.recoveredOperationLock,
+            recoveredLease: state.lastRecovery.recoveredLease,
+            ...(state.lastRecovery.operationOwner
+                ? { operationOwnerPid: state.lastRecovery.operationOwner.pid }
+                : {}),
+            at: state.lastRecovery.at,
+        })
+        : null;
     return Object.freeze({
         active,
         availability: Object.freeze({
@@ -283,6 +224,7 @@ export function readOrchestratorStatus(cwd, options = {}) {
             codex: normalizedProbeResult("codex", options.probe),
         }),
         lease,
+        lastRecovery,
     });
 }
 export function assertActiveOrchestratorAvailable(cwd, options = {}) {
@@ -304,7 +246,7 @@ export async function acquireOrchestratorLease(cwd, session) {
             throw new Error("orchestrator_session_host_mismatch");
         if (state.lease)
             throw new Error("orchestrator_active_lease");
-        assertQuiescent(cwd);
+        assertOrchestratorQuiescent(cwd);
         const token = randomBytes(32).toString("hex");
         const credentials = Object.freeze({
             host: active.host,
@@ -321,17 +263,17 @@ export async function acquireOrchestratorLease(cwd, session) {
             tokenHash: credentialsTokenHash(token),
             ownerPid: process.pid,
             relatedPids: [],
+            ownerProcessStartedAt: cachedCurrentProcessStartIdentity(),
+            relatedProcesses: [],
+            processRegistration: "not-started",
             acquiredAt: new Date().toISOString(),
         };
         await writeRuntimeState(cwd, { ...state, schemaVersion: 1, lease });
         return credentials;
     });
 }
-/** Register a spawned native host process so explicit crash recovery cannot overtake it. */
-export async function registerOrchestratorLeaseProcess(cwd, credentials, pid) {
-    if (!Number.isSafeInteger(pid) || pid <= 0) {
-        throw new Error("orchestrator_invalid_process");
-    }
+/** Fence the spawn window before a native host process can be created. */
+export async function beginOrchestratorLeaseProcessRegistration(cwd, credentials) {
     await withOperationGate(cwd, async (paths) => {
         const config = readOrchestratorRepositoryConfig(cwd);
         if (config)
@@ -340,7 +282,35 @@ export async function registerOrchestratorLeaseProcess(cwd, credentials, pid) {
         const active = activeFrom(config, state);
         assertLeaseCredentials(active, state.lease, credentials);
         const lease = state.lease;
-        if (pid === lease.ownerPid || lease.relatedPids.includes(pid))
+        if (lease.processRegistration === "pending")
+            return;
+        if (lease.processRegistration === "complete") {
+            throw new Error("orchestrator_process_registration_complete");
+        }
+        await writeRuntimeState(cwd, {
+            ...state,
+            schemaVersion: 1,
+            lease: { ...lease, processRegistration: "pending" },
+        });
+    });
+}
+/** Register a spawned native host process so explicit crash recovery cannot overtake it. */
+export async function registerOrchestratorLeaseProcess(cwd, credentials, pid) {
+    if (!Number.isSafeInteger(pid) || pid <= 0) {
+        throw new Error("orchestrator_invalid_process");
+    }
+    const processStartedAt = currentProcessStartIdentity(pid);
+    await withOperationGate(cwd, async (paths) => {
+        const config = readOrchestratorRepositoryConfig(cwd);
+        if (config)
+            assertNoCompetingOmx(paths);
+        const state = readRuntimeState(cwd);
+        const active = activeFrom(config, state);
+        assertLeaseCredentials(active, state.lease, credentials);
+        const lease = state.lease;
+        if (pid === lease.ownerPid)
+            return;
+        if (lease.relatedPids.includes(pid))
             return;
         if (lease.relatedPids.length >= 32) {
             throw new Error("orchestrator_process_limit_reached");
@@ -348,38 +318,96 @@ export async function registerOrchestratorLeaseProcess(cwd, credentials, pid) {
         await writeRuntimeState(cwd, {
             ...state,
             schemaVersion: 1,
-            lease: { ...lease, relatedPids: [...lease.relatedPids, pid] },
+            lease: {
+                ...lease,
+                relatedPids: [...lease.relatedPids, pid],
+                relatedProcesses: [
+                    ...(lease.relatedProcesses ??
+                        lease.relatedPids.map((relatedPid) => ({
+                            pid: relatedPid,
+                            processStartedAt: null,
+                        }))),
+                    { pid, processStartedAt },
+                ],
+                processRegistration: "complete",
+            },
         });
     });
 }
-/** Explicitly clear a crashed lead lease only after every known process is dead and state is quiescent. */
+function assertWorkflowLeadAuthority() {
+    if (process.env.OMC_TEAM_WORKER ||
+        process.env.OMC_TEAM_WORKER_NAME ||
+        process.env.OMC_TEAM_WORKTREE_PATH) {
+        throw new Error("workflow_lead_authority_required");
+    }
+}
+/** Explicitly recover an abandoned operation and any verifiably dead lead lease. */
 export async function recoverOrchestratorLease(cwd, checkpointInput) {
+    assertWorkflowLeadAuthority();
     const checkpoint = parseCheckpoint(checkpointInput);
-    await withOperationGate(cwd, async (paths) => {
+    const paths = resolveOrchestratorPaths(cwd);
+    const validateRecovery = (abandonedOperation) => {
         const config = readOrchestratorRepositoryConfig(cwd);
         if (config)
             assertNoCompetingOmx(paths);
         const state = readRuntimeState(cwd);
-        const lease = state.lease;
-        if (!lease)
-            throw new Error("orchestrator_lease_not_found");
-        if (isProcessAlive(lease.ownerPid) ||
-            lease.relatedPids.some((pid) => isProcessAlive(pid))) {
-            throw new Error("orchestrator_lease_owner_alive");
+        const active = activeFrom(config, state);
+        const environmentCredentials = readOrchestratorLeaseCredentialsFromEnvironment();
+        if (environmentCredentials) {
+            assertLeaseCredentials(active, state.lease, environmentCredentials);
         }
-        assertQuiescent(cwd);
-        const lastCheckpoint = {
-            host: lease.host,
-            sessionId: lease.sessionId,
-            selectionRevision: lease.selectionRevision,
+        const lease = state.lease;
+        if (lease &&
+            (lease.host !== active.host ||
+                lease.selectionRevision !== active.selectionRevision)) {
+            throw new Error("orchestrator_lease_state_mismatch");
+        }
+        if (!abandonedOperation && !lease) {
+            throw new Error("orchestrator_recovery_not_needed");
+        }
+        assertOrchestratorRecoveryQuiescent(cwd);
+        if (lease)
+            assertLeaseProcessesRecoverable(lease);
+        return { state, active, lease };
+    };
+    await withExplicitOrchestratorOperationRecovery(paths, async (abandonedOperation) => {
+        validateRecovery(abandonedOperation);
+    }, async (abandonedOperation) => {
+        const { state, active, lease } = validateRecovery(abandonedOperation);
+        const at = new Date().toISOString();
+        const lastRecovery = {
+            id: randomUUID(),
+            host: active.host,
+            selectionRevision: active.selectionRevision,
             checkpoint,
-            at: new Date().toISOString(),
+            recoveredOperationLock: abandonedOperation !== null,
+            recoveredLease: lease !== undefined,
+            ...(abandonedOperation?.processStartedAt
+                ? {
+                    operationOwner: {
+                        pid: abandonedOperation.pid,
+                        processStartedAt: abandonedOperation.processStartedAt,
+                        nonce: abandonedOperation.nonce,
+                    },
+                }
+                : {}),
+            at,
         };
+        const lastCheckpoint = lease
+            ? {
+                host: lease.host,
+                sessionId: lease.sessionId,
+                selectionRevision: lease.selectionRevision,
+                checkpoint,
+                at,
+            }
+            : undefined;
         const { lease: _lease, ...withoutLease } = state;
         await writeRuntimeState(cwd, {
             ...withoutLease,
             schemaVersion: 1,
-            lastCheckpoint,
+            ...(lastCheckpoint ? { lastCheckpoint } : {}),
+            lastRecovery,
         });
     });
 }
@@ -392,7 +420,7 @@ export async function releaseOrchestratorLease(cwd, credentials, checkpointInput
         const state = readRuntimeState(cwd);
         const active = activeFrom(config, state);
         assertLeaseCredentials(active, state.lease, credentials);
-        assertQuiescent(cwd);
+        assertOrchestratorQuiescent(cwd);
         const lastCheckpoint = {
             host: credentials.host,
             sessionId: credentials.sessionId,
@@ -425,7 +453,7 @@ export async function handoffOrchestrator(cwd, target, options) {
         if (active.host === target)
             throw new Error("orchestrator_handoff_same_host");
         assertLeaseCredentials(active, state.lease, options.credentials);
-        assertQuiescent(cwd);
+        assertOrchestratorQuiescent(cwd);
         const at = new Date().toISOString();
         const nextRevision = randomUUID();
         const handoff = Object.freeze({

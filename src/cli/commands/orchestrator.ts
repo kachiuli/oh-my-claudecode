@@ -92,7 +92,7 @@ export function registerOrchestratorCommands(program: Command): void {
   command
     .command("recover")
     .description(
-      "Recover an abandoned host lease only after all recorded processes have exited",
+      "Recover an abandoned operation lock and host lease after verified process exit",
     )
     .requiredOption(
       "--checkpoint <kind>",

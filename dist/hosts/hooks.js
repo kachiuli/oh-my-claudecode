@@ -1,12 +1,7 @@
 import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { assertOrchestratorSession, recordOrchestratorSession, resolveOrchestratorPaths, } from "../orchestration/selection.js";
-const SUPPORTED_EVENTS = new Set([
-    "SessionStart",
-    "SessionEnd",
-    "UserPromptSubmit",
-    "Stop",
-]);
+import { captureNativeHookObservationContext, isNativeHostHookEvent, recordAcceptedHostHook, } from "./hook-observation.js";
 function boundedField(value, maximum, error) {
     if (typeof value !== "string" ||
         value.length === 0 ||
@@ -43,17 +38,30 @@ export async function handleHostHook(invocationCwd, host, payloadInput) {
     }
     const payload = payloadInput;
     const event = boundedField(payload.hook_event_name, 64, "orchestrator_invalid_hook_payload");
-    if (!SUPPORTED_EVENTS.has(event)) {
+    if (!isNativeHostHookEvent(event)) {
         throw new Error(`orchestrator_unsupported_hook_event: ${event}`);
     }
     const sessionId = boundedField(payload.session_id, 256, "orchestrator_invalid_hook_payload");
     const cwd = hookWorkingDirectory(invocationCwd, payload.cwd);
+    let observationContext = null;
+    try {
+        observationContext = captureNativeHookObservationContext(cwd, host);
+    }
+    catch {
+        // Diagnostics are optional for legacy or partially installed host assets.
+    }
     if (event === "SessionStart") {
         if (payload.source !== undefined &&
             !["startup", "resume", "clear", "compact"].includes(String(payload.source))) {
             throw new Error("orchestrator_invalid_hook_payload");
         }
-        await recordOrchestratorSession(cwd, host, sessionId);
+        const acceptedSession = await recordOrchestratorSession(cwd, host, sessionId);
+        try {
+            await recordAcceptedHostHook(cwd, host, event, acceptedSession.selectionRevision, observationContext);
+        }
+        catch {
+            // Execution observations are advisory and never weaken the core gate.
+        }
         return Object.freeze({
             continue: true,
             suppressOutput: true,
@@ -63,7 +71,13 @@ export async function handleHostHook(invocationCwd, host, payloadInput) {
             }),
         });
     }
-    assertOrchestratorSession(cwd, host, sessionId);
+    const acceptedSession = assertOrchestratorSession(cwd, host, sessionId);
+    try {
+        await recordAcceptedHostHook(cwd, host, event, acceptedSession.selectionRevision, observationContext);
+    }
+    catch {
+        // Legacy hooks and authoritative session checks remain usable without diagnostics.
+    }
     return Object.freeze({ continue: true, suppressOutput: true });
 }
 //# sourceMappingURL=hooks.js.map

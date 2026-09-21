@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 import { readOrchestratorRepositoryConfig, readActiveOrchestrator, resolveOrchestratorPaths, updateOrchestratorRepositoryConfig, } from "../orchestration/selection.js";
 import { probeCli } from "../team/cli-detection.js";
 import { hasTomlTableInsertionConflict } from "./codex-config.js";
+import { readNativeHookDiagnostics, } from "./hook-observation.js";
 import { PROJECT_IGNORE_PATH, projectIgnoreAsset, projectIgnoreIssues, } from "./project-ignore.js";
 import { RECEIPT_PATH, applyMutations, assetIssue, assertRelativePath, mergeManagedBlock, mergedCodexMarketplace, mergedCodexHooks, parseReceipt, portablePath, readSource, readTarget, removedManagedAssetContent, sha256, } from "./asset-ownership.js";
 const GUIDANCE_START = "<!-- OMC:PROJECT-HOST:START -->";
@@ -524,6 +525,11 @@ export async function doctorProjectHosts(cwd) {
         if (config?.supportedHosts.includes(host) && !cli.found)
             issues.push(`CLI unavailable: ${cli.error ?? `${host} --version failed`}`);
         const nativeHooksSupported = host === "claude" ? cli.found : codexNativeHooksSupported(cli);
+        const hookDiagnostics = readNativeHookDiagnostics(root, host, !cli.found
+            ? "cli-unavailable"
+            : nativeHooksSupported
+                ? "supported"
+                : "unsupported");
         entries[host] = Object.freeze({
             installed: installed !== undefined,
             healthy: installed !== undefined && issues.length === 0,
@@ -536,6 +542,7 @@ export async function doctorProjectHosts(cwd) {
                         ? "native-hooks"
                         : "cli-gate-fallback",
             nativeHooksSupported,
+            hookDiagnostics,
             issues: Object.freeze(issues),
         });
     }
@@ -546,7 +553,8 @@ export async function doctorProjectHosts(cwd) {
         hosts: Object.freeze(entries),
         issues: Object.freeze(generalIssues),
         lifecycleNotes: Object.freeze([
-            "Native hook definitions require host trust and can be disabled; OMC CLI operation and publication gates remain authoritative.",
+            "OMC does not inspect or modify native trust stores. Project trust and new or changed hook definitions must be reviewed in the host; observed execution is advisory only.",
+            "Native hook definitions can be disabled or skipped; OMC CLI operation and publication gates remain authoritative.",
             "Codex SessionEnd is advisory, and hosted tools can bypass local tool hooks. Launch leases and explicit checkpoints enforce handoff safety.",
         ]),
     });

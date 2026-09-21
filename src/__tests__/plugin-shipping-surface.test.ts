@@ -96,6 +96,7 @@ function createFixture(options: FixtureOptions = {}): Fixture {
   git(root, ['init', '--quiet']);
   git(root, ['config', 'user.name', 'Fixture']);
   git(root, ['config', 'user.email', 'fixture@example.test']);
+  git(root, ['config', 'core.autocrlf', 'false']);
   git(root, ['add', '.']);
   git(root, ['add', '-f', '--', 'dist/index.js', 'dist/runtime.js', 'bridge/mcp-server.cjs']);
   if (options.trackCli !== false) git(root, ['add', '-f', '--', 'bridge/cli.cjs']);
@@ -267,17 +268,46 @@ describe('plugin shipping surface transaction', () => {
     const module = await shippingSurface;
 
     expect(module.buildStageArguments(['bridge/cli.cjs', 'bridge/mcp-server.cjs', 'bridge/cli.cjs'])).toEqual([
+      '--literal-pathspecs',
       'add',
       '-f',
-      '--',
-      'bridge/cli.cjs',
-      'bridge/mcp-server.cjs',
+      '--pathspec-from-file=-',
+      '--pathspec-file-nul',
     ]);
+    expect(module.buildStageArguments([])).toBeNull();
+    expect(module.buildStageArguments(Array.from({ length: 2_000 }, (_, index) => `dist/runtime-${index}.js`)))
+      .toHaveLength(5);
 
     const result = run(fixture.root, 'stage');
 
     expect(result.status).toBe(0);
     expect(git(fixture.root, ['diff', '--cached', '--name-only']).trim()).toBe('bridge/cli.cjs');
+  });
+
+  it('stages spaces, non-ASCII names, and pathspec metacharacters literally', () => {
+    const fixture = createFixture();
+    writeJson(join(fixture.root, 'package.json'), {
+      name: 'fixture-plugin',
+      version: '1.0.0',
+      type: 'module',
+      main: './dist/index.js',
+      bin: { fixture: './bridge/cli.cjs' },
+      files: ['dist', 'bridge/claude-md-coordinator.cjs'],
+    });
+    git(fixture.root, ['add', 'package.json']);
+    git(fixture.root, ['commit', '--quiet', '-m', 'declare generated runtime directory']);
+    const generatedPaths = ['dist/[literal].js', 'dist/space name.js', 'dist/运行时.js'];
+    for (const repoPath of generatedPaths) {
+      writeFileSync(join(fixture.root, repoPath), 'export default true;\n');
+    }
+
+    const result = run(fixture.root, 'stage');
+    const staged = git(fixture.root, ['diff', '--cached', '--name-only', '-z'])
+      .split('\0')
+      .filter(Boolean);
+
+    expect(result.status).toBe(0);
+    expect(new Set(staged)).toEqual(new Set(generatedPaths));
   });
 
   it('stages a deletion from the prior runtime closure with its desired replacement', () => {
@@ -287,7 +317,7 @@ describe('plugin shipping surface transaction', () => {
 
     const result = run(fixture.root, 'stage');
 
-    expect(result.status).toBe(0);
+    expect(result.status, result.stderr).toBe(0);
     expect(git(fixture.root, ['diff', '--cached', '--name-only']).trim().split(/\n/)).toEqual([
       'bridge/mcp-helper.cjs',
       'bridge/mcp-server.cjs',
@@ -353,8 +383,12 @@ describe('plugin shipping surface transaction', () => {
 
   it('rejects initial runtime entrypoints that escape through a symlink', () => {
     const fixture = createFixture();
+    const outsideRoot = mkdtempSync(join(tmpdir(), 'omc-shipping-outside-'));
+    tempRoots.push(outsideRoot);
+    const outsideFile = join(outsideRoot, 'outside.cjs');
+    writeFileSync(outsideFile, 'module.exports = true;\n');
     rmSync(join(fixture.root, 'bridge', 'cli.cjs'));
-    symlinkSync('/etc/passwd', join(fixture.root, 'bridge', 'cli.cjs'));
+    symlinkSync(outsideFile, join(fixture.root, 'bridge', 'cli.cjs'));
 
     const result = run(fixture.root, 'verify');
 
@@ -429,6 +463,71 @@ describe('plugin shipping surface transaction', () => {
     expect(result.stdout).toContain('plugin shipping surface PR check verified');
   });
 
+  it('stages and checks a large PR runtime closure with bounded Git arguments', () => {
+    const fixture = createFixture();
+    const generatedPaths = Array.from({ length: 900 }, (_, index) => (
+      `dist/runtime-${String(index).padStart(4, '0')}-${'x'.repeat(48)}.js`
+    ));
+    writeJson(join(fixture.root, 'package.json'), {
+      name: 'fixture-plugin',
+      version: '1.0.0',
+      type: 'module',
+      main: './dist/index.js',
+      bin: { fixture: './bridge/cli.cjs' },
+      files: ['dist', 'bridge/claude-md-coordinator.cjs'],
+    });
+    for (const repoPath of generatedPaths) {
+      writeFileSync(join(fixture.root, repoPath), 'export default true;\n');
+    }
+    const stageResult = run(fixture.root, 'stage');
+    const staged = git(fixture.root, ['diff', '--cached', '--name-only', '-z'])
+      .split('\0')
+      .filter(Boolean);
+
+    expect(stageResult.status, stageResult.stderr).toBe(0);
+    expect(new Set(staged)).toEqual(new Set(generatedPaths));
+
+    git(fixture.root, ['add', 'package.json']);
+    git(fixture.root, ['commit', '--quiet', '-m', 'declare large generated runtime surface']);
+    const base = git(fixture.root, ['rev-parse', 'HEAD']).trim();
+    writeFileSync(join(fixture.root, 'README.md'), 'head commit\n');
+    git(fixture.root, ['add', 'README.md']);
+    git(fixture.root, ['commit', '--quiet', '-m', 'advance head']);
+
+    const result = run(fixture.root, 'check-pr', '--base', base);
+
+    expect(result.stderr).toBe('');
+    expect(result.status).toBe(0);
+  });
+
+  it('matches tracked PR runtime paths literally', () => {
+    const fixture = createFixture();
+    const generatedPaths = ['dist/[literal].js', 'dist/space name.js', 'dist/运行时.js'];
+    writeJson(join(fixture.root, 'package.json'), {
+      name: 'fixture-plugin',
+      version: '1.0.0',
+      type: 'module',
+      main: './dist/index.js',
+      bin: { fixture: './bridge/cli.cjs' },
+      files: ['dist', 'bridge/claude-md-coordinator.cjs'],
+    });
+    for (const repoPath of generatedPaths) {
+      writeFileSync(join(fixture.root, repoPath), 'export default true;\n');
+    }
+    git(fixture.root, ['add', 'package.json']);
+    git(fixture.root, ['add', '-f', '--', 'dist']);
+    git(fixture.root, ['commit', '--quiet', '-m', 'declare literal generated runtime paths']);
+    const base = git(fixture.root, ['rev-parse', 'HEAD']).trim();
+    writeFileSync(join(fixture.root, 'README.md'), 'head commit\n');
+    git(fixture.root, ['add', 'README.md']);
+    git(fixture.root, ['commit', '--quiet', '-m', 'advance head']);
+
+    const result = run(fixture.root, 'check-pr', '--base', base);
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('plugin shipping surface PR check verified');
+  });
+
   it('accepts a PR deletion from the previous runtime closure', () => {
     const fixture = createFixture();
     const base = git(fixture.root, ['rev-parse', 'HEAD']).trim();
@@ -439,7 +538,7 @@ describe('plugin shipping surface transaction', () => {
 
     const result = run(fixture.root, 'check-pr', '--base', base);
 
-    expect(result.status).toBe(0);
+    expect(result.status, result.stderr).toBe(0);
     expect(result.stdout).toContain('plugin shipping surface PR check verified');
   });
 

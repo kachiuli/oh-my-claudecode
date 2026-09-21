@@ -12,9 +12,16 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  configureOrchestratorRepository,
   readOrchestratorRepositoryConfig,
+  resolveOrchestratorPaths,
   selectOrchestrator,
 } from "../../orchestration/selection.js";
+import { handleHostHook } from "../hooks.js";
+import {
+  captureNativeHookObservationContext,
+  recordAcceptedHostHook,
+} from "../hook-observation.js";
 import {
   doctorProjectHosts,
   setupProjectHosts,
@@ -510,5 +517,228 @@ describe("project host setup", () => {
     const result = await doctorProjectHosts(root);
     expect(result.healthy).toBe(false);
     expect(result.issues).toContain("modified managed block: .gitignore");
+  });
+
+  it("separates installed hook definitions from native trust and unobserved execution", async () => {
+    const root = temporaryRepository();
+    await setupProjectHosts(root, ["codex"], { packageRoot: PACKAGE_ROOT });
+
+    const result = await doctorProjectHosts(root);
+
+    expect(result.hosts.codex.hookDiagnostics).toMatchObject({
+      definition: "installed",
+      nativeTrust: "not-established",
+      execution: {
+        status: "unobserved",
+      },
+      advisory: true,
+    });
+    expect(result.hosts.codex.hookDiagnostics.guidance.join(" ")).toContain(
+      "/hooks",
+    );
+  });
+
+  it("keeps diagnostics available before an explicit host selection", async () => {
+    const root = temporaryRepository();
+    await setupProjectHosts(root, ["claude", "codex"], {
+      packageRoot: PACKAGE_ROOT,
+    });
+
+    const result = await doctorProjectHosts(root);
+
+    expect(result.hosts.claude.hookDiagnostics.execution.status).toBe(
+      "unobserved",
+    );
+    expect(result.hosts.codex.hookDiagnostics.execution.status).toBe(
+      "unobserved",
+    );
+    for (const host of ["claude", "codex"] as const) {
+      expect(result.hosts[host].healthy).toBe(
+        result.hosts[host].installed && result.hosts[host].issues.length === 0,
+      );
+    }
+  });
+
+  it("keeps asset diagnostics usable when advisory selection state is invalid", async () => {
+    const root = temporaryRepository();
+    await setupProjectHosts(root, ["codex"], { packageRoot: PACKAGE_ROOT });
+    write(resolveOrchestratorPaths(root).state, "{not-json");
+
+    const result = await doctorProjectHosts(root);
+
+    expect(result.hosts.codex.hookDiagnostics).toMatchObject({
+      definition: "installed",
+      nativeTrust: "not-established",
+      execution: { status: "unavailable" },
+      advisory: true,
+    });
+    expect(result.hosts.codex.healthy).toBe(
+      result.hosts.codex.installed && result.hosts.codex.issues.length === 0,
+    );
+    expect(result.hosts.codex.hookDiagnostics.guidance.join(" ")).toContain(
+      "omc orchestrator status",
+    );
+  });
+
+  it("does not stamp an accepted hook event with a later selection revision", async () => {
+    const root = temporaryRepository();
+    await setupProjectHosts(root, ["claude", "codex"], {
+      packageRoot: PACKAGE_ROOT,
+    });
+    const firstCodex = await selectOrchestrator(root, "codex", {
+      probe: () => true,
+    });
+    const firstContext = captureNativeHookObservationContext(root, "codex");
+    await selectOrchestrator(root, "claude", { probe: () => true });
+    await selectOrchestrator(root, "codex", { probe: () => true });
+
+    await recordAcceptedHostHook(
+      root,
+      "codex",
+      "SessionStart",
+      firstCodex.selectionRevision,
+      firstContext,
+    );
+
+    expect(
+      (await doctorProjectHosts(root)).hosts.codex.hookDiagnostics.execution
+        .status,
+    ).toBe("unobserved");
+  });
+
+  it("reports accepted current-definition hook events as advisory evidence only", async () => {
+    const root = temporaryRepository();
+    await setupProjectHosts(root, ["codex"], { packageRoot: PACKAGE_ROOT });
+    const common = { session_id: "thread-observed", cwd: root };
+    await handleHostHook(root, "codex", {
+      ...common,
+      hook_event_name: "SessionStart",
+      source: "startup",
+    });
+    const started = await doctorProjectHosts(root);
+    expect(started.hosts.codex.hookDiagnostics.execution).toMatchObject({
+      status: "observed",
+      lastAcceptedEvent: "SessionStart",
+    });
+    await handleHostHook(root, "codex", {
+      ...common,
+      hook_event_name: "Stop",
+    });
+
+    const result = await doctorProjectHosts(root);
+
+    expect(result.hosts.codex.hookDiagnostics).toMatchObject({
+      definition: "installed",
+      nativeTrust: "not-established",
+      execution: {
+        status: "observed",
+        lastAcceptedEvent: "Stop",
+      },
+      advisory: true,
+    });
+    expect(result.hosts.codex.hookDiagnostics.execution.observedAt).toMatch(
+      /^\d{4}-\d{2}-\d{2}T/,
+    );
+  });
+
+  it("does not carry hook evidence across selection or installed-definition changes", async () => {
+    const root = temporaryRepository();
+    await setupProjectHosts(root, ["claude", "codex"], {
+      packageRoot: PACKAGE_ROOT,
+    });
+    await selectOrchestrator(root, "codex", { probe: () => true });
+    await handleHostHook(root, "codex", {
+      session_id: "thread-stale",
+      cwd: root,
+      hook_event_name: "SessionStart",
+      source: "startup",
+    });
+
+    await selectOrchestrator(root, "claude", { probe: () => true });
+    expect(
+      (await doctorProjectHosts(root)).hosts.codex.hookDiagnostics.execution
+        .status,
+    ).toBe("stale");
+
+    await selectOrchestrator(root, "codex", { probe: () => true });
+    await handleHostHook(root, "codex", {
+      session_id: "thread-current-definition",
+      cwd: root,
+      hook_event_name: "SessionStart",
+      source: "startup",
+    });
+    expect(
+      (await doctorProjectHosts(root)).hosts.codex.hookDiagnostics.execution
+        .status,
+    ).toBe("observed");
+    writeFileSync(join(root, ".codex", "hooks.json"), "{}\n", "utf8");
+    const changed = await doctorProjectHosts(root);
+    expect(changed.hosts.codex.hookDiagnostics.definition).toBe("modified");
+    expect(changed.hosts.codex.hookDiagnostics.execution.status).toBe("stale");
+  });
+
+  it("invalidates observed execution when repository host configuration changes", async () => {
+    const root = temporaryRepository();
+    await setupProjectHosts(root, ["claude", "codex"], {
+      packageRoot: PACKAGE_ROOT,
+    });
+    await selectOrchestrator(root, "codex", { probe: () => true });
+    await handleHostHook(root, "codex", {
+      session_id: "thread-config-drift",
+      cwd: root,
+      hook_event_name: "SessionStart",
+      source: "startup",
+    });
+    expect(
+      (await doctorProjectHosts(root)).hosts.codex.hookDiagnostics.execution
+        .status,
+    ).toBe("observed");
+
+    await configureOrchestratorRepository(root, {
+      schemaVersion: 1,
+      supportedHosts: ["claude", "codex"],
+      defaultHost: "codex",
+    });
+
+    expect(
+      (await doctorProjectHosts(root)).hosts.codex.hookDiagnostics.execution
+        .status,
+    ).toBe("stale");
+  });
+
+  it("ignores malformed and cross-repository hook observation payloads", async () => {
+    const first = temporaryRepository();
+    const second = temporaryRepository();
+    for (const root of [first, second]) {
+      await setupProjectHosts(root, ["codex"], { packageRoot: PACKAGE_ROOT });
+    }
+    await handleHostHook(first, "codex", {
+      session_id: "thread-cross-repo",
+      cwd: first,
+      hook_event_name: "SessionStart",
+      source: "startup",
+    });
+    const firstObservation = join(
+      resolve(resolveOrchestratorPaths(first).state, ".."),
+      "hook-observations",
+      "codex.json",
+    );
+    const secondObservation = join(
+      resolve(resolveOrchestratorPaths(second).state, ".."),
+      "hook-observations",
+      "codex.json",
+    );
+    write(secondObservation, readFileSync(firstObservation, "utf8"));
+
+    const copied = await doctorProjectHosts(second);
+    expect(copied.hosts.codex.hookDiagnostics.execution).toMatchObject({
+      status: "stale",
+    });
+
+    writeFileSync(secondObservation, "{not-json", "utf8");
+    const malformed = await doctorProjectHosts(second);
+    expect(malformed.hosts.codex.hookDiagnostics.execution).toMatchObject({
+      status: "malformed",
+    });
   });
 });

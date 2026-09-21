@@ -6,13 +6,12 @@ import {
   resolveOrchestratorPaths,
   type OrchestratorHost,
 } from "../orchestration/selection.js";
-
-const SUPPORTED_EVENTS = new Set([
-  "SessionStart",
-  "SessionEnd",
-  "UserPromptSubmit",
-  "Stop",
-]);
+import {
+  captureNativeHookObservationContext,
+  isNativeHostHookEvent,
+  recordAcceptedHostHook,
+  type NativeHookObservationContext,
+} from "./hook-observation.js";
 
 export interface NativeHostHookInput {
   readonly session_id?: unknown;
@@ -88,7 +87,7 @@ export async function handleHostHook(
     64,
     "orchestrator_invalid_hook_payload",
   );
-  if (!SUPPORTED_EVENTS.has(event)) {
+  if (!isNativeHostHookEvent(event)) {
     throw new Error(`orchestrator_unsupported_hook_event: ${event}`);
   }
   const sessionId = boundedField(
@@ -97,6 +96,12 @@ export async function handleHostHook(
     "orchestrator_invalid_hook_payload",
   );
   const cwd = hookWorkingDirectory(invocationCwd, payload.cwd);
+  let observationContext: NativeHookObservationContext | null = null;
+  try {
+    observationContext = captureNativeHookObservationContext(cwd, host);
+  } catch {
+    // Diagnostics are optional for legacy or partially installed host assets.
+  }
 
   if (event === "SessionStart") {
     if (
@@ -107,7 +112,22 @@ export async function handleHostHook(
     ) {
       throw new Error("orchestrator_invalid_hook_payload");
     }
-    await recordOrchestratorSession(cwd, host, sessionId);
+    const acceptedSession = await recordOrchestratorSession(
+      cwd,
+      host,
+      sessionId,
+    );
+    try {
+      await recordAcceptedHostHook(
+        cwd,
+        host,
+        event,
+        acceptedSession.selectionRevision,
+        observationContext,
+      );
+    } catch {
+      // Execution observations are advisory and never weaken the core gate.
+    }
     return Object.freeze({
       continue: true,
       suppressOutput: true,
@@ -119,6 +139,17 @@ export async function handleHostHook(
     });
   }
 
-  assertOrchestratorSession(cwd, host, sessionId);
+  const acceptedSession = assertOrchestratorSession(cwd, host, sessionId);
+  try {
+    await recordAcceptedHostHook(
+      cwd,
+      host,
+      event,
+      acceptedSession.selectionRevision,
+      observationContext,
+    );
+  } catch {
+    // Legacy hooks and authoritative session checks remain usable without diagnostics.
+  }
   return Object.freeze({ continue: true, suppressOutput: true });
 }

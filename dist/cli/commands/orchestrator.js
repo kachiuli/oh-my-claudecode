@@ -57,7 +57,7 @@ export function registerOrchestratorCommands(program) {
     });
     command
         .command("recover")
-        .description("Recover an abandoned host lease only after all recorded processes have exited")
+        .description("Recover an abandoned operation lock and host lease after verified process exit")
         .requiredOption("--checkpoint <kind>", "before-work, completed-stage, paused, or checkpointed")
         .option("--workflow <name>", "Workflow checkpoint to retain")
         .option("--reference <reference>", "Recovery evidence reference")

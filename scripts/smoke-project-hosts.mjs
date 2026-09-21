@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /** Packaged project setup smoke. All homes, providers and repositories are synthetic. */
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import {
   copyFileSync,
   existsSync,
@@ -13,6 +13,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 
 const packageFile = process.argv[2];
 if (!packageFile || !existsSync(packageFile))
@@ -48,7 +49,7 @@ for (const name of Object.keys(environment)) {
   )
     delete environment[name];
 }
-function run(command, args, cwd = repository) {
+function run(command, args, cwd = repository, input) {
   const result = spawnSync(command, args, {
     cwd,
     env: environment,
@@ -56,6 +57,7 @@ function run(command, args, cwd = repository) {
     shell: false,
     windowsHide: true,
     timeout: 180_000,
+    input,
   });
   assert.equal(result.error, undefined, `${command} failed to start`);
   assert.equal(
@@ -64,6 +66,89 @@ function run(command, args, cwd = repository) {
     `${command} ${args.join(" ")}: ${result.stderr}\n${result.stdout}`,
   );
   return result.stdout;
+}
+
+async function abandonPackagedOperation(packageRoot) {
+  const moduleUrl = pathToFileURL(
+    join(packageRoot, "dist", "orchestration", "selection.js"),
+  ).href;
+  const program = [
+    `import { withOrchestratorOperation } from ${JSON.stringify(moduleUrl)};`,
+    "await withOrchestratorOperation(process.cwd(), async () => {",
+    '  process.send("operation-held");',
+    "  await new Promise(() => setInterval(() => {}, 1000));",
+    "});",
+  ].join("\n");
+  const worker = spawn(
+    process.execPath,
+    ["--input-type=module", "-e", program],
+    {
+      cwd: repository,
+      env: environment,
+      windowsHide: true,
+      stdio: ["ignore", "ignore", "pipe", "ipc"],
+    },
+  );
+  const closed = new Promise((resolveClose) =>
+    worker.once("close", resolveClose),
+  );
+  let stderr = "";
+  worker.stderr.on("data", (chunk) => {
+    stderr = (stderr + chunk.toString()).slice(-8_192);
+  });
+  // Retain an error listener after readiness while shutdown is in progress.
+  worker.on("error", (error) => {
+    stderr = error.message;
+  });
+  try {
+    await new Promise((resolveReady, reject) => {
+      const onError = (error) => settle(error);
+      const onExit = () =>
+        settle(
+          new Error(`Operation fixture exited before recovery: ${stderr}`),
+        );
+      const onMessage = (message) => {
+        if (message === "operation-held") settle();
+        else settle(new Error("Unexpected operation fixture message"));
+      };
+      const timeout = setTimeout(
+        () => settle(new Error(`Operation fixture timed out: ${stderr}`)),
+        30_000,
+      );
+      const settle = (error) => {
+        clearTimeout(timeout);
+        worker.off("error", onError);
+        worker.off("exit", onExit);
+        worker.off("message", onMessage);
+        if (error) reject(error);
+        else resolveReady();
+      };
+      worker.once("error", onError);
+      worker.once("exit", onExit);
+      worker.once("message", onMessage);
+    });
+    assert.equal(worker.kill("SIGKILL"), true);
+  } finally {
+    if (worker.exitCode === null && worker.signalCode === null)
+      worker.kill("SIGKILL");
+    let closeTimeout;
+    try {
+      await Promise.race([
+        closed,
+        new Promise((_, reject) => {
+          closeTimeout = setTimeout(
+            () =>
+              reject(
+                new Error("Operation fixture did not close after termination"),
+              ),
+            10_000,
+          );
+        }),
+      ]);
+    } finally {
+      clearTimeout(closeTimeout);
+    }
+  }
 }
 try {
   // Native executable fixtures prove CLI discovery/switching only; they do not authenticate providers.
@@ -134,7 +219,61 @@ try {
       `Switching rewrote ${path}`,
     );
   assert.match(omc("orchestrator", "status", "--json"), /codex/);
-  assert.match(omc("doctor", "hosts", "--json"), /codex/);
+  const diagnoseCodexHooks = () =>
+    JSON.parse(omc("doctor", "hosts", "--json")).hosts.codex.hookDiagnostics;
+  const unobserved = diagnoseCodexHooks();
+  assert.equal(unobserved.definition, "installed");
+  assert.equal(unobserved.execution.status, "unobserved");
+  assert.equal(unobserved.nativeTrust, "not-established");
+  assert.equal(unobserved.capability, "unsupported");
+  assert.ok(unobserved.guidance.some((step) => step.includes("upgrade")));
+  // Exercise the packaged hook adapter directly; this is not native trust evidence.
+  run(
+    process.execPath,
+    [entry, "orchestrator", "hook", "--host", "codex"],
+    repository,
+    JSON.stringify({
+      hook_event_name: "SessionStart",
+      session_id: "package-smoke-session",
+      cwd: repository,
+      source: "startup",
+    }),
+  );
+  const observed = diagnoseCodexHooks();
+  assert.equal(observed.execution.status, "observed");
+  assert.equal(observed.nativeTrust, "not-established");
+  assert.equal(observed.advisory, true);
+  omc("orchestrator", "use", "claude");
+  omc("orchestrator", "use", "codex");
+  assert.equal(diagnoseCodexHooks().execution.status, "stale");
+  await abandonPackagedOperation(
+    join(prefix, "node_modules", "oh-my-claude-sisyphus"),
+  );
+  const blocked = spawnSync(
+    process.execPath,
+    [entry, "orchestrator", "use", "codex"],
+    { cwd: repository, env: environment, encoding: "utf8", timeout: 30_000 },
+  );
+  assert.equal(blocked.error, undefined);
+  assert.notEqual(blocked.status, 0);
+  assert.match(blocked.stderr, /orchestrator_operation_locked/);
+  const recovered = JSON.parse(
+    omc(
+      "orchestrator",
+      "recover",
+      "--checkpoint",
+      "paused",
+      "--reference",
+      "package-smoke-killed-operation",
+    ),
+  );
+  assert.equal(recovered.lastRecovery.recoveredOperationLock, true);
+  assert.equal(recovered.lastRecovery.recoveredLease, false);
+  assert.equal(
+    recovered.lastRecovery.checkpoint.reference,
+    "package-smoke-killed-operation",
+  );
+  omc("orchestrator", "use", "codex");
   assert.match(
     readFileSync(join(repository, "AGENTS.md"), "utf8"),
     /User Codex guidance/,
@@ -154,7 +293,7 @@ try {
     before.get("AGENTS.md"),
   );
   console.log(
-    "PASS: packaged dual setup, idempotent upgrade, repeated switching, user-file preservation and independent uninstall (synthetic; no provider authentication).",
+    "PASS: packaged dual setup, idempotent upgrade, repeated switching, advisory hook diagnostics, killed-operation recovery, user-file preservation and independent uninstall (synthetic; no provider authentication).",
   );
 } finally {
   rmSync(temporaryRoot, {
