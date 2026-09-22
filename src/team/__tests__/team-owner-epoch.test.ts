@@ -98,7 +98,7 @@ describe('runtime owner epochs', () => {
     expect(exec).toHaveBeenCalledWith('/usr/sbin/sysctl', ['-b', 'kern.proc.pid.42'],
       { encoding: null, maxBuffer: 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] });
     expect(exec).toHaveBeenCalledWith('powershell.exe', expect.arrayContaining(['-NoProfile', '-NonInteractive']),
-      { encoding: 'utf8', windowsHide: true });
+      { encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] });
     const reusedKinfo = Buffer.from(kinfo);
     reusedKinfo.writeBigUInt64LE(654_321n, 8);
     const reused = vi.fn(() => reusedKinfo) as unknown as typeof import('node:child_process').execFileSync;

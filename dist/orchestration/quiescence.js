@@ -1,8 +1,10 @@
 import { lstatSync, readdirSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { getOmcRoot } from "../lib/worktree-paths.js";
+import { isProcessAlive } from "../platform/index.js";
 import { validateLegacyTeamConfig, validateRevisionedTeamConfig, } from "../team/monitor.js";
 import { isProcessIdentityDead, isValidProcessStartIdentity, } from "../team/team-owner-epoch.js";
+import { classifyOrphanedAttempt } from "../team/workflow-orphan.js";
 import { readBoundedJson, readRuntimeStateFile, repositoryRoot, } from "./state.js";
 const WORKFLOW_BYTES = 16 * 1024 * 1024;
 const SMALL_STATE_BYTES = 16 * 1024;
@@ -37,13 +39,14 @@ function walkQuiescenceTree(directory, visit, budget) {
             visit(path);
     }
 }
-function assertWorkflowFileQuiescent(path) {
+function assertWorkflowFileQuiescent(path, orphaned) {
     const raw = readBoundedJson(path, WORKFLOW_BYTES, "orchestrator_quiescence_unverified");
     if (!raw || typeof raw !== "object" || Array.isArray(raw))
         throw new Error("orchestrator_quiescence_unverified");
     const tasks = raw.tasks;
     if (!Array.isArray(tasks))
         throw new Error("orchestrator_quiescence_unverified");
+    const workflowName = raw.plan?.name;
     const statuses = new Set([
         "pending",
         "running",
@@ -60,11 +63,31 @@ function assertWorkflowFileQuiescent(path) {
         if (typeof status !== "string" || !statuses.has(status)) {
             throw new Error("orchestrator_quiescence_unverified");
         }
-        if (status === "running")
+        if (status !== "running")
+            continue;
+        if (!orphaned)
             throw new Error("orchestrator_active_attempt");
+        const outcome = classifyOrphanedAttempt(task);
+        if (outcome === "provider-alive")
+            throw new Error("orchestrator_active_provider");
+        if (outcome !== "orphaned")
+            throw new Error("orchestrator_active_attempt");
+        const taskId = task.task?.id;
+        // An orphaned attempt is excused only for the workflow directory that owns the record.
+        if (typeof workflowName !== "string" ||
+            typeof taskId !== "string" ||
+            basename(dirname(path)) !== workflowName) {
+            throw new Error("orchestrator_quiescence_unverified");
+        }
+        let ids = orphaned.get(workflowName);
+        if (!ids) {
+            ids = new Set();
+            orphaned.set(workflowName, ids);
+        }
+        ids.add(taskId);
     }
 }
-function assertTaskFileQuiescent(path) {
+function assertTaskFileQuiescent(path, orphaned) {
     const raw = readBoundedJson(path, SMALL_STATE_BYTES, "orchestrator_quiescence_unverified");
     if (!raw || typeof raw !== "object" || Array.isArray(raw))
         throw new Error("orchestrator_quiescence_unverified");
@@ -80,29 +103,97 @@ function assertTaskFileQuiescent(path) {
         throw new Error("orchestrator_quiescence_unverified");
     }
     const terminal = ["completed", "failed"].includes(task.status);
-    if (task.status === "running" ||
+    const active = task.status === "running" ||
         task.status === "in_progress" ||
-        (!terminal && task.claim !== undefined)) {
+        (!terminal && task.claim !== undefined);
+    if (!active)
+        return;
+    // A task projection may only stay active when its own workflow attempt, in its own team directory, was proven orphaned.
+    const metadata = task.metadata;
+    const allowed = orphaned !== undefined &&
+        typeof metadata?.workflow === "string" &&
+        typeof metadata?.task_id === "string" &&
+        basename(dirname(dirname(path))) === metadata.workflow &&
+        orphaned.get(metadata.workflow)?.has(metadata.task_id) === true;
+    if (!allowed)
         throw new Error("orchestrator_active_attempt");
-    }
 }
-export function assertOrchestratorQuiescent(cwd) {
+function isWorkflowLockName(name) {
+    return (name.endsWith(".lock") ||
+        name.startsWith(".lock-") ||
+        name.endsWith("-lock"));
+}
+/** Same age the advisory file lock requires before it reaps its own abandoned lock files. */
+const ABANDONED_FILE_LOCK_MS = 30_000;
+/**
+ * A process killed mid-operation leaves its `*.lock` file behind. Such a file counts as abandoned, not held,
+ * only when it is old enough, names its owner PID, and that owner is verifiably gone: a recorded start identity
+ * proves it even across PID reuse, otherwise the PID must not be running at all. The advisory lock reaps the
+ * same files itself on its next acquisition, so no quiescence check treats them as activity.
+ */
+function isAbandonedFileLock(path) {
+    let info;
+    try {
+        info = lstatSync(path);
+    }
+    catch {
+        return false;
+    }
+    if (!info.isFile() || Date.now() - info.mtimeMs < ABANDONED_FILE_LOCK_MS)
+        return false;
+    let raw;
+    try {
+        raw = readBoundedJson(path, SMALL_STATE_BYTES, "orchestrator_quiescence_unverified");
+    }
+    catch {
+        return false;
+    }
+    if (!raw || typeof raw !== "object" || Array.isArray(raw))
+        return false;
+    const record = raw;
+    const pid = record.pid;
+    if (!Number.isSafeInteger(pid) || Number(pid) <= 0)
+        return false;
+    if (record.process_started_at !== undefined) {
+        return (isValidProcessStartIdentity(record.process_started_at) &&
+            isProcessIdentityDead({
+                pid: Number(pid),
+                process_started_at: record.process_started_at,
+            }));
+    }
+    return !isProcessAlive(Number(pid));
+}
+export function assertOrchestratorQuiescent(cwd, options = {}) {
     const stateRoot = join(getOmcRoot(repositoryRoot(cwd)), "state");
+    const roots = [join(stateRoot, "team"), join(stateRoot, "team-recovery")];
+    const orphaned = options.allowOrphanedAttempts
+        ? new Map()
+        : undefined;
+    if (orphaned) {
+        // Workflow records are classified first so task projections can be matched against them.
+        const preflight = { remaining: MAX_QUIESCENCE_ENTRIES };
+        for (const root of roots) {
+            walkQuiescenceTree(root, (path) => {
+                if (basename(path) === "workflow.json")
+                    assertWorkflowFileQuiescent(path, orphaned);
+            }, preflight);
+        }
+    }
     const inspect = (path) => {
         const name = basename(path);
-        if (name.endsWith(".lock") ||
-            name.startsWith(".lock-") ||
-            name.endsWith("-lock")) {
-            throw new Error("orchestrator_workflow_locked");
+        if (isWorkflowLockName(name)) {
+            if (!isAbandonedFileLock(path))
+                throw new Error("orchestrator_workflow_locked");
+            return;
         }
         if (name === "workflow.json")
-            assertWorkflowFileQuiescent(path);
+            assertWorkflowFileQuiescent(path, orphaned);
         if (/^task-[^.]+\.json$/.test(name) && basename(dirname(path)) === "tasks")
-            assertTaskFileQuiescent(path);
+            assertTaskFileQuiescent(path, orphaned);
     };
     const budget = { remaining: MAX_QUIESCENCE_ENTRIES };
-    walkQuiescenceTree(join(stateRoot, "team"), inspect, budget);
-    walkQuiescenceTree(join(stateRoot, "team-recovery"), inspect, budget);
+    for (const root of roots)
+        walkQuiescenceTree(root, inspect, budget);
 }
 function assertLeaseProcessDead(pid, processStartedAt) {
     if (!isValidProcessStartIdentity(processStartedAt) ||
@@ -292,7 +383,7 @@ function assertRepositoryRuntimeLeasesRecoverable(stateRoot, budget) {
     }
 }
 export function assertOrchestratorRecoveryQuiescent(cwd) {
-    assertOrchestratorQuiescent(cwd);
+    assertOrchestratorQuiescent(cwd, { allowOrphanedAttempts: true });
     const stateRoot = join(getOmcRoot(repositoryRoot(cwd)), "state");
     const budget = { remaining: MAX_QUIESCENCE_ENTRIES };
     assertTeamLifecycleQuiescent(stateRoot, budget);

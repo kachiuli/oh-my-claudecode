@@ -8587,7 +8587,7 @@ function probeProcessStartIdentityForPlatform(pid, platform, exec3, read, strict
       const ticks = exec3(
         "powershell.exe",
         ["-NoProfile", "-NonInteractive", "-Command", command],
-        { encoding: "utf8", windowsHide: true }
+        { encoding: "utf8", windowsHide: true, stdio: ["ignore", "pipe", "ignore"] }
       ).trim();
       return /^\d+$/.test(ticks) ? { identity: `win32:${ticks}`, precise: true } : { identity: null, precise: false };
     }

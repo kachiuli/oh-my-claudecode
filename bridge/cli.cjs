@@ -41262,7 +41262,7 @@ function probeProcessStartIdentityForPlatform(pid, platform, exec4, read, strict
       const ticks = exec4(
         "powershell.exe",
         ["-NoProfile", "-NonInteractive", "-Command", command],
-        { encoding: "utf8", windowsHide: true }
+        { encoding: "utf8", windowsHide: true, stdio: ["ignore", "pipe", "ignore"] }
       ).trim();
       return /^\d+$/.test(ticks) ? { identity: `win32:${ticks}`, precise: true } : { identity: null, precise: false };
     }
@@ -120801,8 +120801,43 @@ async function withExplicitOrchestratorOperationRecovery(paths, preflight, actio
 var import_node_fs22 = require("node:fs");
 var import_node_path29 = require("node:path");
 init_worktree_paths();
+init_platform();
 init_monitor();
 init_team_owner_epoch();
+
+// src/team/workflow-orphan.ts
+init_team_owner_epoch();
+function noProcessWithPid(pid) {
+  try {
+    process.kill(pid, 0);
+    return false;
+  } catch (error2) {
+    return error2.code === "ESRCH";
+  }
+}
+function recordedProcessOutcome(identity) {
+  if (!identity || typeof identity !== "object" || Array.isArray(identity)) return "unverifiable";
+  const { pid, processStartedAt } = identity;
+  if (!Number.isSafeInteger(pid) || Number(pid) <= 0) return "unverifiable";
+  if (isValidProcessStartIdentity(processStartedAt)) {
+    return isProcessIdentityDead({ pid: Number(pid), process_started_at: processStartedAt }) ? "dead" : "alive";
+  }
+  if (processStartedAt !== null) return "unverifiable";
+  return noProcessWithPid(Number(pid)) ? "dead" : "alive";
+}
+function classifyOrphanedAttempt(task) {
+  const invocations = task.invocations;
+  const last = Array.isArray(invocations) ? invocations.at(-1) : void 0;
+  if (!last || typeof last !== "object" || Array.isArray(last)) return "unverifiable";
+  const record3 = last;
+  if (record3.error !== "workflow_invocation_incomplete" || record3.attempt !== task.attempts) return "unverifiable";
+  if (record3.process !== void 0) {
+    const provider = recordedProcessOutcome(record3.process);
+    return provider === "dead" ? "orphaned" : provider === "alive" ? "provider-alive" : "unverifiable";
+  }
+  const controller = recordedProcessOutcome(record3.controller);
+  return controller === "dead" ? "orphaned" : controller === "alive" ? "controller-alive" : "unverifiable";
+}
 
 // src/orchestration/state.ts
 var import_node_crypto13 = require("node:crypto");
@@ -121320,7 +121355,7 @@ function walkQuiescenceTree(directory, visit, budget) {
     else if (entry2.isFile()) visit(path27);
   }
 }
-function assertWorkflowFileQuiescent(path27) {
+function assertWorkflowFileQuiescent(path27, orphaned) {
   const raw = readBoundedJson(
     path27,
     WORKFLOW_BYTES,
@@ -121331,6 +121366,7 @@ function assertWorkflowFileQuiescent(path27) {
   const tasks = raw.tasks;
   if (!Array.isArray(tasks))
     throw new Error("orchestrator_quiescence_unverified");
+  const workflowName = raw.plan?.name;
   const statuses = /* @__PURE__ */ new Set([
     "pending",
     "running",
@@ -121347,10 +121383,27 @@ function assertWorkflowFileQuiescent(path27) {
     if (typeof status !== "string" || !statuses.has(status)) {
       throw new Error("orchestrator_quiescence_unverified");
     }
-    if (status === "running") throw new Error("orchestrator_active_attempt");
+    if (status !== "running") continue;
+    if (!orphaned) throw new Error("orchestrator_active_attempt");
+    const outcome = classifyOrphanedAttempt(
+      task
+    );
+    if (outcome === "provider-alive")
+      throw new Error("orchestrator_active_provider");
+    if (outcome !== "orphaned") throw new Error("orchestrator_active_attempt");
+    const taskId = task.task?.id;
+    if (typeof workflowName !== "string" || typeof taskId !== "string" || (0, import_node_path29.basename)((0, import_node_path29.dirname)(path27)) !== workflowName) {
+      throw new Error("orchestrator_quiescence_unverified");
+    }
+    let ids = orphaned.get(workflowName);
+    if (!ids) {
+      ids = /* @__PURE__ */ new Set();
+      orphaned.set(workflowName, ids);
+    }
+    ids.add(taskId);
   }
 }
-function assertTaskFileQuiescent(path27) {
+function assertTaskFileQuiescent(path27, orphaned) {
   const raw = readBoundedJson(
     path27,
     SMALL_STATE_BYTES,
@@ -121370,24 +121423,77 @@ function assertTaskFileQuiescent(path27) {
     throw new Error("orchestrator_quiescence_unverified");
   }
   const terminal = ["completed", "failed"].includes(task.status);
-  if (task.status === "running" || task.status === "in_progress" || !terminal && task.claim !== void 0) {
-    throw new Error("orchestrator_active_attempt");
-  }
+  const active = task.status === "running" || task.status === "in_progress" || !terminal && task.claim !== void 0;
+  if (!active) return;
+  const metadata = task.metadata;
+  const allowed = orphaned !== void 0 && typeof metadata?.workflow === "string" && typeof metadata?.task_id === "string" && (0, import_node_path29.basename)((0, import_node_path29.dirname)((0, import_node_path29.dirname)(path27))) === metadata.workflow && orphaned.get(metadata.workflow)?.has(metadata.task_id) === true;
+  if (!allowed) throw new Error("orchestrator_active_attempt");
 }
-function assertOrchestratorQuiescent(cwd2) {
+function isWorkflowLockName(name) {
+  return name.endsWith(".lock") || name.startsWith(".lock-") || name.endsWith("-lock");
+}
+var ABANDONED_FILE_LOCK_MS = 3e4;
+function isAbandonedFileLock(path27) {
+  let info;
+  try {
+    info = (0, import_node_fs22.lstatSync)(path27);
+  } catch {
+    return false;
+  }
+  if (!info.isFile() || Date.now() - info.mtimeMs < ABANDONED_FILE_LOCK_MS)
+    return false;
+  let raw;
+  try {
+    raw = readBoundedJson(
+      path27,
+      SMALL_STATE_BYTES,
+      "orchestrator_quiescence_unverified"
+    );
+  } catch {
+    return false;
+  }
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return false;
+  const record3 = raw;
+  const pid = record3.pid;
+  if (!Number.isSafeInteger(pid) || Number(pid) <= 0) return false;
+  if (record3.process_started_at !== void 0) {
+    return isValidProcessStartIdentity(record3.process_started_at) && isProcessIdentityDead({
+      pid: Number(pid),
+      process_started_at: record3.process_started_at
+    });
+  }
+  return !isProcessAlive(Number(pid));
+}
+function assertOrchestratorQuiescent(cwd2, options = {}) {
   const stateRoot3 = (0, import_node_path29.join)(getOmcRoot(repositoryRoot(cwd2)), "state");
+  const roots = [(0, import_node_path29.join)(stateRoot3, "team"), (0, import_node_path29.join)(stateRoot3, "team-recovery")];
+  const orphaned = options.allowOrphanedAttempts ? /* @__PURE__ */ new Map() : void 0;
+  if (orphaned) {
+    const preflight = { remaining: MAX_QUIESCENCE_ENTRIES };
+    for (const root2 of roots) {
+      walkQuiescenceTree(
+        root2,
+        (path27) => {
+          if ((0, import_node_path29.basename)(path27) === "workflow.json")
+            assertWorkflowFileQuiescent(path27, orphaned);
+        },
+        preflight
+      );
+    }
+  }
   const inspect = (path27) => {
     const name = (0, import_node_path29.basename)(path27);
-    if (name.endsWith(".lock") || name.startsWith(".lock-") || name.endsWith("-lock")) {
-      throw new Error("orchestrator_workflow_locked");
+    if (isWorkflowLockName(name)) {
+      if (!isAbandonedFileLock(path27))
+        throw new Error("orchestrator_workflow_locked");
+      return;
     }
-    if (name === "workflow.json") assertWorkflowFileQuiescent(path27);
+    if (name === "workflow.json") assertWorkflowFileQuiescent(path27, orphaned);
     if (/^task-[^.]+\.json$/.test(name) && (0, import_node_path29.basename)((0, import_node_path29.dirname)(path27)) === "tasks")
-      assertTaskFileQuiescent(path27);
+      assertTaskFileQuiescent(path27, orphaned);
   };
   const budget = { remaining: MAX_QUIESCENCE_ENTRIES };
-  walkQuiescenceTree((0, import_node_path29.join)(stateRoot3, "team"), inspect, budget);
-  walkQuiescenceTree((0, import_node_path29.join)(stateRoot3, "team-recovery"), inspect, budget);
+  for (const root2 of roots) walkQuiescenceTree(root2, inspect, budget);
 }
 function assertLeaseProcessDead(pid, processStartedAt) {
   if (!isValidProcessStartIdentity(processStartedAt) || !isProcessIdentityDead({ pid, process_started_at: processStartedAt })) {
@@ -121570,7 +121676,7 @@ function assertRepositoryRuntimeLeasesRecoverable(stateRoot3, budget) {
   }
 }
 function assertOrchestratorRecoveryQuiescent(cwd2) {
-  assertOrchestratorQuiescent(cwd2);
+  assertOrchestratorQuiescent(cwd2, { allowOrphanedAttempts: true });
   const stateRoot3 = (0, import_node_path29.join)(getOmcRoot(repositoryRoot(cwd2)), "state");
   const budget = { remaining: MAX_QUIESCENCE_ENTRIES };
   assertTeamLifecycleQuiescent(stateRoot3, budget);
@@ -124917,6 +125023,7 @@ async function launchCommand(args) {
 }
 
 // src/cli/project-launch.ts
+var CLAUDE_LEAD_BASH_TIMEOUT_MS = 36e5;
 function projectHostEnvironment(host, environment) {
   const result = { ...environment };
   for (const key of Object.keys(result)) {
@@ -124928,6 +125035,11 @@ function projectHostEnvironment(host, environment) {
     throw new Error(
       "orchestrator_foreign_claude_endpoint: launch Claude with its own Anthropic configuration; bind GLM as a worker separately."
     );
+  }
+  if (host === "claude") {
+    for (const key of ["BASH_DEFAULT_TIMEOUT_MS", "BASH_MAX_TIMEOUT_MS"]) {
+      if (!result[key]) result[key] = String(CLAUDE_LEAD_BASH_TIMEOUT_MS);
+    }
   }
   return result;
 }
@@ -127743,6 +127855,7 @@ function createWorkflowUsageCollector(provider) {
 }
 
 // src/team/workflow-process.ts
+init_team_owner_epoch();
 var MAX_LOG_BYTES = 1024 * 1024;
 var MAX_TIMEOUT_MS = 2147483647;
 var SETTLEMENT_GRACE_MS = 2e3;
@@ -127841,6 +127954,16 @@ async function runWorkflowProcess(input) {
     let termination = "not-requested";
     let streamClose = false;
     const child = (0, import_node_child_process16.spawn)(command, args, { cwd: input.cwd, env: environment, stdio: ["pipe", "pipe", "pipe"], shell: false, windowsHide: true, detached: process.platform !== "win32" });
+    if (child.pid && input.onSpawn) {
+      try {
+        input.onSpawn({ pid: child.pid, processStartedAt: null });
+      } catch {
+      }
+      try {
+        input.onSpawn({ pid: child.pid, processStartedAt: currentProcessStartIdentity(child.pid) });
+      } catch {
+      }
+    }
     const settlement = () => ({
       parentExitCode: parentExit ? parentExit.code : null,
       parentExitSignal: parentExit ? parentExit.signal : null,
@@ -129066,6 +129189,7 @@ function count(value, fallback, max, min = 1) {
 var NON_RETRYABLE_WORKER_ERRORS = [
   "workflow_timeout",
   "workflow_interrupted",
+  "workflow_invocation_interrupted",
   "workflow_output_incomplete",
   "workflow_designated_result_missing",
   "workflow_worker_modified_protected_refs",
@@ -129075,6 +129199,29 @@ var NON_RETRYABLE_WORKER_ERRORS = [
 ];
 function nonRetryableWorkerError(error2) {
   return NON_RETRYABLE_WORKER_ERRORS.some((entry2) => entry2 === error2);
+}
+function settleOrphanedAttempt(state, entry2) {
+  if (classifyOrphanedAttempt(entry2) !== "orphaned") throw new Error("workflow_interrupted_worker_requires_inspection");
+  const invocation = entry2.invocations.at(-1);
+  invocation.outcome = "failed";
+  invocation.error = "workflow_invocation_interrupted";
+  entry2.status = "failed";
+  entry2.error = "workflow_invocation_interrupted";
+  delete entry2.claimToken;
+  entry2.updatedAt = now();
+  revokeOrphanedPublication(state, entry2);
+}
+function revokeOrphanedPublication(state, entry2) {
+  const root2 = artifactsRoot(state);
+  for (const name of (0, import_node_fs31.readdirSync)(root2)) {
+    if (!/^\.publication-[0-9a-f-]{36}\.json$/.test(name)) continue;
+    const path27 = (0, import_node_path38.join)(root2, name);
+    try {
+      const record3 = JSON.parse((0, import_node_fs31.readFileSync)(path27, "utf8"));
+      if (record3.taskId === entry2.task.id && record3.worker === entry2.worker && record3.attempt === entry2.attempts) (0, import_node_fs31.unlinkSync)(path27);
+    } catch {
+    }
+  }
 }
 async function initWorkflow(cwd2, rawPlan, options = {}) {
   const state = await initializeWorkflow(cwd2, rawPlan, options);
@@ -129283,6 +129430,7 @@ async function executeTask(state, entry2, command, resumeReason, prepared, refAu
       ...prepared ? { invocationId: (0, import_node_crypto20.randomUUID)(), binding: prepared.binding, model: prepared.binding.model } : state.options.glmModel ? { model: state.options.glmModel } : {},
       startedAt: now(),
       outcome: "failed",
+      controller: { pid: process.pid, processStartedAt: cachedCurrentProcessStartIdentity() },
       error: "workflow_invocation_incomplete",
       ...resumeReason === void 0 ? {} : { reason: resumeReason },
       artifacts: [],
@@ -129351,6 +129499,10 @@ async function executeTask(state, entry2, command, resumeReason, prepared, refAu
             cwd: entry2.worktree,
             stdin: prompt,
             ...balanced ? { collectUsage: true } : {},
+            onSpawn: (identity) => {
+              invocation.process = identity;
+              save(state);
+            },
             timeoutMs: providerTimeoutMs(state),
             artifactPrefix: prefix,
             provider: prepared?.binding.providerRoute ?? "glm",
@@ -129622,9 +129774,11 @@ async function acceptWorkflowTask(cwd2, name, taskId) {
 async function rejectWorkflowTask(cwd2, name, taskId, reason) {
   return mutate(cwd2, name, async (state) => {
     const entry2 = getTask(state, taskId);
+    const safeReason = redactWorkflowText(boundedText2(reason, 1e3));
+    if (entry2.status === "running") settleOrphanedAttempt(state, entry2);
     if (!["pending", "completed", "failed"].includes(entry2.status)) throw new Error("workflow_task_cannot_be_rejected");
     entry2.status = "rejected";
-    entry2.error = redactWorkflowText(boundedText2(reason, 1e3));
+    entry2.error = safeReason;
     entry2.updatedAt = now();
   });
 }

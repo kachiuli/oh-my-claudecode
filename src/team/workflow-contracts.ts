@@ -103,6 +103,14 @@ export interface WorkflowInvocation {
   reason?: string;
   artifacts: ArtifactDescriptor[];
   telemetry: WorkflowTelemetry;
+  /** Provider process identity captured at spawn; lets explicit recovery prove an interrupted attempt is dead. */
+  process?: WorkflowProviderProcessIdentity;
+  /** Controller process identity captured when the attempt was reserved, for crashes before the provider spawned. */
+  controller?: WorkflowProviderProcessIdentity;
+}
+export interface WorkflowProviderProcessIdentity {
+  readonly pid: number;
+  readonly processStartedAt: string | null;
 }
 export interface WorkflowReviewAttempt {
   readonly orchestrationHost?: OrchestratorHost;

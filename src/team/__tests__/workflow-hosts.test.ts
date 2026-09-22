@@ -1,4 +1,6 @@
-import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -12,10 +14,12 @@ import {
   finishWorkflow,
   initWorkflowV2,
   readWorkflow,
+  rejectWorkflowTask,
   reviewWorkflow,
   runWorkflow,
   verifyWorkflow,
 } from "../workflow.js";
+import { currentProcessStartIdentity } from "../team-owner-epoch.js";
 import type {
   WorkflowPlan,
   WorkflowProviderRoute,
@@ -164,6 +168,8 @@ describe("shared workflow under Claude and Codex orchestration hosts", () => {
       "hosts",
       configured.runtime,
     );
+    // The provider's process identity is captured at spawn so a crashed controller's attempt can be proven dead.
+    expect(produced.tasks[0].invocations?.[0].process?.pid).toBeGreaterThan(0);
     const attempt = JSON.stringify(produced.tasks[0].invocations?.[0]);
     await selectOrchestrator(fixture.cwd, "codex", { probe });
     const before = readWorkflow(fixture.cwd, "hosts");
@@ -183,6 +189,76 @@ describe("shared workflow under Claude and Codex orchestration hosts", () => {
     expect(complete.schemaVersion === 2 && complete.bindings).toEqual(bindings);
     expect(complete.tasks[0].invocations?.[0].orchestrationHost).toBe("claude");
     expect(complete.reviewAttempts?.[0].orchestrationHost).toBe("codex");
+  });
+
+  it("settles a role-substitution attempt orphaned by a dead controller through explicit rejection", async () => {
+    const configured = runtimeFixture(fixture);
+    const bindings = {
+      lead: binding("lead", "claude"),
+      implementer: configured.selectedBinding("implementer", "glm"),
+      reviewer: configured.selectedBinding("reviewer", "codex"),
+    };
+    await initWorkflowV2(fixture.cwd, plan(), bindings, {
+      providerPolicy: "supervised",
+      maxAttempts: 1,
+      maxReviewPasses: 1,
+    });
+    const stateFile = join(
+      fixture.cwd,
+      ".omc",
+      "state",
+      "team",
+      "hosts",
+      "workflow.json",
+    );
+    const state = JSON.parse(readFileSync(stateFile, "utf8"));
+    const exited = spawnSync(process.execPath, ["-e", "process.exit(0)"], {
+      windowsHide: true,
+    });
+    state.tasks[0] = {
+      ...state.tasks[0],
+      status: "running",
+      attempts: 1,
+      claimToken: randomUUID(),
+      invocations: [
+        {
+          orchestrationHost: "claude",
+          attempt: 1,
+          mode: "fresh",
+          invocationId: randomUUID(),
+          binding: state.bindings.implementer,
+          model: state.bindings.implementer.model,
+          startedAt: new Date().toISOString(),
+          outcome: "failed",
+          error: "workflow_invocation_incomplete",
+          artifacts: [],
+          telemetry: {
+            provider: "glm",
+            durationMs: 0,
+            status: "unknown",
+            scope: "unknown",
+          },
+          process: {
+            pid: exited.pid,
+            processStartedAt: currentProcessStartIdentity(),
+          },
+        },
+      ],
+    };
+    writeFileSync(stateFile, JSON.stringify(state));
+    const settled = await rejectWorkflowTask(
+      fixture.cwd,
+      "hosts",
+      "component",
+      "lead crashed during the attempt",
+    );
+    expect(settled.schemaVersion).toBe(2);
+    expect(settled.tasks[0].status).toBe("rejected");
+    expect(settled.tasks[0].invocations?.[0]).toMatchObject({
+      attempt: 1,
+      outcome: "failed",
+      error: "workflow_invocation_interrupted",
+    });
   });
 
   it.each(["claude", "codex"] as const)(

@@ -11,7 +11,7 @@ English | [한국어](README.ko.md) | [中文](README.zh.md) | [日本語](READM
 [![Sponsor](https://img.shields.io/badge/Sponsor-❤️-red?style=flat&logo=github)](https://github.com/sponsors/Yeachan-Heo)
 [![Discord](https://img.shields.io/discord/1452487457085063218?color=5865F2&logo=discord&logoColor=white&label=Discord)](https://discord.gg/wSyUQYfhAw)
 
-> **workflow-v1.4 candidate:** This fork can use Claude Code or Codex as the repository's OMC lead, with independent Claude, Codex, GLM, and GLM Flash worker/reviewer bindings. See the [project setup and switching guide](docs/WORKFLOW-V1.4.md) and [release notes and verification limits](docs/WORKFLOW-V1.4-RELEASE-NOTES.md). Codex integration adapts selected capabilities from [oh-my-codex](https://github.com/kachiuli/oh-my-codex).
+> **workflow-v1.5:** This fork can use Claude Code or Codex as the repository's OMC lead, with independent Claude, Codex, GLM, and GLM Flash worker/reviewer bindings. `workflow-v1.5` carries the upstream 5.5.0 merge, settles attempts orphaned by a dead lead, and defaults the Claude lead's Bash timeout to the provider timeout. See the [v1.5 release notes](docs/WORKFLOW-V1.5-RELEASE-NOTES.md), the [project setup and switching guide](docs/WORKFLOW-V1.4.md), the [v1.4 release notes](docs/WORKFLOW-V1.4-RELEASE-NOTES.md), and the live [Claude lead](docs/WORKFLOW-V1.4-CLAUDE-LEAD-VERIFICATION.md) and [lead/worker/reviewer matrix](docs/WORKFLOW-V1.5-ROLE-MATRIX-VERIFICATION.md) verification records. Codex integration adapts selected capabilities from [oh-my-codex](https://github.com/kachiuli/oh-my-codex).
 
 > **Liked OmC but found it a bit overkill? Try [gajae-code](https://github.com/Yeachan-Heo/gajae-code).**
 > Keeps Claude OAuth as-is while being faster, cheaper, simpler, and more powerful — with an SDK-based integration path built for OpenClaw, Hermes, Grokbot, and similar agent runtimes.
@@ -471,7 +471,7 @@ For the full contract and command walkthrough, read the [GLM workflow guide](doc
 
 ### V1.1 local efficiency
 
-V1 remains on [`codex/glm-workflow-v1`](https://github.com/kachiuli/oh-my-claudecode/tree/codex/glm-workflow-v1), pinned at `3e51fcf70545c2bc3ee5a24a9f11844e8a294c57`. V1.1 is on [`codex/glm-workflow-v1.1`](https://github.com/kachiuli/oh-my-claudecode/tree/codex/glm-workflow-v1.1). These are personal workflow revisions; the upstream package version remains 5.4.0, and neither fork revision is published to npm.
+V1 remains on [`codex/glm-workflow-v1`](https://github.com/kachiuli/oh-my-claudecode/tree/codex/glm-workflow-v1), pinned at `3e51fcf70545c2bc3ee5a24a9f11844e8a294c57`. V1.1 is on [`codex/glm-workflow-v1.1`](https://github.com/kachiuli/oh-my-claudecode/tree/codex/glm-workflow-v1.1). These are personal workflow revisions; the package version stays at the upstream version (5.4.0 on those branches, 5.5.0 on `main` since the September 2026 upstream merge), and no fork revision is published to npm.
 
 Keep your V1 installation available while trying V1.1. After completing the Claude, separate GLM profile and Codex setup above, build a second checkout:
 

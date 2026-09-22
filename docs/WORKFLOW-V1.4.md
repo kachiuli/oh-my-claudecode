@@ -2,7 +2,7 @@
 
 Workflow V1.4 lets one repository use Claude Code or Codex as the interactive OMC lead. The selected host is independent of workflow provider bindings: changing the lead does not change which provider implements or reviews a task. The workflow label does not change the npm package version, which follows upstream (5.4.0 at the original release, 5.5.0 after the September 2026 upstream merge); `workflow-v1.4` is the workflow release label.
 
-The explicit operation-lock recovery, advisory hook diagnostics and Windows shipping fixes below are maintenance changes after the original `workflow-v1.4` tag. They are not included in that tag's published archive.
+The explicit operation-lock recovery, advisory hook diagnostics and Windows shipping fixes below are maintenance changes after the original `workflow-v1.4` tag and ship in `workflow-v1.4.1`. The Claude lead Bash-timeout default and the settlement of attempts orphaned by a dead controller are later maintenance changes validated by the [Claude lead live record](WORKFLOW-V1.4-CLAUDE-LEAD-VERIFICATION.md); they ship in `workflow-v1.5` together with the upstream 5.5.0 merge and are not in the earlier archives.
 
 ## Install both project hosts
 
@@ -61,7 +61,7 @@ omc launch
 
 For Codex, OMC fixes the working directory at the repository root and defaults to `workspace-write`; an explicit `read-only` sandbox remains read-only. Explicit workspace expansion, remote-host redirection, sandbox bypass flags, sandbox-changing `-c` overrides, conflicting `--full-auto` plus `read-only`, and the unmanaged `app`, `queue`, `agents`, and `exec-server` entry points are refused. Existing native user/profile configuration still applies, including its permission, readable-root, and network settings. Core workflow gates separately enforce OMC task write scopes, leases, result publication, and protected refs.
 
-Claude keeps the user's model and permission settings while adding the managed project plugin. Adopted project hosts reject `--madmax`, `--yolo`, and native permission-bypass aliases. Alternate remote, cloud, attach, teleport, background, safe, bare, `agents`, and `ultrareview` modes are unsupported because they do not preserve the registered local lead session and repository lease. The only supported continuation form is `omc launch --resume <native-session-id>`.
+Claude keeps the user's model and permission settings while adding the managed project plugin. Because the native Bash tool stops a command after two minutes by default, which kills `omc team workflow run` mid-attempt, a Claude project launch sets `BASH_DEFAULT_TIMEOUT_MS` and `BASH_MAX_TIMEOUT_MS` to the controller's maximum provider timeout of one hour unless the user already set them. Adopted project hosts reject `--madmax`, `--yolo`, and native permission-bypass aliases. Alternate remote, cloud, attach, teleport, background, safe, bare, `agents`, and `ultrareview` modes are unsupported because they do not preserve the registered local lead session and repository lease. The only supported continuation form is `omc launch --resume <native-session-id>`.
 
 To resume, use only a native session that OMC recorded for the same host and selection:
 
@@ -92,6 +92,14 @@ omc orchestrator recover --checkpoint paused --workflow <name> --reference <evid
 `recover` can clear a verifiably abandoned operation lock as well as a host lease. It checks process identities, repository ownership, registered host processes, sibling repository leases and shared workflow activity before changing state. Recovery also handles an operation that crashed without creating a lease, such as setup or selection. It records the supplied checkpoint and recovery evidence without completing tasks or rewriting workflow history.
 
 Normal commands never expire or reap operation locks. Recovery refuses live or unverifiable owners, incomplete process registration, active work, malformed or legacy lock records, and ownership conflicts. An abandoned recovery claim also remains blocked; a second crash during recovery requires inspection. These refusals preserve the files for diagnosis rather than guessing that their owners are gone. Run recovery from the owning physical checkout and retain the error and state for investigation; do not delete state directories to force progress.
+
+A lead that dies while `omc team workflow run` or `resume` is executing leaves the task `running` and the controller's advisory `workflow.json.lock` behind. Two independent rules cover that state. Each attempt records the controller's process identity when it is reserved and the provider's identity at spawn, so explicit recovery treats the task as orphaned only when the recorded provider is verifiably dead, or, if no provider was recorded, when the recording controller is verifiably dead. Separately, every quiescence check treats an advisory `*.lock` file as abandoned rather than held once it is at least 30 seconds old and its recorded owner is verifiably gone, which is the same rule the lock applies before reaping the file itself. Selection and handoff still refuse a running task until it is settled. Exit the dead lead's session, run `omc orchestrator recover` from a plain shell, then settle the interrupted task explicitly:
+
+```sh
+omc team workflow reject <name> <task-id> --reason <inspection-summary>
+```
+
+The attempt is recorded as `workflow_invocation_interrupted`, its unused publication capability is revoked, and it is never re-dispatched automatically; remaining tasks continue or the workflow is abandoned. Attempts whose provider or controller is still alive, or whose identities cannot be verified, remain blocked for inspection.
 
 ## Provider and model independence
 

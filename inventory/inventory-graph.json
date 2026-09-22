@@ -5,15 +5,15 @@
   "provenance": {
     "base": "05c800f40d1ad53b42a78609d2667ef4f726808b",
     "planningHead": "0a91273e61dbbd47eb0af4c02844409251e08398",
-    "head": "22b91c34321f8957c8d15bce98da956d4489b49f",
-    "sourceSha256": "de2004b2c3f9912a54189fedc42f2e3eb340d69bbaab1535718486174f7b07a1",
+    "head": "a2c81b5ae3d2933c7ba80f325c8b386669523a2c",
+    "sourceSha256": "87e381bc52352873216af09874991a6a461574178a34f1f74b7ac1e438a5f416",
     "generatedAt": null,
     "generator": "scripts/generate-inventory-graph.mjs"
   },
   "base": "05c800f40d1ad53b42a78609d2667ef4f726808b",
   "planningHead": "0a91273e61dbbd47eb0af4c02844409251e08398",
-  "head": "22b91c34321f8957c8d15bce98da956d4489b49f",
-  "sourceSha256": "de2004b2c3f9912a54189fedc42f2e3eb340d69bbaab1535718486174f7b07a1",
+  "head": "a2c81b5ae3d2933c7ba80f325c8b386669523a2c",
+  "sourceSha256": "87e381bc52352873216af09874991a6a461574178a34f1f74b7ac1e438a5f416",
   "counts": {
     "public": {
       "skills": 43,
@@ -28,13 +28,13 @@
       "toolFiles": 61,
       "libFiles": 43,
       "templateHooks": 22,
-      "srcFiles": 1436,
-      "total": 1458
+      "srcFiles": 1437,
+      "total": 1459
     },
     "generated": {
-      "distFiles": 5091,
+      "distFiles": 5092,
       "bridgeFiles": 9,
-      "total": 5100
+      "total": 5101
     },
     "prompt": {
       "promptLikeFiles": 62
@@ -5610,6 +5610,7 @@
       "dist/team/worker-restart.js.map",
       "dist/team/workflow-adapters.js",
       "dist/team/workflow-contracts.js",
+      "dist/team/workflow-orphan.js",
       "dist/team/workflow-process.js",
       "dist/team/workflow-prompt.js",
       "dist/team/workflow-publication.js",
@@ -31128,6 +31129,11 @@
         "path": "dist/team/workflow-contracts.js"
       },
       {
+        "id": "dist/team/workflow-orphan.js",
+        "kind": "generated-dist",
+        "path": "dist/team/workflow-orphan.js"
+      },
+      {
         "id": "dist/team/workflow-process.js",
         "kind": "generated-dist",
         "path": "dist/team/workflow-process.js"
@@ -33023,6 +33029,11 @@
         "path": "docs/TOOLS.md"
       },
       {
+        "id": "docs/WORKFLOW-V1.4-CLAUDE-LEAD-VERIFICATION.md",
+        "kind": "other",
+        "path": "docs/WORKFLOW-V1.4-CLAUDE-LEAD-VERIFICATION.md"
+      },
+      {
         "id": "docs/WORKFLOW-V1.4-RELEASE-NOTES.md",
         "kind": "other",
         "path": "docs/WORKFLOW-V1.4-RELEASE-NOTES.md"
@@ -33036,6 +33047,16 @@
         "id": "docs/WORKFLOW-V1.4.md",
         "kind": "other",
         "path": "docs/WORKFLOW-V1.4.md"
+      },
+      {
+        "id": "docs/WORKFLOW-V1.5-RELEASE-NOTES.md",
+        "kind": "other",
+        "path": "docs/WORKFLOW-V1.5-RELEASE-NOTES.md"
+      },
+      {
+        "id": "docs/WORKFLOW-V1.5-ROLE-MATRIX-VERIFICATION.md",
+        "kind": "other",
+        "path": "docs/WORKFLOW-V1.5-ROLE-MATRIX-VERIFICATION.md"
       },
       {
         "id": "docs/adr/03487-named-autopilot-stage-profiles.md",
@@ -41491,6 +41512,11 @@
         "id": "src/team/workflow-contracts.ts",
         "kind": "src",
         "path": "src/team/workflow-contracts.ts"
+      },
+      {
+        "id": "src/team/workflow-orphan.ts",
+        "kind": "src",
+        "path": "src/team/workflow-orphan.ts"
       },
       {
         "id": "src/team/workflow-process.ts",
@@ -71060,6 +71086,16 @@
         "kind": "imports"
       },
       {
+        "from": "src/orchestration/__tests__/operation-recovery.test.ts",
+        "to": "src/team/team-owner-epoch.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/orchestration/__tests__/recovery-quiescence.test.ts",
+        "to": "external:node:child_process",
+        "kind": "imports"
+      },
+      {
         "from": "src/orchestration/__tests__/recovery-quiescence.test.ts",
         "to": "external:node:crypto",
         "kind": "imports"
@@ -71191,12 +71227,22 @@
       },
       {
         "from": "src/orchestration/quiescence.ts",
+        "to": "src/platform/index.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/orchestration/quiescence.ts",
         "to": "src/team/monitor.ts",
         "kind": "imports"
       },
       {
         "from": "src/orchestration/quiescence.ts",
         "to": "src/team/team-owner-epoch.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/orchestration/quiescence.ts",
+        "to": "src/team/workflow-orphan.ts",
         "kind": "imports"
       },
       {
@@ -76226,6 +76272,16 @@
       },
       {
         "from": "src/team/__tests__/workflow-hosts.test.ts",
+        "to": "external:node:child_process",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-hosts.test.ts",
+        "to": "external:node:crypto",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-hosts.test.ts",
         "to": "external:node:fs",
         "kind": "imports"
       },
@@ -76257,6 +76313,11 @@
       {
         "from": "src/team/__tests__/workflow-hosts.test.ts",
         "to": "src/team/__tests__/helpers/workflow-v2-fixture.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-hosts.test.ts",
+        "to": "src/team/team-owner-epoch.ts",
         "kind": "imports"
       },
       {
@@ -76411,6 +76472,11 @@
       },
       {
         "from": "src/team/__tests__/workflow.test.ts",
+        "to": "external:node:crypto",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow.test.ts",
         "to": "external:node:fs",
         "kind": "imports"
       },
@@ -76431,6 +76497,11 @@
       },
       {
         "from": "src/team/__tests__/workflow.test.ts",
+        "to": "src/orchestration/quiescence.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow.test.ts",
         "to": "src/team/__tests__/helpers/workflow-fixture.ts",
         "kind": "imports"
       },
@@ -76442,6 +76513,11 @@
       {
         "from": "src/team/__tests__/workflow.test.ts",
         "to": "src/team/git-worktree.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow.test.ts",
+        "to": "src/team/team-owner-epoch.ts",
         "kind": "imports"
       },
       {
@@ -79740,6 +79816,11 @@
         "kind": "type-imports"
       },
       {
+        "from": "src/team/workflow-orphan.ts",
+        "to": "src/team/team-owner-epoch.ts",
+        "kind": "imports"
+      },
+      {
         "from": "src/team/workflow-process.ts",
         "to": "external:node:child_process",
         "kind": "imports"
@@ -79773,6 +79854,16 @@
         "from": "src/team/workflow-process.ts",
         "to": "src/team/fs-utils.ts",
         "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow-process.ts",
+        "to": "src/team/team-owner-epoch.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow-process.ts",
+        "to": "src/team/workflow-contracts.ts",
+        "kind": "type-imports"
       },
       {
         "from": "src/team/workflow-process.ts",
@@ -79916,6 +80007,11 @@
       },
       {
         "from": "src/team/workflow.ts",
+        "to": "src/orchestration/operation-lock.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow.ts",
         "to": "src/orchestration/selection.ts",
         "kind": "imports"
       },
@@ -79993,6 +80089,11 @@
         "from": "src/team/workflow.ts",
         "to": "src/team/workflow-contracts.ts",
         "kind": "type-imports"
+      },
+      {
+        "from": "src/team/workflow.ts",
+        "to": "src/team/workflow-orphan.ts",
+        "kind": "imports"
       },
       {
         "from": "src/team/workflow.ts",
@@ -83276,12 +83377,12 @@
       }
     ],
     "stats": {
-      "nodeCount": 7165,
-      "edgeCount": 8185,
-      "importEdgeCount": 6747,
+      "nodeCount": 7170,
+      "edgeCount": 8200,
+      "importEdgeCount": 6761,
       "registerEdgeCount": 64
     }
   },
-  "inventorySha256": "da7488eef4e8289fc92fa8fd28ac4a0b02b262569da691d13598fa5d3a50a2ba",
-  "manifestSha256": "d1991554ecfda887d1a81e30915b29c5dc4f6dae72ad9f5c19bcd6492bd165dc"
+  "inventorySha256": "6437832f3d13436ac275ae725d1bb8a6058ed0f4af33bfecb42237cfe1e72fba",
+  "manifestSha256": "511560e392a0e0853ce34715871ca146c7eee5a66656c58dd7c31134c54287c3"
 }
