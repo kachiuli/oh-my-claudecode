@@ -35,3 +35,6 @@ bridge/
 
 __pycache__/
 *.py[cod]
+
+# Node-API contained-filesystem build outputs
+native/*.node

@@ -18,7 +18,7 @@ afterEach(() => vi.unstubAllEnvs());
 describe('GLM CLI provider', () => {
   it('rejects the legacy runtime before spawning a GLM worker without isolation', async () => {
     await expect(startTeam({ teamName: 'glm-legacy', workerCount: 1, agentTypes: ['glm'], tasks: [], cwd: process.cwd() }))
-      .rejects.toThrow('native runtime-v2 worktree isolation');
+      .rejects.toThrow('team_start_unsafe_runtime_v1');
   });
   it('parses ask and team specifications as a real provider', () => {
     expect(parseAskArgs(['glm', 'inspect subsystem']).provider).toBe('glm');

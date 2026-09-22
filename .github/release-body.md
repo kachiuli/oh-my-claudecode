@@ -1,45 +1,88 @@
-# oh-my-claudecode v5.4.0: respect CLAUDE_CODE_OAUTH_TOKEN when, add agent-doc-discipline skill, pre-flight danger scan
+# oh-my-claudecode v5.5.0: jev — advisory, point registry and, jev — ralph
 
 ## Release Notes
 
-Release with **5 new features**, **10 bug fixes** across **16 merged PRs**.
+Release with **22 new features**, **24 bug fixes**, **5 other changes** across **57 merged PRs**.
 
 ### Highlights
 
-- **feat(hud): respect CLAUDE_CODE_OAUTH_TOKEN when reading usage** (#4004)
-- **feat(shipyard): add agent-doc-discipline skill and two-axis review gate** (#4003)
-- **feat(lookout): pre-flight danger scan for autonomous runs (advisory)** (#3994)
-- **feat(skills): add harbor — shipyard intake gate for external issues and PRs (opt-in)** (#3982)
-- **feat(hooks): make the SessionStart context budget configurable via OMC_SESSION_START_CONTEXT_BUDGET** (#3981)
+- **feat(hooks): jev — advisory points batch and script-side channel ADR** (#4075)
+- **feat(jev): point registry and shadow eval tool — unify the judgment-point program** (#4065)
+- **feat(hooks): jev — ralph completion verdict and task-size shadow points** (#4064)
+- **feat(hooks): jev — judgment points with heuristic degradation** (#4058)
+- **feat(hud): fall back to rate-limit headers for setup-token usage** (#4057)
 
 ### New Features
 
-- **feat(hud): respect CLAUDE_CODE_OAUTH_TOKEN when reading usage** (#4004)
-- **feat(shipyard): add agent-doc-discipline skill and two-axis review gate** (#4003)
-- **feat(lookout): pre-flight danger scan for autonomous runs (advisory)** (#3994)
-- **feat(skills): add harbor — shipyard intake gate for external issues and PRs (opt-in)** (#3982)
-- **feat(hooks): make the SessionStart context budget configurable via OMC_SESSION_START_CONTEXT_BUDGET** (#3981)
+- **feat(hooks): jev — advisory points batch and script-side channel ADR** (#4075)
+- **feat(jev): point registry and shadow eval tool — unify the judgment-point program** (#4065)
+- **feat(hooks): jev — ralph completion verdict and task-size shadow points** (#4064)
+- **feat(hooks): jev — judgment points with heuristic degradation** (#4058)
+- **feat(hud): fall back to rate-limit headers for setup-token usage** (#4057)
+- **feat(deep-interview): absorb grilling's frontier-rounds questioning from mattpocock/skills#647** (#4052)
+- **perf(hud): throttle and batch the shared cache sweep (fix #4045)** (#4051)
+- **feat(skills): state the run numbers in the launch C5 completion report** (#4050)
+- **feat(audit): extend shipyard-audit.mjs with project-skill triggers and intent status checks** (#4048)
+- **feat(skills): intent — internal requirements intake for non-engineer contributors** (#4038)
+- **feat(skills): weave the six remaining output disciplines into both companions** (#4036)
+- **feat(skills): minimal-prose-discipline — the yard's third writing companion** (#4035)
+- **feat(skills): add closable-next-action and rejoin-orientation rules to agent-doc-discipline**
+- **feat(skills): give the drydock guardrail preset a concrete seed shape**
+- **feat(skills): wire launch and navigator gates to the shipyard-audit executable**
+- **feat(shipyard): retire the --check limitation wording — the structured exit contract exists**
+- **feat(shipyard): add the shipyard-audit script — mechanical --check findings in the lookout vocabulary**
+- **feat(shipyard): round-2 absorption — comprehension reset, settled-consensus exit, planned handoff, commit-time gates, on-the-spot survey grilling** (#4028)
+- **feat(shipyard): close the loop — weave the missing disciplines into the seven skills** (#4026)
+- **feat(shipyard): seed the testing discipline volume in the process standards** (#4017)
+- **feat(skills): add diagram skill — model-invoked visual explanations** (#4014)
+- **feat(shipyard): add architecture-survey skill and invocation contract** (#4012)
 
 ### Bug Fixes
 
-- **fix: remove false Ralph Ruby prerequisite and bad plan citation** (#4000)
-- **fix(team): preserve reap ownership during leader cleanup** (#3997)
-- **fix(hud): exclude release dates from model versions** (#3999)
-- **fix(team): validate effective providers and harden launch gate ownership** (#3993)
-- **fix(worktree-paths): treat a bare repository as a work-tree-less repo, not a failed probe** (#3991)
-- **fix(release): cover version-coupled surfaces in the release runbook** (#3989)
-- **fix(inventory): re-anchor inventory-graph provenance to the current dev head** (#3987)
-- **fix(setup): continue with canonical plugin root when launcher path is a compat symlink** (#3986)
-- **fix(worktree-paths): force LC_ALL=C on git probe spawns** (#3979)
-- **fix(team): bound Cursor/Codex startup grace and verify provider cleanup** (#3983)
+- **fix(session-end): record why a release left the job recoverable (#4076)** (#4076)
+- **fix(config): validate background task env limit** (#4074)
+- **fix(preflight): reject malformed context threshold overrides** (#4071)
+- **fix(read-budget): reject malformed env budget overrides** (#4070)
+- **fix(read-budget): skip binaries, honor pages, reorder remedy, add maxBytes (#4062)** (#4062)
+- **fix(team): bind native team lifecycle to an immutable instance id** (#4059)
+- **fix(hooks): enforce the read budget in pre-tool-enforcer (#4054)** (#4054)
+- **fix(hud): validate watch intervals** (#4053)
+- **fix(inventory): stop failing the drift guard on squash-merged baselines** (#4044)
+- **fix: use ${CLAUDE_PLUGIN_ROOT} brace form in hook commands (Windows startup error)** (#4042)
+- **fix(inventory): repoint graph provenance at the dev tip after #4041** (#4043)
+- **fix(notepad): stop interpreting section text as replace patterns and anchor section boundary** (#4041)
+- **fix(hooks): force LC_ALL=C on inline state-root git spawns (#4033)** (#4033)
+- **fix(shipyard): stop the audit from manufacturing findings it cannot back**
+- **fix(team): make task claims and monitor snapshots consistent** (#4009)
+- **fix(inventory): repair the orphaned provenance anchor that reddens every PR** (#4029)
+- **fix(graph): invalidate nested operations before closing directory FDs** (#4027)
+- **fix(hooks): register the directory-context injector so nested AGENTS.md is delivered (#4006)** (#4006)
+- **fix(launch): keep forwarded credentials off every launch command line** (#4022)
+- **fix(graph): use directory-relative filesystem operations on Darwin (#4011, rebased from #4013 without the CI workflow change)** (#4021)
+- **fix(launch): exec-replace the tmux pane so the agent binary is the pane process (#4005)** (#4005)
+- **fix(state): survive a missing better-sqlite3 native binding with an actionable diagnostic (#4016)** (#4016)
+- **fix(team): preserve resumed state and scope cancellation safely** (#4015)
+- **fix: acquireStateFileLockSync did not honor OMC_TEST_FLOCK_AVAILABLE, breaking the pre-SQLite fallback contract (non-exclusive callers proceed best-effort; exclusive callers fail closed) that legacy-cancel-signal and other flock-era tests depend on**
+
+### Refactoring
+
+- **refactor(skills): read the drydock language contract from launch instead of inlining it** (#4047)
 
 ### Documentation
 
-- **docs: replace retired mode guidance with the shipped 5.3.0 surface** (#3985)
+- **docs: add plugin-dir conflict verification note** (#4069)
+
+### Other Changes
+
+- **chore(inventory): rebind v5.5.0 release baseline**
+- **chore(build): rebuild generated artifacts for the v5.5.0 release head**
+- **chore(inventory): regenerate baseline at the release head**
+- **chore(inventory): regenerate baseline at the release head**
+- **chore(inventory): refresh the baseline for the audit-contract SKILL.md deltas**
 
 ### Stats
 
-- **16 PRs merged** | **5 new features** | **10 bug fixes** | **0 security/hardening improvements** | **0 other changes**
+- **57 PRs merged** | **22 new features** | **24 bug fixes** | **0 security/hardening improvements** | **5 other changes**
 
 ### Install / Update
 
@@ -48,7 +91,7 @@ The npm CLI and the Claude Code marketplace/plugin are separate install tracks, 
 **CLI / runtime:**
 
 ```bash
-npm install -g oh-my-claude-sisyphus@5.4.0
+npm install -g oh-my-claude-sisyphus@5.5.0
 ```
 
 **Claude Code plugin:**
@@ -57,10 +100,4 @@ npm install -g oh-my-claude-sisyphus@5.4.0
 /plugin marketplace update omc
 ```
 
-**Full Changelog**: https://github.com/Yeachan-Heo/oh-my-claudecode/compare/v5.3.0...v5.4.0
-
-## Contributors
-
-Thank you to all contributors who made this release possible!
-
-@chrisworksai @clawdbot @cuijieshan3-collab @HwangTaehyun @Iams4kura @iyoda @namekun @pangpang778 @Yeachan-Heo
+**Full Changelog**: https://github.com/Yeachan-Heo/oh-my-claudecode/compare/v5.4.0...v5.5.0

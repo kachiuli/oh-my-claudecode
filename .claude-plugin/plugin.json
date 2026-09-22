@@ -1,6 +1,6 @@
 {
   "name": "oh-my-claudecode",
-  "version": "5.4.0",
+  "version": "5.5.0",
   "description": "Multi-agent orchestration system for Claude Code",
   "author": {
     "name": "oh-my-claudecode contributors"
@@ -18,7 +18,9 @@
   "skills": [
     "./skills/ai-slop-cleaner/",
     "./skills/agent-doc-discipline/",
+    "./skills/architecture-survey/",
     "./skills/ask/",
+    "./skills/intent/",
     "./skills/ask-navigator/",
     "./skills/autopilot/",
     "./skills/autoresearch/",
@@ -27,6 +29,7 @@
     "./skills/debug/",
     "./skills/deep-interview/",
     "./skills/deepinit/",
+    "./skills/diagram/",
     "./skills/drydock/",
     "./skills/execute/",
     "./skills/external-context/",
@@ -36,6 +39,7 @@
     "./skills/launch/",
     "./skills/loft/",
     "./skills/minimal-code-discipline/",
+    "./skills/minimal-prose-discipline/",
     "./skills/omc-doctor/",
     "./skills/omc-setup/",
     "./skills/plan/",
