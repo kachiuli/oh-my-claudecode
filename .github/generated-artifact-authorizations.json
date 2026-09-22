@@ -2960,6 +2960,86 @@
           "previousFilename": null
         }
       ]
+    },
+    {
+      "pullNumber": 12,
+      "targetRef": "main",
+      "mergeBaseSha": "4178fff43b19c55240285445236a96392497f7b0",
+      "headSha": "9bb6a63f3e9b753e596f30dbc10176582f176f7e",
+      "owner": "kachiuli",
+      "expiresAt": "2026-09-29T16:07:15.329Z",
+      "generatedDelta": {
+        "count": 11,
+        "sha256": "ce3e3889b465efaa79ca3801ca41be6a71199745235c7b377750e01f3c0b2c4b"
+      },
+      "generatedFiles": [
+        {
+          "status": "modified",
+          "filename": "bridge/cli.cjs",
+          "sha": "59998daaa56eaee2e7611947e43d05e8191cf2df",
+          "previousFilename": null
+        },
+        {
+          "status": "modified",
+          "filename": "bridge/mcp-server.cjs",
+          "sha": "1d6c6e3f58634d6fe312888d6e113f4ad7b87286",
+          "previousFilename": null
+        },
+        {
+          "status": "modified",
+          "filename": "bridge/runtime-cli.cjs",
+          "sha": "e6a5023450d352048252a411fa3c4ca9254ba84b",
+          "previousFilename": null
+        },
+        {
+          "status": "modified",
+          "filename": "bridge/team-mcp.cjs",
+          "sha": "f2cff72d0e4464c98652a8a7a73f09da70110fb0",
+          "previousFilename": null
+        },
+        {
+          "status": "modified",
+          "filename": "bridge/team.js",
+          "sha": "9294520c1b41cd26f2ac4f74ba849559a7e06202",
+          "previousFilename": null
+        },
+        {
+          "status": "modified",
+          "filename": "dist/cli/project-launch.js",
+          "sha": "945ca57cef9331c2b3450139360469c6d388f756",
+          "previousFilename": null
+        },
+        {
+          "status": "modified",
+          "filename": "dist/orchestration/quiescence.js",
+          "sha": "966ebef201d1eb443bc5bf21a9f4b0fc37a09e89",
+          "previousFilename": null
+        },
+        {
+          "status": "modified",
+          "filename": "dist/team/team-owner-epoch.js",
+          "sha": "d1705c78eba1cc32ad4426dc12cb6ef64795cc3a",
+          "previousFilename": null
+        },
+        {
+          "status": "added",
+          "filename": "dist/team/workflow-orphan.js",
+          "sha": "6ce45325697ad49d7c238acc8c68fd9a827d7174",
+          "previousFilename": null
+        },
+        {
+          "status": "modified",
+          "filename": "dist/team/workflow-process.js",
+          "sha": "c0f17c0702d8bc6ff116a418823b07c7978bafcf",
+          "previousFilename": null
+        },
+        {
+          "status": "modified",
+          "filename": "dist/team/workflow.js",
+          "sha": "27c848a0650c276f65980133bc0c1f03e8e7d0f8",
+          "previousFilename": null
+        }
+      ]
     }
   ]
 }
