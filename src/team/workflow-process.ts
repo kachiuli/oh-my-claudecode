@@ -152,8 +152,10 @@ export async function runWorkflowProcess(input: {
     let streamClose = false;
     const child = spawn(command, args, { cwd: input.cwd, env: environment, stdio: ['pipe', 'pipe', 'pipe'], shell: false, windowsHide: true, detached: process.platform !== 'win32' });
     if (child.pid && input.onSpawn) {
-      // Bookkeeping never interrupts the provider; a missing identity simply keeps recovery conservative.
-      try { input.onSpawn({ pid: child.pid, processStartedAt: currentProcessStartIdentity(child.pid) }); } catch { /* recorded as unverifiable */ }
+      // Bookkeeping never interrupts the provider. The bare PID is recorded before the start-identity probe so a
+      // controller crash during the probe still leaves a verifiable record; a missing identity keeps recovery conservative.
+      try { input.onSpawn({ pid: child.pid, processStartedAt: null }); } catch { /* recorded as unverifiable */ }
+      try { input.onSpawn({ pid: child.pid, processStartedAt: currentProcessStartIdentity(child.pid) }); } catch { /* keeps the bare PID record */ }
     }
     const settlement = (): WorkflowProcessSettlement => ({
       parentExitCode: parentExit ? parentExit.code : null,

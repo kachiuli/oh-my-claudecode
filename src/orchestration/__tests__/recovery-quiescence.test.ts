@@ -487,11 +487,15 @@ describe("orchestrator recovery quiescence", () => {
       return child.pid!;
     }
 
-    function runningWorkflow(identity: unknown) {
+    function runningWorkflow(
+      identity: unknown,
+      controller?: unknown,
+      attempt = 1,
+    ) {
       const state = workflowState("running");
       const invocation = {
         orchestrationHost: "claude",
-        attempt: 1,
+        attempt,
         mode: "fresh",
         model: "glm-5.3-flash",
         startedAt: "2026-09-21T00:00:00.000Z",
@@ -505,6 +509,7 @@ describe("orchestrator recovery quiescence", () => {
           scope: "unknown",
         },
         ...(identity === undefined ? {} : { process: identity }),
+        ...(controller === undefined ? {} : { controller }),
       };
       return {
         ...state,
@@ -518,6 +523,12 @@ describe("orchestrator recovery quiescence", () => {
         ],
       };
     }
+
+    // The workflow record must live in the team directory named after its plan.
+    const ownedWorkflow = (testFixture: RecoveryFixture) =>
+      join(testFixture.stateRoot, "team", "recovery", "workflow.json");
+    const ownedTask = (testFixture: RecoveryFixture) =>
+      join(testFixture.stateRoot, "team", "recovery", "tasks", "task-1.json");
 
     function projectedTask(taskId: string) {
       return {
@@ -533,38 +544,55 @@ describe("orchestrator recovery quiescence", () => {
       };
     }
 
-    it("treats a running task whose provider is verifiably dead as orphaned only during explicit recovery", () => {
-      const testFixture = fixture();
-      const dead = {
-        pid: exitedPid(),
-        processStartedAt: currentProcessStartIdentity(),
-      };
-      writeJson(
-        join(testFixture.teamRoot, "workflow.json"),
-        runningWorkflow(dead),
-      );
-      writeJson(
-        join(testFixture.teamRoot, "tasks", "task-1.json"),
-        projectedTask("one"),
-      );
-
-      expect(() =>
-        assertOrchestratorRecoveryQuiescent(testFixture.root),
-      ).not.toThrow();
-      expect(() => assertOrchestratorQuiescent(testFixture.root)).toThrow(
-        "orchestrator_active_attempt",
-      );
+    const deadIdentity = () => ({
+      pid: exitedPid(),
+      processStartedAt: currentProcessStartIdentity(),
+    });
+    const liveIdentity = () => ({
+      pid: process.pid,
+      processStartedAt: currentProcessStartIdentity(),
     });
 
-    it("refuses a running task whose recorded provider is still alive", () => {
+    it.each([
+      ["a verifiably dead provider", deadIdentity, undefined],
+      [
+        "a bare dead provider PID",
+        () => ({ pid: exitedPid(), processStartedAt: null }),
+        undefined,
+      ],
+      [
+        "no provider and a verifiably dead controller",
+        () => undefined,
+        deadIdentity,
+      ],
+    ])(
+      "treats a running task with %s as orphaned only during explicit recovery",
+      (_name, identity, controller) => {
+        const testFixture = fixture();
+        writeJson(
+          ownedWorkflow(testFixture),
+          runningWorkflow(identity(), controller?.()),
+        );
+        writeJson(ownedTask(testFixture), projectedTask("one"));
+
+        expect(() =>
+          assertOrchestratorRecoveryQuiescent(testFixture.root),
+        ).not.toThrow();
+        expect(() => assertOrchestratorQuiescent(testFixture.root)).toThrow(
+          "orchestrator_active_attempt",
+        );
+      },
+    );
+
+    it.each([
+      ["a live provider", liveIdentity],
+      [
+        "a bare live provider PID",
+        () => ({ pid: process.pid, processStartedAt: null }),
+      ],
+    ])("refuses a running task with %s", (_name, identity) => {
       const testFixture = fixture();
-      writeJson(
-        join(testFixture.teamRoot, "workflow.json"),
-        runningWorkflow({
-          pid: process.pid,
-          processStartedAt: currentProcessStartIdentity(),
-        }),
-      );
+      writeJson(ownedWorkflow(testFixture), runningWorkflow(identity()));
 
       expect(() =>
         assertOrchestratorRecoveryQuiescent(testFixture.root),
@@ -572,15 +600,33 @@ describe("orchestrator recovery quiescence", () => {
     });
 
     it.each([
-      ["no recorded process", undefined],
-      ["a malformed identity", { pid: "42", processStartedAt: null }],
+      ["no recorded process or controller", undefined, undefined, 1],
+      [
+        "a malformed identity",
+        { pid: "42", processStartedAt: null },
+        undefined,
+        1,
+      ],
+      [
+        "an unverifiable start identity",
+        { pid: 42, processStartedAt: "garbage" },
+        undefined,
+        1,
+      ],
+      ["no provider and a live controller", undefined, liveIdentity(), 1],
+      [
+        "an attempt number that is not the current one",
+        deadIdentity(),
+        undefined,
+        2,
+      ],
     ])(
       "keeps a running task with %s as an active attempt",
-      (_name, identity) => {
+      (_name, identity, controller, attempt) => {
         const testFixture = fixture();
         writeJson(
-          join(testFixture.teamRoot, "workflow.json"),
-          runningWorkflow(identity),
+          ownedWorkflow(testFixture),
+          runningWorkflow(identity, controller, attempt),
         );
 
         expect(() =>
@@ -589,54 +635,113 @@ describe("orchestrator recovery quiescence", () => {
       },
     );
 
-    it("refuses an active task projection that does not belong to the orphaned attempt", () => {
+    it("refuses an orphaned record that does not live in its own workflow directory", () => {
       const testFixture = fixture();
       writeJson(
         join(testFixture.teamRoot, "workflow.json"),
-        runningWorkflow({
-          pid: exitedPid(),
-          processStartedAt: currentProcessStartIdentity(),
-        }),
-      );
-      writeJson(
-        join(testFixture.teamRoot, "tasks", "task-1.json"),
-        projectedTask("two"),
+        runningWorkflow(deadIdentity()),
       );
 
       expect(() =>
         assertOrchestratorRecoveryQuiescent(testFixture.root),
-      ).toThrow("orchestrator_active_attempt");
+      ).toThrow("orchestrator_quiescence_unverified");
     });
 
     it.each([
-      ["a dead owner and enough age", true, true, true],
-      ["a live owner", false, true, false],
-      ["a dead owner but recent activity", true, false, false],
+      ["names another task", "recovery", "two"],
+      ["lives in another team directory", "demo-team", "one"],
     ])(
-      "passes an abandoned workflow lock with %s only during explicit recovery",
-      (_name, deadOwner, aged, expected) => {
+      "refuses an active task projection that %s",
+      (_name, directory, taskId) => {
+        const testFixture = fixture();
+        writeJson(ownedWorkflow(testFixture), runningWorkflow(deadIdentity()));
+        writeJson(
+          join(
+            testFixture.stateRoot,
+            "team",
+            directory,
+            "tasks",
+            "task-1.json",
+          ),
+          projectedTask(taskId),
+        );
+
+        expect(() =>
+          assertOrchestratorRecoveryQuiescent(testFixture.root),
+        ).toThrow("orchestrator_active_attempt");
+      },
+    );
+
+    it.each([
+      ["a dead owner and enough age", () => ({ pid: exitedPid() }), true, true],
+      ["a live owner", () => ({ pid: process.pid }), true, false],
+      [
+        "a dead owner but recent activity",
+        () => ({ pid: exitedPid() }),
+        false,
+        false,
+      ],
+      [
+        "a live PID whose recorded start identity differs",
+        () => ({
+          pid: process.pid,
+          process_started_at: differentCurrentProcessIdentity(),
+        }),
+        true,
+        true,
+      ],
+      [
+        "a live PID whose recorded start identity matches",
+        () => ({
+          pid: process.pid,
+          process_started_at: currentProcessStartIdentity(),
+        }),
+        true,
+        false,
+      ],
+      [
+        "a dead PID but an unverifiable start identity",
+        () => ({ pid: exitedPid(), process_started_at: "garbage" }),
+        true,
+        false,
+      ],
+      ["no owner PID", () => ({ timestamp: 1 }), true, false],
+    ])(
+      "treats a workflow lock with %s as abandoned in every quiescence check",
+      (_name, record, aged, abandoned) => {
         const testFixture = fixture();
         const workflow = join(testFixture.teamRoot, "workflow.json");
         writeJson(workflow, workflowState("pending"));
         const lock = `${workflow}.lock`;
-        writeJson(lock, {
-          pid: deadOwner ? exitedPid() : process.pid,
-          timestamp: Date.now(),
-        });
+        writeJson(lock, { timestamp: Date.now(), ...record() });
         if (aged) {
           const past = new Date(Date.now() - 120_000);
           utimesSync(lock, past, past);
         }
 
-        const recovery = () =>
-          assertOrchestratorRecoveryQuiescent(testFixture.root);
-        if (expected) expect(recovery).not.toThrow();
-        else expect(recovery).toThrow("orchestrator_workflow_locked");
-        expect(() => assertOrchestratorQuiescent(testFixture.root)).toThrow(
-          "orchestrator_workflow_locked",
-        );
+        for (const check of [
+          () => assertOrchestratorRecoveryQuiescent(testFixture.root),
+          () => assertOrchestratorQuiescent(testFixture.root),
+        ]) {
+          if (abandoned) expect(check).not.toThrow();
+          else expect(check).toThrow("orchestrator_workflow_locked");
+        }
       },
     );
+
+    it("keeps refusing an aged lock whose content is not a record", () => {
+      const testFixture = fixture();
+      const workflow = join(testFixture.teamRoot, "workflow.json");
+      writeJson(workflow, workflowState("pending"));
+      const lock = `${workflow}.lock`;
+      writeFileSync(lock, "held", "utf8");
+      const past = new Date(Date.now() - 120_000);
+      utimesSync(lock, past, past);
+
+      expect(() =>
+        assertOrchestratorRecoveryQuiescent(testFixture.root),
+      ).toThrow("orchestrator_workflow_locked");
+    });
   });
 
   it.each(["workflow", "task"] as const)(

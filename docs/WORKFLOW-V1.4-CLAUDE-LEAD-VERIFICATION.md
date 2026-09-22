@@ -31,16 +31,17 @@ Explicit recovery refused the state with `orchestrator_active_attempt`, and ever
 
 The maintenance fix keeps every fail-closed rule and adds one verifiable path:
 
-- Each attempt records the provider's process identity (PID and start identity) at spawn.
-- Explicit recovery treats a running task as orphaned only when its incomplete attempt recorded a provider that is verifiably dead, and it passes an abandoned `workflow.json.lock` only when the lock is at least 30 seconds old and its owner PID is dead. Selection and handoff keep refusing any running task. Attempts without a recorded identity, or whose provider is alive, still refuse recovery.
-- `omc team workflow reject <name> <task> --reason <text>` settles such an attempt as `workflow_invocation_interrupted`; the attempt is non-retryable and the task projection loses its claim.
+- Each task attempt records the controller's process identity when it is reserved and the provider's identity at spawn (the bare PID immediately, the start identity once probed). Review and verification processes are not attempts and record nothing.
+- Explicit recovery treats a running task as orphaned only when its current, incomplete attempt recorded a provider that is verifiably dead, or, when no provider was recorded, a controller that is verifiably dead. Separately, every quiescence check treats an advisory `*.lock` file as abandoned once it is at least 30 seconds old and its recorded owner is verifiably gone, the rule the lock itself applies before reaping. Selection and handoff keep refusing any running task. Attempts whose provider or controller is alive, or whose identities cannot be verified, still refuse recovery.
+- `omc team workflow reject <name> <task> --reason <text>` validates the reason, then settles such an attempt as `workflow_invocation_interrupted`, revokes the attempt's unused publication capability, and drops the task projection's claim; the attempt is never re-dispatched.
 - A Claude project launch sets `BASH_DEFAULT_TIMEOUT_MS` and `BASH_MAX_TIMEOUT_MS` to the controller's maximum provider timeout unless the user set them, and the shared host guidance tells leads to give workflow commands the full provider timeout and never to background, kill or retry them.
 - The Windows process-identity probe no longer leaks PowerShell's error text to the terminal when a native process exits before its lease registration completes.
 
-Regressions cover each rule: dead versus alive versus unrecorded provider identities, task projections that do not belong to the orphaned attempt, abandoned versus live versus recent lock files, the launch environment defaults, and the reject settlement path.
+Regressions cover each rule: dead, alive, bare-PID, controller-only and unrecorded identities, the attempt-number and directory checks, task projections that do not belong to the orphaned attempt, abandoned versus live versus recent lock files with and without start identities, the launch environment defaults, reason validation before settlement, capability revocation, the reject settlement path on both workflow profiles, and an end-to-end run through real operation-lock recovery on the crash triple.
 
 ## Remaining limits
 
 - Claude was validated as the native lead. Claude as implementer or reviewer through the role-substitution profile remains covered by synthetic regressions only.
-- The recovery fix was validated by regressions against the crash evidence, not by a second paid crash reproduction.
+- The recovery fix was validated by regressions modelled on the crash evidence, including real killed subprocesses, not by a second paid crash reproduction.
+- Provider death is proven for the direct provider process; descendants it may have spawned are not tracked, which is why the preserved worktree stays available for inspection.
 - Native hook trust stays user-controlled; observed hook execution is advisory.

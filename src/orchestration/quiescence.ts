@@ -10,6 +10,7 @@ import {
   isProcessIdentityDead,
   isValidProcessStartIdentity,
 } from "../team/team-owner-epoch.js";
+import { classifyOrphanedAttempt } from "../team/workflow-orphan.js";
 import {
   readBoundedJson,
   readRuntimeStateFile,
@@ -52,43 +53,8 @@ function walkQuiescenceTree(
   }
 }
 
-/** Workflow name → task ids whose interrupted attempt belongs to a verifiably dead provider process. */
+/** Workflow name → task ids whose interrupted attempt was proven orphaned by the shared rule. */
 type OrphanedAttempts = Map<string, Set<string>>;
-
-/**
- * Classifies a running task's latest attempt. Only an incomplete attempt that recorded its provider
- * process identity can be proven orphaned; anything else stays an active attempt requiring inspection.
- */
-function orphanedAttemptOutcome(
-  task: Record<string, unknown>,
-): "dead" | "alive" | "unverifiable" {
-  const invocations = task.invocations;
-  const last = Array.isArray(invocations) ? invocations.at(-1) : undefined;
-  if (!last || typeof last !== "object" || Array.isArray(last))
-    return "unverifiable";
-  const record = last as { error?: unknown; process?: unknown };
-  if (record.error !== "workflow_invocation_incomplete") return "unverifiable";
-  const identity = record.process;
-  if (!identity || typeof identity !== "object" || Array.isArray(identity))
-    return "unverifiable";
-  const { pid, processStartedAt } = identity as {
-    pid?: unknown;
-    processStartedAt?: unknown;
-  };
-  if (
-    !Number.isSafeInteger(pid) ||
-    Number(pid) <= 0 ||
-    !isValidProcessStartIdentity(processStartedAt)
-  ) {
-    return "unverifiable";
-  }
-  return isProcessIdentityDead({
-    pid: Number(pid),
-    process_started_at: processStartedAt,
-  })
-    ? "dead"
-    : "alive";
-}
 
 function assertWorkflowFileQuiescent(
   path: string,
@@ -123,12 +89,19 @@ function assertWorkflowFileQuiescent(
     }
     if (status !== "running") continue;
     if (!orphaned) throw new Error("orchestrator_active_attempt");
-    const outcome = orphanedAttemptOutcome(task as Record<string, unknown>);
-    if (outcome === "alive") throw new Error("orchestrator_active_provider");
-    if (outcome === "unverifiable")
-      throw new Error("orchestrator_active_attempt");
+    const outcome = classifyOrphanedAttempt(
+      task as { attempts?: unknown; invocations?: unknown },
+    );
+    if (outcome === "provider-alive")
+      throw new Error("orchestrator_active_provider");
+    if (outcome !== "orphaned") throw new Error("orchestrator_active_attempt");
     const taskId = (task as { task?: { id?: unknown } }).task?.id;
-    if (typeof workflowName !== "string" || typeof taskId !== "string") {
+    // An orphaned attempt is excused only for the workflow directory that owns the record.
+    if (
+      typeof workflowName !== "string" ||
+      typeof taskId !== "string" ||
+      basename(dirname(path)) !== workflowName
+    ) {
       throw new Error("orchestrator_quiescence_unverified");
     }
     let ids = orphaned.get(workflowName);
@@ -172,12 +145,13 @@ function assertTaskFileQuiescent(
     task.status === "in_progress" ||
     (!terminal && task.claim !== undefined);
   if (!active) return;
-  // A task projection may only stay active when its own workflow attempt was proven orphaned.
+  // A task projection may only stay active when its own workflow attempt, in its own team directory, was proven orphaned.
   const metadata = task.metadata;
   const allowed =
     orphaned !== undefined &&
     typeof metadata?.workflow === "string" &&
     typeof metadata?.task_id === "string" &&
+    basename(dirname(dirname(path))) === metadata.workflow &&
     orphaned.get(metadata.workflow)?.has(metadata.task_id) === true;
   if (!allowed) throw new Error("orchestrator_active_attempt");
 }
@@ -190,12 +164,14 @@ function isWorkflowLockName(name: string): boolean {
   );
 }
 
-/** Same staleness rule the advisory file lock applies before reaping its own abandoned lock files. */
+/** Same age the advisory file lock requires before it reaps its own abandoned lock files. */
 const ABANDONED_FILE_LOCK_MS = 30_000;
 
 /**
- * A controller killed mid-operation leaves its advisory `*.lock` behind. Explicit recovery may pass one
- * only when it is old enough, carries the lock owner's PID, and that PID is no longer running.
+ * A process killed mid-operation leaves its `*.lock` file behind. Such a file counts as abandoned, not held,
+ * only when it is old enough, names its owner PID, and that owner is verifiably gone: a recorded start identity
+ * proves it even across PID reuse, otherwise the PID must not be running at all. The advisory lock reaps the
+ * same files itself on its next acquisition, so no quiescence check treats them as activity.
  */
 function isAbandonedFileLock(path: string): boolean {
   let info: ReturnType<typeof lstatSync>;
@@ -217,16 +193,25 @@ function isAbandonedFileLock(path: string): boolean {
     return false;
   }
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return false;
-  const pid = (raw as { pid?: unknown }).pid;
-  return (
-    Number.isSafeInteger(pid) && Number(pid) > 0 && !isProcessAlive(Number(pid))
-  );
+  const record = raw as { pid?: unknown; process_started_at?: unknown };
+  const pid = record.pid;
+  if (!Number.isSafeInteger(pid) || Number(pid) <= 0) return false;
+  if (record.process_started_at !== undefined) {
+    return (
+      isValidProcessStartIdentity(record.process_started_at) &&
+      isProcessIdentityDead({
+        pid: Number(pid),
+        process_started_at: record.process_started_at,
+      })
+    );
+  }
+  return !isProcessAlive(Number(pid));
 }
 
 export interface OrchestratorQuiescenceOptions {
   /**
-   * Explicit recovery only: a running task whose incomplete attempt recorded a verifiably dead
-   * provider process is treated as orphaned instead of active. Selection and handoff never use this.
+   * Explicit recovery only: a running task whose incomplete attempt is proven orphaned by the shared
+   * rule is excused instead of refused as active. Selection and handoff never use this.
    */
   readonly allowOrphanedAttempts?: boolean;
 }
@@ -257,7 +242,7 @@ export function assertOrchestratorQuiescent(
   const inspect = (path: string) => {
     const name = basename(path);
     if (isWorkflowLockName(name)) {
-      if (!orphaned || !isAbandonedFileLock(path))
+      if (!isAbandonedFileLock(path))
         throw new Error("orchestrator_workflow_locked");
       return;
     }

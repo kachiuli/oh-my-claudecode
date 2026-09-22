@@ -93,13 +93,13 @@ omc orchestrator recover --checkpoint paused --workflow <name> --reference <evid
 
 Normal commands never expire or reap operation locks. Recovery refuses live or unverifiable owners, incomplete process registration, active work, malformed or legacy lock records, and ownership conflicts. An abandoned recovery claim also remains blocked; a second crash during recovery requires inspection. These refusals preserve the files for diagnosis rather than guessing that their owners are gone. Run recovery from the owning physical checkout and retain the error and state for investigation; do not delete state directories to force progress.
 
-A lead that dies while `omc team workflow run` or `resume` is executing leaves the task `running` and the controller's advisory `workflow.json.lock` behind. Each attempt records its provider process identity at spawn, so recovery treats that task as orphaned only when the recorded provider is verifiably dead and the abandoned lock is at least 30 seconds old and owned by a dead PID. Selection and handoff still refuse the running task. After `omc orchestrator recover`, settle the interrupted task explicitly:
+A lead that dies while `omc team workflow run` or `resume` is executing leaves the task `running` and the controller's advisory `workflow.json.lock` behind. Two independent rules cover that state. Each attempt records the controller's process identity when it is reserved and the provider's identity at spawn, so explicit recovery treats the task as orphaned only when the recorded provider is verifiably dead, or, if no provider was recorded, when the recording controller is verifiably dead. Separately, every quiescence check treats an advisory `*.lock` file as abandoned rather than held once it is at least 30 seconds old and its recorded owner is verifiably gone, which is the same rule the lock applies before reaping the file itself. Selection and handoff still refuse a running task until it is settled. Exit the dead lead's session, run `omc orchestrator recover` from a plain shell, then settle the interrupted task explicitly:
 
 ```sh
 omc team workflow reject <name> <task-id> --reason <inspection-summary>
 ```
 
-The attempt is recorded as `workflow_invocation_interrupted` and is never re-dispatched automatically; remaining tasks continue or the workflow is abandoned. Attempts without a recorded provider identity, or whose provider is still alive, remain blocked for inspection.
+The attempt is recorded as `workflow_invocation_interrupted`, its unused publication capability is revoked, and it is never re-dispatched automatically; remaining tasks continue or the workflow is abandoned. Attempts whose provider or controller is still alive, or whose identities cannot be verified, remain blocked for inspection.
 
 ## Provider and model independence
 

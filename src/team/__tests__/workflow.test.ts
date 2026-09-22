@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, utimesSync, writeFileSync } from 'node:fs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
@@ -11,6 +11,7 @@ import {
 import type { WorkflowOptions, WorkflowPlan, WorkflowTask } from '../workflow-contracts.js';
 import { cleanupTeamWorktrees, ensureWorkerWorktree } from '../git-worktree.js';
 import { currentProcessStartIdentity } from '../team-owner-epoch.js';
+import { assertOrchestratorQuiescent, assertOrchestratorRecoveryQuiescent } from '../../orchestration/quiescence.js';
 import { createWorkflowFixture, type FixtureEvent } from './helpers/workflow-fixture.js';
 
 const provider = fileURLToPath(new URL('./helpers/workflow-provider.cjs', import.meta.url));
@@ -70,40 +71,88 @@ describe('Claude/GLM/Codex workflow with real local fake providers', () => {
       expect(child.status).toBe(0);
       return child.pid!;
     }
-    async function orphanRunningAttempt(identity: unknown) {
+    async function orphanRunningAttempt(identity: unknown, controller?: unknown, attempt = 1) {
       await initWorkflow(fixture.cwd, plan(), options);
       const stateFile = String(workflowStatus(fixture.cwd, name).stateFile);
       const state = JSON.parse(readFileSync(stateFile, 'utf8'));
       state.tasks[0] = { ...state.tasks[0], status: 'running', attempts: 1, claimToken: randomUUID(), invocations: [{
-        orchestrationHost: 'claude', attempt: 1, mode: 'fresh', model: 'glm-5.3', startedAt: new Date().toISOString(),
+        orchestrationHost: 'claude', attempt, mode: 'fresh', model: 'glm-5.3', startedAt: new Date().toISOString(),
         outcome: 'failed', error: 'workflow_invocation_incomplete', artifacts: [],
         telemetry: { provider: 'glm', durationMs: 0, status: 'unknown', scope: 'unknown' },
         ...(identity === undefined ? {} : { process: identity }),
+        ...(controller === undefined ? {} : { controller }),
       }] };
       writeFileSync(stateFile, JSON.stringify(state));
       return stateFile;
     }
+    function capability(stateFile: string, attempt: number) {
+      const artifacts = join(stateFile, '..', 'artifacts');
+      mkdirSync(artifacts, { recursive: true });
+      const path = join(artifacts, `.publication-${randomUUID()}.json`);
+      writeFileSync(path, JSON.stringify({ taskId: 'a', worker: 'task-a', attempt }));
+      return path;
+    }
 
-    it('lets explicit rejection settle an attempt whose provider is verifiably dead', async () => {
+    it('lets explicit rejection settle an attempt whose provider is verifiably dead and revokes its capability', async () => {
       const stateFile = await orphanRunningAttempt({ pid: exitedPid(), processStartedAt: currentProcessStartIdentity() });
+      const stale = capability(stateFile, 1);
+      const unrelated = capability(stateFile, 2);
       await expect(runWorkflow(fixture.cwd, name)).rejects.toThrow('workflow_interrupted_worker_requires_inspection');
       const settled = await rejectWorkflowTask(fixture.cwd, name, 'a', 'lead crashed during the attempt');
       const task = settled.tasks[0];
       expect(task.status).toBe('rejected');
+      expect(task.error).toBe('lead crashed during the attempt');
       expect(task.claimToken).toBeUndefined();
       expect(task.invocations?.[0]).toMatchObject({ outcome: 'failed', error: 'workflow_invocation_interrupted', attempt: 1 });
       const projected = JSON.parse(readFileSync(join(stateFile, '..', 'tasks', `task-${task.canonicalId}.json`), 'utf8'));
       expect(projected.status).toBe('failed');
       expect(projected.claim).toBeUndefined();
+      expect(existsSync(stale)).toBe(false);
+      expect(existsSync(unrelated)).toBe(true);
     });
 
     it.each([
-      ['a live provider', () => ({ pid: process.pid, processStartedAt: currentProcessStartIdentity() })],
-      ['no recorded provider', () => undefined],
-    ])('refuses to settle an attempt with %s', async (_name, identity) => {
-      await orphanRunningAttempt(identity());
+      ['a bare dead provider PID', () => ({ pid: exitedPid(), processStartedAt: null }), undefined],
+      ['no provider but a verifiably dead controller', () => undefined, () => ({ pid: exitedPid(), processStartedAt: currentProcessStartIdentity() })],
+    ])('settles an attempt with %s', async (_name, identity, controller) => {
+      await orphanRunningAttempt(identity(), controller?.());
+      const settled = await rejectWorkflowTask(fixture.cwd, name, 'a', 'lead crashed before the provider reported');
+      expect(settled.tasks[0].status).toBe('rejected');
+      expect(settled.tasks[0].invocations?.[0].error).toBe('workflow_invocation_interrupted');
+    });
+
+    it.each([
+      ['a live provider', () => ({ pid: process.pid, processStartedAt: currentProcessStartIdentity() }), undefined, 1],
+      ['a bare live provider PID', () => ({ pid: process.pid, processStartedAt: null }), undefined, 1],
+      ['no recorded provider or controller', () => undefined, undefined, 1],
+      ['no provider and a live controller', () => undefined, () => ({ pid: process.pid, processStartedAt: currentProcessStartIdentity() }), 1],
+      ['an attempt number that is not the current one', () => ({ pid: exitedPid(), processStartedAt: currentProcessStartIdentity() }), undefined, 2],
+    ])('refuses to settle an attempt with %s', async (_name, identity, controller, attempt) => {
+      await orphanRunningAttempt(identity(), controller?.(), attempt);
       await expect(rejectWorkflowTask(fixture.cwd, name, 'a', 'not verifiable')).rejects.toThrow('workflow_interrupted_worker_requires_inspection');
       expect(readWorkflow(fixture.cwd, name).tasks[0].status).toBe('running');
+    });
+
+    it('validates the reason before settling an orphaned attempt', async () => {
+      await orphanRunningAttempt({ pid: exitedPid(), processStartedAt: currentProcessStartIdentity() });
+      await expect(rejectWorkflowTask(fixture.cwd, name, 'a', 'x'.repeat(1001))).rejects.toThrow('workflow_invalid_text');
+      const task = readWorkflow(fixture.cwd, name).tasks[0];
+      expect(task.status).toBe('running');
+      expect(task.claimToken).toBeDefined();
+      expect(task.invocations?.[0].error).toBe('workflow_invocation_incomplete');
+    });
+
+    it('lets recovery pass, rejection settle, and selection resume after a crash left the attempt and advisory lock behind', async () => {
+      const stateFile = await orphanRunningAttempt({ pid: exitedPid(), processStartedAt: currentProcessStartIdentity() });
+      const lock = `${stateFile}.lock`;
+      writeFileSync(lock, JSON.stringify({ pid: exitedPid(), timestamp: Date.now() - 120_000 }));
+      const past = new Date(Date.now() - 120_000);
+      utimesSync(lock, past, past);
+      expect(() => assertOrchestratorRecoveryQuiescent(fixture.cwd)).not.toThrow();
+      expect(() => assertOrchestratorQuiescent(fixture.cwd)).toThrow('orchestrator_active_attempt');
+      await rejectWorkflowTask(fixture.cwd, name, 'a', 'lead crashed during the attempt');
+      expect(existsSync(lock)).toBe(false);
+      expect(() => assertOrchestratorQuiescent(fixture.cwd)).not.toThrow();
     });
   });
 
