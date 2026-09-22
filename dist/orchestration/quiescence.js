@@ -4,6 +4,7 @@ import { getOmcRoot } from "../lib/worktree-paths.js";
 import { isProcessAlive } from "../platform/index.js";
 import { validateLegacyTeamConfig, validateRevisionedTeamConfig, } from "../team/monitor.js";
 import { isProcessIdentityDead, isValidProcessStartIdentity, } from "../team/team-owner-epoch.js";
+import { classifyOrphanedAttempt } from "../team/workflow-orphan.js";
 import { readBoundedJson, readRuntimeStateFile, repositoryRoot, } from "./state.js";
 const WORKFLOW_BYTES = 16 * 1024 * 1024;
 const SMALL_STATE_BYTES = 16 * 1024;
@@ -38,34 +39,6 @@ function walkQuiescenceTree(directory, visit, budget) {
             visit(path);
     }
 }
-/**
- * Classifies a running task's latest attempt. Only an incomplete attempt that recorded its provider
- * process identity can be proven orphaned; anything else stays an active attempt requiring inspection.
- */
-function orphanedAttemptOutcome(task) {
-    const invocations = task.invocations;
-    const last = Array.isArray(invocations) ? invocations.at(-1) : undefined;
-    if (!last || typeof last !== "object" || Array.isArray(last))
-        return "unverifiable";
-    const record = last;
-    if (record.error !== "workflow_invocation_incomplete")
-        return "unverifiable";
-    const identity = record.process;
-    if (!identity || typeof identity !== "object" || Array.isArray(identity))
-        return "unverifiable";
-    const { pid, processStartedAt } = identity;
-    if (!Number.isSafeInteger(pid) ||
-        Number(pid) <= 0 ||
-        !isValidProcessStartIdentity(processStartedAt)) {
-        return "unverifiable";
-    }
-    return isProcessIdentityDead({
-        pid: Number(pid),
-        process_started_at: processStartedAt,
-    })
-        ? "dead"
-        : "alive";
-}
 function assertWorkflowFileQuiescent(path, orphaned) {
     const raw = readBoundedJson(path, WORKFLOW_BYTES, "orchestrator_quiescence_unverified");
     if (!raw || typeof raw !== "object" || Array.isArray(raw))
@@ -94,13 +67,16 @@ function assertWorkflowFileQuiescent(path, orphaned) {
             continue;
         if (!orphaned)
             throw new Error("orchestrator_active_attempt");
-        const outcome = orphanedAttemptOutcome(task);
-        if (outcome === "alive")
+        const outcome = classifyOrphanedAttempt(task);
+        if (outcome === "provider-alive")
             throw new Error("orchestrator_active_provider");
-        if (outcome === "unverifiable")
+        if (outcome !== "orphaned")
             throw new Error("orchestrator_active_attempt");
         const taskId = task.task?.id;
-        if (typeof workflowName !== "string" || typeof taskId !== "string") {
+        // An orphaned attempt is excused only for the workflow directory that owns the record.
+        if (typeof workflowName !== "string" ||
+            typeof taskId !== "string" ||
+            basename(dirname(path)) !== workflowName) {
             throw new Error("orchestrator_quiescence_unverified");
         }
         let ids = orphaned.get(workflowName);
@@ -132,11 +108,12 @@ function assertTaskFileQuiescent(path, orphaned) {
         (!terminal && task.claim !== undefined);
     if (!active)
         return;
-    // A task projection may only stay active when its own workflow attempt was proven orphaned.
+    // A task projection may only stay active when its own workflow attempt, in its own team directory, was proven orphaned.
     const metadata = task.metadata;
     const allowed = orphaned !== undefined &&
         typeof metadata?.workflow === "string" &&
         typeof metadata?.task_id === "string" &&
+        basename(dirname(dirname(path))) === metadata.workflow &&
         orphaned.get(metadata.workflow)?.has(metadata.task_id) === true;
     if (!allowed)
         throw new Error("orchestrator_active_attempt");
@@ -146,11 +123,13 @@ function isWorkflowLockName(name) {
         name.startsWith(".lock-") ||
         name.endsWith("-lock"));
 }
-/** Same staleness rule the advisory file lock applies before reaping its own abandoned lock files. */
+/** Same age the advisory file lock requires before it reaps its own abandoned lock files. */
 const ABANDONED_FILE_LOCK_MS = 30_000;
 /**
- * A controller killed mid-operation leaves its advisory `*.lock` behind. Explicit recovery may pass one
- * only when it is old enough, carries the lock owner's PID, and that PID is no longer running.
+ * A process killed mid-operation leaves its `*.lock` file behind. Such a file counts as abandoned, not held,
+ * only when it is old enough, names its owner PID, and that owner is verifiably gone: a recorded start identity
+ * proves it even across PID reuse, otherwise the PID must not be running at all. The advisory lock reaps the
+ * same files itself on its next acquisition, so no quiescence check treats them as activity.
  */
 function isAbandonedFileLock(path) {
     let info;
@@ -171,8 +150,18 @@ function isAbandonedFileLock(path) {
     }
     if (!raw || typeof raw !== "object" || Array.isArray(raw))
         return false;
-    const pid = raw.pid;
-    return (Number.isSafeInteger(pid) && Number(pid) > 0 && !isProcessAlive(Number(pid)));
+    const record = raw;
+    const pid = record.pid;
+    if (!Number.isSafeInteger(pid) || Number(pid) <= 0)
+        return false;
+    if (record.process_started_at !== undefined) {
+        return (isValidProcessStartIdentity(record.process_started_at) &&
+            isProcessIdentityDead({
+                pid: Number(pid),
+                process_started_at: record.process_started_at,
+            }));
+    }
+    return !isProcessAlive(Number(pid));
 }
 export function assertOrchestratorQuiescent(cwd, options = {}) {
     const stateRoot = join(getOmcRoot(repositoryRoot(cwd)), "state");
@@ -193,7 +182,7 @@ export function assertOrchestratorQuiescent(cwd, options = {}) {
     const inspect = (path) => {
         const name = basename(path);
         if (isWorkflowLockName(name)) {
-            if (!orphaned || !isAbandonedFileLock(path))
+            if (!isAbandonedFileLock(path))
                 throw new Error("orchestrator_workflow_locked");
             return;
         }

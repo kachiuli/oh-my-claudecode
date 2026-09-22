@@ -99,7 +99,8 @@ function probeProcessStartIdentityForPlatform(pid, platform, exec, read, strict)
             if (strict)
                 return { identity: null, precise: false };
             const command = `(Get-Process -Id ${pid} -ErrorAction Stop).StartTime.ToUniversalTime().Ticks`;
-            const ticks = exec('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], { encoding: 'utf8', windowsHide: true }).trim();
+            // A process that exited between spawn and lookup is an expected miss; keep PowerShell's error stream off the terminal.
+            const ticks = exec('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], { encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] }).trim();
             return /^\d+$/.test(ticks)
                 ? { identity: `win32:${ticks}`, precise: true }
                 : { identity: null, precise: false };

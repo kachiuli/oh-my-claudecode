@@ -1,6 +1,6 @@
 /** Opt-in Claude-led workflow. Every integration and finding disposition is an explicit lead action. */
 import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync, writeFileSync, statSync, lstatSync, realpathSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, statSync, lstatSync, readdirSync, realpathSync, unlinkSync } from 'node:fs';
 import { dirname, join, resolve, posix, win32 } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { withFileLock } from '../lib/file-lock.js';
@@ -20,7 +20,8 @@ import { createClaudeWorkflowResultDecoder, prepareWorkflowBinding, workflowWork
 import { buildWorkflowPrompt, workflowContextFingerprint, workflowPromptFingerprint, workflowSessionFingerprint } from './workflow-prompt.js';
 import { issueWorkflowPublication, publishNativeClaudeResult, readWorkflowJsonArtifact, readWorkflowResultArtifact } from './workflow-publication.js';
 import { WorkflowRefAudit } from './workflow-ref-audit.js';
-import { isProcessIdentityDead, isValidProcessStartIdentity } from './team-owner-epoch.js';
+import { classifyOrphanedAttempt } from './workflow-orphan.js';
+import { cachedCurrentProcessStartIdentity } from '../orchestration/operation-lock.js';
 import { boundedText, safeWorkflowId, parseWorkflowPlan, parseWorkflowTask, matchesScope, parseWorkflowHandoff, parseWorkflowFindings, parseWorkflowBinding, parseWorkflowState, parseWorkflowProviderPolicy, validateWorkflowStateTransition, parseWorkflowSubstitution, assertWorkflowResumeBinding } from './workflow-contracts.js';
 const now = () => new Date().toISOString();
 const savedSnapshots = new WeakMap();
@@ -175,23 +176,35 @@ function nonRetryableWorkerError(error) {
     return NON_RETRYABLE_WORKER_ERRORS.some(entry => entry === error);
 }
 /**
- * A controller that died mid-attempt leaves its task running forever. The attempt is settled only when its
- * recorded provider process is verifiably dead; anything unverifiable still requires inspection.
+ * A controller that died mid-attempt leaves its task running forever. The attempt is settled only when the shared
+ * orphan rule proves its provider (or, before any spawn, its controller) dead; anything else requires inspection.
  */
-function settleOrphanedAttempt(entry) {
-    const invocation = entry.invocations?.at(-1);
-    const identity = invocation?.process;
-    if (!invocation || invocation.error !== 'workflow_invocation_incomplete' || !identity
-        || !Number.isSafeInteger(identity.pid) || identity.pid <= 0 || !isValidProcessStartIdentity(identity.processStartedAt)
-        || !isProcessIdentityDead({ pid: identity.pid, process_started_at: identity.processStartedAt })) {
+function settleOrphanedAttempt(state, entry) {
+    if (classifyOrphanedAttempt(entry) !== 'orphaned')
         throw new Error('workflow_interrupted_worker_requires_inspection');
-    }
+    const invocation = entry.invocations.at(-1);
     invocation.outcome = 'failed';
     invocation.error = 'workflow_invocation_interrupted';
     entry.status = 'failed';
     entry.error = 'workflow_invocation_interrupted';
     delete entry.claimToken;
     entry.updatedAt = now();
+    revokeOrphanedPublication(state, entry);
+}
+/** The dead controller never revoked the attempt's one-shot publication capability; remove it so nothing can publish for a settled attempt. */
+function revokeOrphanedPublication(state, entry) {
+    const root = artifactsRoot(state);
+    for (const name of readdirSync(root)) {
+        if (!/^\.publication-[0-9a-f-]{36}\.json$/.test(name))
+            continue;
+        const path = join(root, name);
+        try {
+            const record = JSON.parse(readFileSync(path, 'utf8'));
+            if (record.taskId === entry.task.id && record.worker === entry.worker && record.attempt === entry.attempts)
+                unlinkSync(path);
+        }
+        catch { /* an unreadable record is left for inspection */ }
+    }
 }
 export async function initWorkflow(cwd, rawPlan, options = {}) {
     const state = await initializeWorkflow(cwd, rawPlan, options);
@@ -395,6 +408,7 @@ async function executeTask(state, entry, command, resumeReason, prepared, refAud
         const invocation = { orchestrationHost, attempt: entry.attempts, mode: resuming ? 'resume' : 'fresh',
             ...(prepared ? { invocationId: randomUUID(), binding: prepared.binding, model: prepared.binding.model }
                 : state.options.glmModel ? { model: state.options.glmModel } : {}), startedAt: now(), outcome: 'failed',
+            controller: { pid: process.pid, processStartedAt: cachedCurrentProcessStartIdentity() },
             error: 'workflow_invocation_incomplete', ...(resumeReason === undefined ? {} : { reason: resumeReason }), artifacts: [],
             telemetry: { provider: prepared?.binding.providerRoute ?? 'glm', durationMs: 0, status: 'unknown', scope: 'unknown' } };
         (entry.invocations ??= []).push(invocation);
@@ -754,13 +768,14 @@ export async function acceptWorkflowTask(cwd, name, taskId) {
 export async function rejectWorkflowTask(cwd, name, taskId, reason) {
     return mutate(cwd, name, async (state) => {
         const entry = getTask(state, taskId);
+        const safeReason = redactWorkflowText(boundedText(reason, 1000));
         // Explicit rejection is the inspected settlement for an attempt orphaned by a dead controller.
         if (entry.status === 'running')
-            settleOrphanedAttempt(entry);
+            settleOrphanedAttempt(state, entry);
         if (!['pending', 'completed', 'failed'].includes(entry.status))
             throw new Error('workflow_task_cannot_be_rejected');
         entry.status = 'rejected';
-        entry.error = redactWorkflowText(boundedText(reason, 1000));
+        entry.error = safeReason;
         entry.updatedAt = now();
     });
 }
