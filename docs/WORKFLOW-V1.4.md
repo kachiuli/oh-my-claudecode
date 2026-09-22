@@ -2,7 +2,7 @@
 
 Workflow V1.4 lets one repository use Claude Code or Codex as the interactive OMC lead. The selected host is independent of workflow provider bindings: changing the lead does not change which provider implements or reviews a task. The workflow label does not change the npm package version, which follows upstream (5.4.0 at the original release, 5.5.0 after the September 2026 upstream merge); `workflow-v1.4` is the workflow release label.
 
-The explicit operation-lock recovery, advisory hook diagnostics and Windows shipping fixes below are maintenance changes after the original `workflow-v1.4` tag and ship in `workflow-v1.4.1`. The Claude lead Bash-timeout default and the settlement of attempts orphaned by a dead controller are later maintenance changes validated by the [Claude lead live record](WORKFLOW-V1.4-CLAUDE-LEAD-VERIFICATION.md); they are not in either published archive.
+The explicit operation-lock recovery, advisory hook diagnostics and Windows shipping fixes below are maintenance changes after the original `workflow-v1.4` tag and ship in `workflow-v1.4.1`. The Claude lead Bash-timeout default and the settlement of attempts orphaned by a dead controller are later maintenance changes validated by the [Claude lead live record](WORKFLOW-V1.4-CLAUDE-LEAD-VERIFICATION.md); they ship in `workflow-v1.5` together with the upstream 5.5.0 merge and are not in the earlier archives.
 
 ## Install both project hosts
 

@@ -41,7 +41,7 @@ Regressions cover each rule: dead, alive, bare-PID, controller-only and unrecord
 
 ## Remaining limits
 
-- Claude was validated as the native lead. Claude as implementer or reviewer through the role-substitution profile remains covered by synthetic regressions only.
+- Claude was validated as the native lead here. Claude as reviewer through the role-substitution profile was later live-validated for both leads and both GLM worker models in the [V1.5 role-matrix record](WORKFLOW-V1.5-ROLE-MATRIX-VERIFICATION.md); Claude as implementer remains covered by synthetic regressions only.
 - The recovery fix was validated by regressions modelled on the crash evidence, including real killed subprocesses, not by a second paid crash reproduction.
 - Provider death is proven for the direct provider process; descendants it may have spawned are not tracked, which is why the preserved worktree stays available for inspection.
 - Native hook trust stays user-controlled; observed hook execution is advisory.
