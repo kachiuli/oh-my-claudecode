@@ -121,6 +121,20 @@ describe('team config revision transaction', () => {
     }, teamName)).toBeNull();
   });
 
+  it('accepts a GLM worker inside a persisted scale-down attempt', () => {
+    // GLM pools are scaled down through the same fence; the persisted provider must round-trip validation.
+    const config = {
+      ...initialConfig(), active_recovery: undefined, instance_id: instanceA,
+      active_scale_down: {
+        instance_id: instanceA, operation_id: 'scale-down-glm', phase: 'draining',
+        pid: process.pid, process_started_at: deadProcessStart, state_revision: 1,
+        created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+        workers: [{ name: 'worker-2', pane_id: '%2', launch_attempt_id: instanceB, provider: 'glm' }],
+      },
+    };
+    expect(validateRevisionedTeamConfig(config, teamName)).toBe(config);
+  });
+
   it('atomically promotes an identity-bearing pending startup config without unlinking it', async () => {
     const startupTeamName = 'initial-commit-team';
     const instance = createTeamInstanceBinding({ teamName: startupTeamName, cwd, instanceId: instanceA });

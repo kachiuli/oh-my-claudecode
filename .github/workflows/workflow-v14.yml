@@ -34,8 +34,7 @@ jobs:
       - name: Create package
         shell: bash
         run: |
-          npm pack --ignore-scripts --pack-destination .
-          echo "OMC_PACKAGE_TARBALL=oh-my-claude-sisyphus-$(node -p "require('./package.json').version").tgz" >> "$GITHUB_ENV"
+          echo "OMC_PACKAGE_TARBALL=$(npm pack --ignore-scripts --pack-destination . --silent | tail -n 1)" >> "$GITHUB_ENV"
       - name: Clean package installation and project lifecycle
         shell: bash
         run: npm run smoke:project-hosts -- "$OMC_PACKAGE_TARBALL"

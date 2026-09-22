@@ -215,7 +215,7 @@ function isScaleDownAttempt(value: unknown): boolean {
       && (worker.worktree_path === undefined || typeof worker.worktree_path === 'string')
       && (worker.worktree_created === undefined || typeof worker.worktree_created === 'boolean')
       && (worker.launch_attempt_id === undefined || isNonEmptyString(worker.launch_attempt_id))
-      && (worker.provider === undefined || ['claude', 'codex', 'gemini', 'cursor', 'grok', 'antigravity'].includes(worker.provider as string))
+      && (worker.provider === undefined || ['claude', 'codex', 'gemini', 'cursor', 'grok', 'antigravity', 'glm'].includes(worker.provider as string))
       && (worker.launch_descriptor === undefined || isLaunchDescriptor(worker.launch_descriptor)))
     && isSafeCounter(value.state_revision) && isTimestamp(value.created_at) && isTimestamp(value.updated_at)
     && (value.failure_reason === undefined || typeof value.failure_reason === 'string');
