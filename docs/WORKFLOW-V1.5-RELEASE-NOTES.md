@@ -15,6 +15,10 @@ omc launch
 
 The archive keeps package version 5.5.0 and records the tagged source commit in `gitHead`. Its accompanying release evidence records the SHA-256 checksum and file manifest. This custom release does not replace the upstream npm registry package. Existing `workflow-v1.4.x` project setups need no migration; rerun `omc setup --host both --scope project` after upgrading so the projected guidance picks up the new recovery instructions.
 
+## workflow-v1.5.1 maintenance
+
+`workflow-v1.5.1` ships the same runtime as `workflow-v1.5` plus one CI maintenance change: the packaged project-hosts smoke gives the clean `npm install` of the archive its own fifteen-minute timeout, because that step regularly exceeded the shared three-minute bound on hosted Windows runners during the v1.5 release checks. Install it with the same commands above, replacing `workflow-v1.5` with `workflow-v1.5.1` in the archive URL.
+
 ## What changed since workflow-v1.4.1
 
 ### Upstream 5.5.0 merge
