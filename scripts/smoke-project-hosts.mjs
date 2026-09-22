@@ -49,14 +49,23 @@ for (const name of Object.keys(environment)) {
   )
     delete environment[name];
 }
-function run(command, args, cwd = repository, input) {
+const COMMAND_TIMEOUT_MS = 180_000;
+// A clean dependency install of the packed archive regularly needs more than three minutes on hosted Windows runners.
+const INSTALL_TIMEOUT_MS = 900_000;
+function run(
+  command,
+  args,
+  cwd = repository,
+  input,
+  timeout = COMMAND_TIMEOUT_MS,
+) {
   const result = spawnSync(command, args, {
     cwd,
     env: environment,
     encoding: "utf8",
     shell: false,
     windowsHide: true,
-    timeout: 180_000,
+    timeout,
     input,
   });
   assert.equal(result.error, undefined, `${command} failed to start`);
@@ -162,16 +171,22 @@ try {
     throw new Error(
       "Run through npm run smoke:project-hosts -- <package.tgz> so npm_execpath is available.",
     );
-  run(process.execPath, [
-    npmCli,
-    "install",
-    "--prefix",
-    prefix,
-    "--no-audit",
-    "--no-fund",
-    "--package-lock=false",
-    resolve(packageFile),
-  ]);
+  run(
+    process.execPath,
+    [
+      npmCli,
+      "install",
+      "--prefix",
+      prefix,
+      "--no-audit",
+      "--no-fund",
+      "--package-lock=false",
+      resolve(packageFile),
+    ],
+    repository,
+    undefined,
+    INSTALL_TIMEOUT_MS,
+  );
   run(process.execPath, [
     "-e",
     'const Database = require(process.argv[1]); const db = new Database(":memory:"); if (db.prepare("select 1 as ok").get().ok !== 1) process.exitCode = 1; db.close();',
