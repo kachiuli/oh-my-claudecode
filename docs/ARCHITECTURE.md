@@ -1,5 +1,9 @@
 # Architecture
 
+Graph persistence uses directory-descriptor-relative operations on Linux and
+macOS; see [Graph contained filesystem](graph-contained-filesystem.md) for the
+backend boundary, ownership semantics, and packaging requirements.
+
 > How oh-my-claudecode orchestrates multi-agent workflows.
 
 The opt-in [Claude/GLM/Codex profile](GLM-WORKFLOW.md) extends existing provider
@@ -180,7 +184,7 @@ explore --> analyst --> planner --> critic --> executor --> verifier
 
 ### Overview
 
-Skills are **behavior injections** that modify how the orchestrator operates. Instead of swapping agents, skills add capabilities on top of existing agents. OMC provides 39 shipped skills.
+Skills are **behavior injections** that modify how the orchestrator operates. Instead of swapping agents, skills add capabilities on top of existing agents. OMC provides 41 shipped skills.
 
 ### Skill Layers
 

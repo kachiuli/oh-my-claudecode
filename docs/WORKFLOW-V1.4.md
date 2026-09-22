@@ -1,6 +1,6 @@
 # Workflow V1.4 repository hosts
 
-Workflow V1.4 lets one repository use Claude Code or Codex as the interactive OMC lead. The selected host is independent of workflow provider bindings: changing the lead does not change which provider implements or reviews a task. The npm package version remains 5.4.0; `workflow-v1.4` is the workflow release label.
+Workflow V1.4 lets one repository use Claude Code or Codex as the interactive OMC lead. The selected host is independent of workflow provider bindings: changing the lead does not change which provider implements or reviews a task. The workflow label does not change the npm package version, which follows upstream (5.4.0 at the original release, 5.5.0 after the September 2026 upstream merge); `workflow-v1.4` is the workflow release label.
 
 The explicit operation-lock recovery, advisory hook diagnostics and Windows shipping fixes below are maintenance changes after the original `workflow-v1.4` tag. They are not included in that tag's published archive.
 
