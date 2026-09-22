@@ -21,6 +21,7 @@ import { createClaudeWorkflowResultDecoder, prepareWorkflowBinding, workflowWork
 import { buildWorkflowPrompt, workflowContextFingerprint, workflowPromptFingerprint, workflowSessionFingerprint } from './workflow-prompt.js';
 import { issueWorkflowPublication, publishNativeClaudeResult, readWorkflowJsonArtifact, readWorkflowResultArtifact } from './workflow-publication.js';
 import { WorkflowRefAudit } from './workflow-ref-audit.js';
+import { isProcessIdentityDead, isValidProcessStartIdentity } from './team-owner-epoch.js';
 import { boundedText, safeWorkflowId, parseWorkflowPlan, parseWorkflowTask, matchesScope,
   parseWorkflowHandoff, parseWorkflowFindings, parseWorkflowBinding, parseWorkflowState, parseWorkflowProviderPolicy,
   validateWorkflowStateTransition,
@@ -149,11 +150,26 @@ function count(value: number | undefined, fallback: number, max: number, min = 1
  * explicit timeout/interruption stops: a wall-less provider that ended without a complete stream must
  * never be silently re-dispatched, and its original attempt and artifacts stay inspectable.
  */
-const NON_RETRYABLE_WORKER_ERRORS = ['workflow_timeout', 'workflow_interrupted', 'workflow_output_incomplete',
+const NON_RETRYABLE_WORKER_ERRORS = ['workflow_timeout', 'workflow_interrupted', 'workflow_invocation_interrupted', 'workflow_output_incomplete',
   'workflow_designated_result_missing', 'workflow_worker_modified_protected_refs', 'workflow_protected_refs_changed',
   'workflow_protected_ref_audit_failed', 'workflow_session_identity_mismatch'] as const;
 function nonRetryableWorkerError(error: string | undefined): boolean {
   return NON_RETRYABLE_WORKER_ERRORS.some(entry => entry === error);
+}
+/**
+ * A controller that died mid-attempt leaves its task running forever. The attempt is settled only when its
+ * recorded provider process is verifiably dead; anything unverifiable still requires inspection.
+ */
+function settleOrphanedAttempt(entry: WorkflowTaskState): void {
+  const invocation = entry.invocations?.at(-1);
+  const identity = invocation?.process;
+  if (!invocation || invocation.error !== 'workflow_invocation_incomplete' || !identity
+    || !Number.isSafeInteger(identity.pid) || identity.pid <= 0 || !isValidProcessStartIdentity(identity.processStartedAt)
+    || !isProcessIdentityDead({ pid: identity.pid, process_started_at: identity.processStartedAt })) {
+    throw new Error('workflow_interrupted_worker_requires_inspection');
+  }
+  invocation.outcome = 'failed'; invocation.error = 'workflow_invocation_interrupted';
+  entry.status = 'failed'; entry.error = 'workflow_invocation_interrupted'; delete entry.claimToken; entry.updatedAt = now();
 }
 export async function initWorkflow(cwd: string, rawPlan: unknown, options: WorkflowOptions = {}): Promise<LegacyWorkflowState> {
   const state = await initializeWorkflow(cwd, rawPlan, options);
@@ -363,6 +379,7 @@ async function executeTask(state: WorkflowState, entry: WorkflowTaskState, comma
           teamName: state.plan.name, workerName: entry.worker, cwd: entry.worktree, model: state.options.glmModel,
         }), '-p', ...(balanced ? [resuming ? '--resume' : '--session-id', entry.session!.id, '--output-format', 'stream-json', '--verbose'] : [])],
         cwd: entry.worktree, stdin: prompt, ...(balanced ? { collectUsage: true } : {}),
+        onSpawn: identity => { invocation.process = identity; save(state); },
         timeoutMs: providerTimeoutMs(state), artifactPrefix: prefix, provider: prepared?.binding.providerRoute ?? 'glm', worker: entry.worker,
         publicationEnvironment: publication.environment,
         ...(prepared ? { environment: prepared.environment, redactionEnvironment: prepared.redactionEnvironment } : {}) }, resultFile,
@@ -585,6 +602,8 @@ export async function acceptWorkflowTask(cwd: string, name: string, taskId: stri
 export async function rejectWorkflowTask(cwd: string, name: string, taskId: string, reason: string): Promise<WorkflowState> {
   return mutate(cwd, name, async state => {
     const entry = getTask(state, taskId);
+    // Explicit rejection is the inspected settlement for an attempt orphaned by a dead controller.
+    if (entry.status === 'running') settleOrphanedAttempt(entry);
     if (!['pending', 'completed', 'failed'].includes(entry.status)) throw new Error('workflow_task_cannot_be_rejected');
     entry.status = 'rejected'; entry.error = redactWorkflowText(boundedText(reason, 1000)); entry.updatedAt = now();
   });

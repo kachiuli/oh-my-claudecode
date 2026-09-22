@@ -32,6 +32,9 @@ interface NativeHostRunOptions {
   registerProcess: (pid: number) => Promise<void>;
 }
 
+/** Matches the controller's maximum `--timeout-ms` so one native Bash call can outlive any provider attempt. */
+export const CLAUDE_LEAD_BASH_TIMEOUT_MS = 3_600_000;
+
 /** Exclude credentials and session context belonging to a different native host. */
 export function projectHostEnvironment(
   host: OrchestratorHost,
@@ -58,6 +61,14 @@ export function projectHostEnvironment(
     throw new Error(
       "orchestrator_foreign_claude_endpoint: launch Claude with its own Anthropic configuration; bind GLM as a worker separately.",
     );
+  }
+  if (host === "claude") {
+    // The native Bash tool stops commands after two minutes by default, which kills a supervised
+    // workflow run mid-attempt. Align the default with the controller's maximum provider timeout;
+    // an explicit user setting always wins.
+    for (const key of ["BASH_DEFAULT_TIMEOUT_MS", "BASH_MAX_TIMEOUT_MS"]) {
+      if (!result[key]) result[key] = String(CLAUDE_LEAD_BASH_TIMEOUT_MS);
+    }
   }
   return result;
 }

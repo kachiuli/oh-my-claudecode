@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -9,6 +10,7 @@ import {
 } from '../workflow.js';
 import type { WorkflowOptions, WorkflowPlan, WorkflowTask } from '../workflow-contracts.js';
 import { cleanupTeamWorktrees, ensureWorkerWorktree } from '../git-worktree.js';
+import { currentProcessStartIdentity } from '../team-owner-epoch.js';
 import { createWorkflowFixture, type FixtureEvent } from './helpers/workflow-fixture.js';
 
 const provider = fileURLToPath(new URL('./helpers/workflow-provider.cjs', import.meta.url));
@@ -61,6 +63,49 @@ describe('Claude/GLM/Codex workflow with real local fake providers', () => {
     await runWorkflow(fixture.cwd, name);
     await acceptWorkflowTask(fixture.cwd, name, 'a');
   }
+
+  describe('attempt orphaned by a dead controller', () => {
+    function exitedPid(): number {
+      const child = spawnSync(process.execPath, ['-e', 'process.exit(0)'], { windowsHide: true });
+      expect(child.status).toBe(0);
+      return child.pid!;
+    }
+    async function orphanRunningAttempt(identity: unknown) {
+      await initWorkflow(fixture.cwd, plan(), options);
+      const stateFile = String(workflowStatus(fixture.cwd, name).stateFile);
+      const state = JSON.parse(readFileSync(stateFile, 'utf8'));
+      state.tasks[0] = { ...state.tasks[0], status: 'running', attempts: 1, claimToken: randomUUID(), invocations: [{
+        orchestrationHost: 'claude', attempt: 1, mode: 'fresh', model: 'glm-5.3', startedAt: new Date().toISOString(),
+        outcome: 'failed', error: 'workflow_invocation_incomplete', artifacts: [],
+        telemetry: { provider: 'glm', durationMs: 0, status: 'unknown', scope: 'unknown' },
+        ...(identity === undefined ? {} : { process: identity }),
+      }] };
+      writeFileSync(stateFile, JSON.stringify(state));
+      return stateFile;
+    }
+
+    it('lets explicit rejection settle an attempt whose provider is verifiably dead', async () => {
+      const stateFile = await orphanRunningAttempt({ pid: exitedPid(), processStartedAt: currentProcessStartIdentity() });
+      await expect(runWorkflow(fixture.cwd, name)).rejects.toThrow('workflow_interrupted_worker_requires_inspection');
+      const settled = await rejectWorkflowTask(fixture.cwd, name, 'a', 'lead crashed during the attempt');
+      const task = settled.tasks[0];
+      expect(task.status).toBe('rejected');
+      expect(task.claimToken).toBeUndefined();
+      expect(task.invocations?.[0]).toMatchObject({ outcome: 'failed', error: 'workflow_invocation_interrupted', attempt: 1 });
+      const projected = JSON.parse(readFileSync(join(stateFile, '..', 'tasks', `task-${task.canonicalId}.json`), 'utf8'));
+      expect(projected.status).toBe('failed');
+      expect(projected.claim).toBeUndefined();
+    });
+
+    it.each([
+      ['a live provider', () => ({ pid: process.pid, processStartedAt: currentProcessStartIdentity() })],
+      ['no recorded provider', () => undefined],
+    ])('refuses to settle an attempt with %s', async (_name, identity) => {
+      await orphanRunningAttempt(identity());
+      await expect(rejectWorkflowTask(fixture.cwd, name, 'a', 'not verifiable')).rejects.toThrow('workflow_interrupted_worker_requires_inspection');
+      expect(readWorkflow(fixture.cwd, name).tasks[0].status).toBe('running');
+    });
+  });
 
   it.skipIf(process.platform !== 'win32').each([false, true])('runs and accepts a worker through a Windows short path with existing worktree=%s', async existing => {
     const shortRoot = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `

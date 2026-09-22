@@ -5,6 +5,7 @@ import { writeTextArtifact } from '../shared/artifact-descriptor.js';
 import { isExternalLLMDisabled } from '../lib/security-config.js';
 import { ensureDirWithMode, validateResolvedPath } from './fs-utils.js';
 import { createWorkflowUsageCollector } from './workflow-usage.js';
+import { currentProcessStartIdentity } from './team-owner-epoch.js';
 const MAX_LOG_BYTES = 1024 * 1024;
 /** Largest delay a Node.js timer accepts; anything above would silently become a 1 ms timer. */
 const MAX_TIMEOUT_MS = 2147483647;
@@ -138,6 +139,13 @@ export async function runWorkflowProcess(input) {
         let termination = 'not-requested';
         let streamClose = false;
         const child = spawn(command, args, { cwd: input.cwd, env: environment, stdio: ['pipe', 'pipe', 'pipe'], shell: false, windowsHide: true, detached: process.platform !== 'win32' });
+        if (child.pid && input.onSpawn) {
+            // Bookkeeping never interrupts the provider; a missing identity simply keeps recovery conservative.
+            try {
+                input.onSpawn({ pid: child.pid, processStartedAt: currentProcessStartIdentity(child.pid) });
+            }
+            catch { /* recorded as unverifiable */ }
+        }
         const settlement = () => ({
             parentExitCode: parentExit ? parentExit.code : null,
             parentExitSignal: parentExit ? parentExit.signal : null,

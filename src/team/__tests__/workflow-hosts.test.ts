@@ -164,6 +164,8 @@ describe("shared workflow under Claude and Codex orchestration hosts", () => {
       "hosts",
       configured.runtime,
     );
+    // The provider's process identity is captured at spawn so a crashed controller's attempt can be proven dead.
+    expect(produced.tasks[0].invocations?.[0].process?.pid).toBeGreaterThan(0);
     const attempt = JSON.stringify(produced.tasks[0].invocations?.[0]);
     await selectOrchestrator(fixture.cwd, "codex", { probe });
     const before = readWorkflow(fixture.cwd, "hosts");

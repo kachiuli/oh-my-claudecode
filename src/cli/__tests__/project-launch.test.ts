@@ -143,6 +143,22 @@ describe("project native orchestrator launch", () => {
     },
   );
 
+  it("gives a Claude lead the controller's provider timeout for native Bash calls unless the user set one", () => {
+    expect(projectHostEnvironment("claude", {})).toMatchObject({
+      BASH_DEFAULT_TIMEOUT_MS: "3600000",
+      BASH_MAX_TIMEOUT_MS: "3600000",
+    });
+    expect(
+      projectHostEnvironment("claude", { BASH_DEFAULT_TIMEOUT_MS: "1000" }),
+    ).toMatchObject({
+      BASH_DEFAULT_TIMEOUT_MS: "1000",
+      BASH_MAX_TIMEOUT_MS: "3600000",
+    });
+    const codex = projectHostEnvironment("codex", {});
+    expect(codex.BASH_DEFAULT_TIMEOUT_MS).toBeUndefined();
+    expect(codex.BASH_MAX_TIMEOUT_MS).toBeUndefined();
+  });
+
   it.each(["claude", "codex"] as const)(
     "refuses legacy permission aliases on the adopted %s host",
     async (host) => {
@@ -313,6 +329,8 @@ describe("project native orchestrator launch", () => {
       ANTHROPIC_API_KEY: "synthetic-a",
       CLAUDE_CONFIG_DIR: "private-claude",
       PATH: "system",
+      BASH_DEFAULT_TIMEOUT_MS: "3600000",
+      BASH_MAX_TIMEOUT_MS: "3600000",
     });
     expect(() =>
       projectHostEnvironment("claude", {

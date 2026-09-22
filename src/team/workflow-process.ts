@@ -5,6 +5,8 @@ import { writeTextArtifact, type ArtifactDescriptor } from '../shared/artifact-d
 import { isExternalLLMDisabled } from '../lib/security-config.js';
 import { ensureDirWithMode, validateResolvedPath } from './fs-utils.js';
 import { createWorkflowUsageCollector, type WorkflowTelemetry } from './workflow-usage.js';
+import { currentProcessStartIdentity } from './team-owner-epoch.js';
+import type { WorkflowProviderProcessIdentity } from './workflow-contracts.js';
 
 const MAX_LOG_BYTES = 1024 * 1024;
 /** Largest delay a Node.js timer accepts; anything above would silently become a 1 ms timer. */
@@ -77,6 +79,8 @@ export async function runWorkflowProcess(input: {
   redactionEnvironment?: NodeJS.ProcessEnv;
   /** Operation decoder receives raw bounded-protocol chunks only inside the controller. */
   onStdout?: (chunk: Buffer) => void;
+  /** Receives the spawned provider's process identity so an interrupted attempt can later be proven dead. */
+  onSpawn?: (identity: WorkflowProviderProcessIdentity) => void;
 }): Promise<WorkflowProcessResult> {
   if (input.provider && input.provider !== 'claude' && isExternalLLMDisabled()) throw new Error('workflow_external_llm_disabled');
   if (input.provider === 'claude' && !input.environment) throw new Error('workflow_explicit_environment_required');
@@ -147,6 +151,10 @@ export async function runWorkflowProcess(input: {
     let termination: WorkflowProcessSettlement['termination'] = 'not-requested';
     let streamClose = false;
     const child = spawn(command, args, { cwd: input.cwd, env: environment, stdio: ['pipe', 'pipe', 'pipe'], shell: false, windowsHide: true, detached: process.platform !== 'win32' });
+    if (child.pid && input.onSpawn) {
+      // Bookkeeping never interrupts the provider; a missing identity simply keeps recovery conservative.
+      try { input.onSpawn({ pid: child.pid, processStartedAt: currentProcessStartIdentity(child.pid) }); } catch { /* recorded as unverifiable */ }
+    }
     const settlement = (): WorkflowProcessSettlement => ({
       parentExitCode: parentExit ? parentExit.code : null,
       parentExitSignal: parentExit ? parentExit.signal : null,

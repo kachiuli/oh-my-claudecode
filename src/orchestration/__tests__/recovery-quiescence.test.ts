@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import {
   lstatSync,
   mkdirSync,
@@ -7,6 +8,7 @@ import {
   realpathSync,
   rmSync,
   symlinkSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -14,7 +16,10 @@ import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { clearWorktreeCache, getOmcRoot } from "../../lib/worktree-paths.js";
 import { currentProcessStartIdentity } from "../../team/team-owner-epoch.js";
-import { assertOrchestratorRecoveryQuiescent } from "../quiescence.js";
+import {
+  assertOrchestratorQuiescent,
+  assertOrchestratorRecoveryQuiescent,
+} from "../quiescence.js";
 import { resolveOrchestratorPaths } from "../state.js";
 
 interface RecoveryFixture {
@@ -469,6 +474,168 @@ describe("orchestrator recovery quiescence", () => {
 
     expect(() => assertOrchestratorRecoveryQuiescent(testFixture.root)).toThrow(
       error,
+    );
+  });
+
+  describe("attempts orphaned by a dead controller", () => {
+    function exitedPid(): number {
+      const child = spawnSync(process.execPath, ["-e", "process.exit(0)"], {
+        windowsHide: true,
+      });
+      expect(child.status).toBe(0);
+      expect(child.pid).toBeGreaterThan(0);
+      return child.pid!;
+    }
+
+    function runningWorkflow(identity: unknown) {
+      const state = workflowState("running");
+      const invocation = {
+        orchestrationHost: "claude",
+        attempt: 1,
+        mode: "fresh",
+        model: "glm-5.3-flash",
+        startedAt: "2026-09-21T00:00:00.000Z",
+        outcome: "failed",
+        error: "workflow_invocation_incomplete",
+        artifacts: [],
+        telemetry: {
+          provider: "glm",
+          durationMs: 0,
+          status: "unknown",
+          scope: "unknown",
+        },
+        ...(identity === undefined ? {} : { process: identity }),
+      };
+      return {
+        ...state,
+        tasks: [
+          {
+            ...state.tasks[0],
+            attempts: 1,
+            claimToken: randomUUID(),
+            invocations: [invocation],
+          },
+        ],
+      };
+    }
+
+    function projectedTask(taskId: string) {
+      return {
+        ...pendingTask(),
+        status: "in_progress",
+        owner: "task-one",
+        claim: {
+          owner: "task-one",
+          token: "claim-token",
+          leased_until: "2026-09-21T01:00:00.000Z",
+        },
+        metadata: { workflow: "recovery", task_id: taskId },
+      };
+    }
+
+    it("treats a running task whose provider is verifiably dead as orphaned only during explicit recovery", () => {
+      const testFixture = fixture();
+      const dead = {
+        pid: exitedPid(),
+        processStartedAt: currentProcessStartIdentity(),
+      };
+      writeJson(
+        join(testFixture.teamRoot, "workflow.json"),
+        runningWorkflow(dead),
+      );
+      writeJson(
+        join(testFixture.teamRoot, "tasks", "task-1.json"),
+        projectedTask("one"),
+      );
+
+      expect(() =>
+        assertOrchestratorRecoveryQuiescent(testFixture.root),
+      ).not.toThrow();
+      expect(() => assertOrchestratorQuiescent(testFixture.root)).toThrow(
+        "orchestrator_active_attempt",
+      );
+    });
+
+    it("refuses a running task whose recorded provider is still alive", () => {
+      const testFixture = fixture();
+      writeJson(
+        join(testFixture.teamRoot, "workflow.json"),
+        runningWorkflow({
+          pid: process.pid,
+          processStartedAt: currentProcessStartIdentity(),
+        }),
+      );
+
+      expect(() =>
+        assertOrchestratorRecoveryQuiescent(testFixture.root),
+      ).toThrow("orchestrator_active_provider");
+    });
+
+    it.each([
+      ["no recorded process", undefined],
+      ["a malformed identity", { pid: "42", processStartedAt: null }],
+    ])(
+      "keeps a running task with %s as an active attempt",
+      (_name, identity) => {
+        const testFixture = fixture();
+        writeJson(
+          join(testFixture.teamRoot, "workflow.json"),
+          runningWorkflow(identity),
+        );
+
+        expect(() =>
+          assertOrchestratorRecoveryQuiescent(testFixture.root),
+        ).toThrow("orchestrator_active_attempt");
+      },
+    );
+
+    it("refuses an active task projection that does not belong to the orphaned attempt", () => {
+      const testFixture = fixture();
+      writeJson(
+        join(testFixture.teamRoot, "workflow.json"),
+        runningWorkflow({
+          pid: exitedPid(),
+          processStartedAt: currentProcessStartIdentity(),
+        }),
+      );
+      writeJson(
+        join(testFixture.teamRoot, "tasks", "task-1.json"),
+        projectedTask("two"),
+      );
+
+      expect(() =>
+        assertOrchestratorRecoveryQuiescent(testFixture.root),
+      ).toThrow("orchestrator_active_attempt");
+    });
+
+    it.each([
+      ["a dead owner and enough age", true, true, true],
+      ["a live owner", false, true, false],
+      ["a dead owner but recent activity", true, false, false],
+    ])(
+      "passes an abandoned workflow lock with %s only during explicit recovery",
+      (_name, deadOwner, aged, expected) => {
+        const testFixture = fixture();
+        const workflow = join(testFixture.teamRoot, "workflow.json");
+        writeJson(workflow, workflowState("pending"));
+        const lock = `${workflow}.lock`;
+        writeJson(lock, {
+          pid: deadOwner ? exitedPid() : process.pid,
+          timestamp: Date.now(),
+        });
+        if (aged) {
+          const past = new Date(Date.now() - 120_000);
+          utimesSync(lock, past, past);
+        }
+
+        const recovery = () =>
+          assertOrchestratorRecoveryQuiescent(testFixture.root);
+        if (expected) expect(recovery).not.toThrow();
+        else expect(recovery).toThrow("orchestrator_workflow_locked");
+        expect(() => assertOrchestratorQuiescent(testFixture.root)).toThrow(
+          "orchestrator_workflow_locked",
+        );
+      },
     );
   });
 

@@ -1,0 +1,46 @@
+# Workflow V1.4 Claude lead live verification
+
+This record closes the Claude lane that the [V1.4 verification record](WORKFLOW-V1.4-VERIFICATION.md) and the `workflow-v1.4.1` release left deferred for exhausted credits. It distinguishes authenticated native execution from the synthetic regressions, and it records the defect the live run exposed together with the maintenance fix. No credential value, raw provider output, header or query string is reproduced here; sanitized evidence stays in the ignored local `.tmp-v142-evidence/claude-live/` directory of the working checkout.
+
+## Source identity and environment
+
+- Runtime under test: the `workflow-v1.4.1` source `2635be1a734bf7d9ebed0bf081106f1ce1f00279`, built locally on Windows with Node 24.18.1. The fixes below were written after the live lanes and are covered by regressions, not by a second paid run.
+- Native hosts: Claude Code 2.1.272 signed in through the existing default profile on a Max subscription, and Codex CLI 0.155.0-alpha.9.2 from its own secure store. No global settings were edited and no credential was copied.
+- Worker route: the existing `claude-glm` private profile through the configured `https://api.bigmodel.sanlangcode.com/` gateway with exact `glm-5.3-flash`. Reviewer route: native Codex `gpt-5.6-luna`.
+- Every lane used a disposable repository under a short temporary path, a private `OMC_STATE_DIR`, and an environment with the desktop session's `CLAUDECODE`, `CLAUDE_CODE_*`, `ANTHROPIC_BASE_URL` and OAuth override variables removed, so the launched Claude used its own configuration.
+
+## Lanes and results
+
+| Lane                       | Entry point                                                                                                   | Result                                                                                                                                                                                                                                                                                                                                                                                           |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Offline native smoke       | `node scripts/smoke-native-project-hosts.mjs <claude.exe> <codex.exe>`                                        | Exit 0. Plugin validation, Codex marketplace parsing, both native help launches, lease release.                                                                                                                                                                                                                                                                                                  |
+| Claude lead, full workflow | `omc launch -p … --output-format stream-json --allowedTools Bash`                                             | Complete. Sonnet lead, 11 turns, ten controller commands all exit 0: status, run, status, worker inspection, accept, verify, review, status, finish, status. GLM Flash worker attempt completed in about 115 seconds with the exact bytes, host `claude` recorded on the attempt, one Codex review pass with zero findings, deterministic verification passed, stage `complete`, lease released. |
+| Claude lead, resume        | `omc launch --resume <registered-session> -p …`                                                               | Passed. The session recorded by the SessionStart hook resumed, both status commands exit 0, lease released.                                                                                                                                                                                                                                                                                      |
+| Claude lead, handoff       | `omc orchestrator handoff codex --checkpoint completed-stage --workflow … --reference …` from inside the lead | Passed. Active host switched to Codex, lease released while the old lead was still exiting, the launcher tolerated the revoked lease, and the old session's later hook was refused as cross-host.                                                                                                                                                                                                |
+| Postflight switch          | `omc orchestrator use claude` then `use codex` with no model call                                             | Passed. Workflow bytes, state hash, Git head and tree, attempt and reviewer provenance, artifact hashes and both host records unchanged; every switch boundary had no lease.                                                                                                                                                                                                                     |
+
+Hook diagnostics after the lanes reported `capability: supported`, `definition: installed`, and advisory execution `observed` for SessionStart, Stop and SessionEnd through the managed project plugin loaded with `--plugin-dir`. Native trust remains `not-established` by design.
+
+Paid usage: one crashed Claude lead session, three completed Claude lead sessions, one GLM Flash worker attempt and one Codex review. The lead's final reply prefixed one summary sentence before the exact success marker; the evidence records that deviation and applies a suffix match.
+
+## Defect found and fixed
+
+The first full lane crashed. Claude Code's Bash tool stops a command after two minutes by default, so it killed `omc team workflow run` while the worker was still running. That left three things behind: the task marked `running` with an incomplete attempt, the controller's advisory `workflow.json.lock`, and the orchestrator operation lock owned by the dead controller PID. The launcher then could not release its lease because the abandoned operation lock blocked the release, and it exited with `orchestrator_operation_locked`.
+
+Explicit recovery refused the state with `orchestrator_active_attempt`, and every workflow command, including `reject` and `cleanup`, was blocked by the abandoned lock with `orchestrator_operation_locked`. No supported command could settle the repository, which contradicts the documented recovery procedure. The crashed fixture is retained as evidence.
+
+The maintenance fix keeps every fail-closed rule and adds one verifiable path:
+
+- Each attempt records the provider's process identity (PID and start identity) at spawn.
+- Explicit recovery treats a running task as orphaned only when its incomplete attempt recorded a provider that is verifiably dead, and it passes an abandoned `workflow.json.lock` only when the lock is at least 30 seconds old and its owner PID is dead. Selection and handoff keep refusing any running task. Attempts without a recorded identity, or whose provider is alive, still refuse recovery.
+- `omc team workflow reject <name> <task> --reason <text>` settles such an attempt as `workflow_invocation_interrupted`; the attempt is non-retryable and the task projection loses its claim.
+- A Claude project launch sets `BASH_DEFAULT_TIMEOUT_MS` and `BASH_MAX_TIMEOUT_MS` to the controller's maximum provider timeout unless the user set them, and the shared host guidance tells leads to give workflow commands the full provider timeout and never to background, kill or retry them.
+- The Windows process-identity probe no longer leaks PowerShell's error text to the terminal when a native process exits before its lease registration completes.
+
+Regressions cover each rule: dead versus alive versus unrecorded provider identities, task projections that do not belong to the orphaned attempt, abandoned versus live versus recent lock files, the launch environment defaults, and the reject settlement path.
+
+## Remaining limits
+
+- Claude was validated as the native lead. Claude as implementer or reviewer through the role-substitution profile remains covered by synthetic regressions only.
+- The recovery fix was validated by regressions against the crash evidence, not by a second paid crash reproduction.
+- Native hook trust stays user-controlled; observed hook execution is advisory.
