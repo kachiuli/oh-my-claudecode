@@ -1,11 +1,12 @@
 import { spawnSync } from 'child_process';
-import { isAbsolute, normalize, sep, win32 as win32Path } from 'path';
+import { isAbsolute, normalize, sep, posix as posixPath, win32 as win32Path } from 'path';
 import { validateTeamName } from './team-name.js';
 import { normalizeToCcAlias } from '../features/delegation-enforcer.js';
 import { isBedrock, isVertexAI, isProviderSpecificModelId } from '../config/models.js';
 import { isExternalLLMDisabled } from '../lib/security-config.js';
 import { getGlmConfig, resolveGlmExecutable } from './glm-config.js';
 import { loadConfig } from '../config/loader.js';
+import { resolveWindowsBatchInvocation, selectWindowsExecutableCandidate } from '../lib/windows-command.js';
 const resolvedPathCache = new Map();
 const UNTRUSTED_PATH_PATTERNS = [
     /^\/tmp(\/|$)/,
@@ -53,6 +54,15 @@ function assertBinaryName(binary) {
         throw new Error(`Invalid CLI binary name: ${binary}`);
     }
 }
+function resolvedBinaryCandidate(stdout) {
+    const candidates = stdout.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+    if (process.platform !== 'win32')
+        return candidates[0] ?? '';
+    return selectWindowsExecutableCandidate(candidates) ?? '';
+}
+function platformPath() {
+    return process.platform === 'win32' ? win32Path : posixPath;
+}
 /** @deprecated Backward-compat shim; non-interactive shells should generally skip RC files. */
 export function shouldLoadShellRc() {
     return false;
@@ -66,18 +76,17 @@ export function resolveCliBinaryPath(binary) {
     const finder = process.platform === 'win32' ? 'where' : 'which';
     const result = spawnSync(finder, [binary], {
         timeout: 5000,
-        env: process.env,
     });
     if (result.status !== 0) {
         throw new Error(`CLI binary '${binary}' not found in PATH`);
     }
     const stdout = result.stdout?.toString().trim() ?? '';
-    const firstLine = stdout.split('\n').map(line => line.trim()).find(Boolean) ?? '';
-    if (!firstLine) {
+    const candidate = resolvedBinaryCandidate(stdout);
+    if (!candidate) {
         throw new Error(`CLI binary '${binary}' not found in PATH`);
     }
-    const resolvedPath = normalize(firstLine);
-    if (!isAbsolute(resolvedPath)) {
+    const resolvedPath = platformPath().normalize(candidate);
+    if (!platformPath().isAbsolute(resolvedPath)) {
         throw new Error(`Resolved CLI binary '${binary}' to relative path`);
     }
     if (UNTRUSTED_PATH_PATTERNS.some(pattern => pattern.test(resolvedPath))) {
@@ -284,15 +293,21 @@ export function getContract(agentType) {
     return agentType === 'glm' ? { ...contract, binary: getGlmConfig(loadConfig()).command } : contract;
 }
 function validateBinaryRef(binary) {
-    if (isAbsolute(binary))
+    if (typeof binary !== 'string' || !binary.trim() || /[\0\r\n]/.test(binary)) {
+        throw new Error(`Unsafe CLI binary reference: ${binary}`);
+    }
+    if (platformPath().isAbsolute(binary))
         return;
     if (/^[A-Za-z0-9._-]+$/.test(binary))
         return;
     throw new Error(`Unsafe CLI binary reference: ${binary}`);
 }
+export function validateCliCommandRef(binary) {
+    validateBinaryRef(binary);
+}
 function resolveBinaryPath(binary) {
     validateBinaryRef(binary);
-    if (isAbsolute(binary))
+    if (platformPath().isAbsolute(binary))
         return binary;
     try {
         const resolver = process.platform === 'win32' ? 'where' : 'which';
@@ -303,8 +318,8 @@ function resolveBinaryPath(binary) {
             ?.split(/\r?\n/)
             .map((line) => line.trim())
             .filter(Boolean) ?? [];
-        const firstPath = lines[0];
-        const isResolvedAbsolute = !!firstPath && (isAbsolute(firstPath) || win32Path.isAbsolute(firstPath));
+        const firstPath = resolvedBinaryCandidate(lines.join('\n'));
+        const isResolvedAbsolute = !!firstPath && platformPath().isAbsolute(firstPath);
         return isResolvedAbsolute ? firstPath : binary;
     }
     catch {
@@ -320,15 +335,12 @@ export function isCliAvailable(agentType) {
             });
             return result.status === 0;
         }
-        const resolvedBinary = resolveBinaryPath(contract.binary);
-        if (process.platform === 'win32' && /\.(cmd|bat)$/i.test(resolvedBinary)) {
-            const comspec = process.env.COMSPEC || 'cmd.exe';
-            const result = spawnSync(comspec, ['/d', '/s', '/c', `"${resolvedBinary}" --version`], { timeout: 5000 });
-            return result.status === 0;
-        }
-        const result = spawnSync(resolvedBinary, ['--version'], {
+        const invocation = resolveValidatedCliInvocation(agentType, ['--version'], contract.binary);
+        const result = spawnSync(invocation.command, invocation.args, {
             timeout: 5000,
-            shell: process.platform === 'win32',
+            shell: false,
+            windowsHide: true,
+            ...(invocation.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
         });
         return result.status === 0;
     }
@@ -351,6 +363,19 @@ export function resolveValidatedBinaryPath(agentType) {
     if (agentType === 'glm')
         return resolveGlmExecutable(contract.binary);
     return resolveCliBinaryPath(contract.binary);
+}
+/** Resolve a CLI command and adapt Windows batch shims to an explicit COMSPEC invocation. */
+export function resolveValidatedCliInvocation(agentType, args, command = getContract(agentType).binary) {
+    validateBinaryRef(command);
+    const resolved = platformPath().isAbsolute(command)
+        ? command
+        : process.platform === 'win32'
+            ? resolveCliBinaryPath(command)
+            : resolveBinaryPath(command);
+    if (process.platform === 'win32' && /\.(?:cmd|bat)$/i.test(resolved)) {
+        return resolveWindowsBatchInvocation(resolved, args);
+    }
+    return { command: resolved, args: [...args] };
 }
 export function buildLaunchArgs(agentType, config) {
     return getContract(agentType).buildLaunchArgs(config.model, config.extraFlags);

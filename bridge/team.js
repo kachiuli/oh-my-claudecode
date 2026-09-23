@@ -5567,6 +5567,53 @@ var init_team_name = __esm({
   }
 });
 
+// src/lib/windows-command.ts
+import { existsSync as existsSync9, realpathSync as realpathSync4 } from "fs";
+import { win32 as win32Path } from "path";
+function selectWindowsExecutableCandidate(candidates, pathext = process.env.PATHEXT ?? DEFAULT_PATHEXT) {
+  const executableExtensions = new Set(pathext.split(";").map((extension) => extension.trim().toLowerCase()).filter(Boolean));
+  return candidates.find((candidate) => executableExtensions.has(win32Path.extname(candidate).toLowerCase())) ?? candidates[0];
+}
+function isAbsoluteCmdExe(candidate) {
+  if (!candidate || /[\0\r\n]/.test(candidate) || /[\\/]$/.test(candidate)) return false;
+  return win32Path.isAbsolute(candidate) && win32Path.basename(candidate).toLowerCase() === "cmd.exe";
+}
+function validatedComspec() {
+  try {
+    if (!existsSync9(SYSTEM_COMMAND_PROCESSOR)) return void 0;
+    const canonical = realpathSync4(SYSTEM_COMMAND_PROCESSOR);
+    if (!isAbsoluteCmdExe(canonical)) return void 0;
+    if (win32Path.normalize(canonical).toLowerCase() !== win32Path.normalize(SYSTEM_COMMAND_PROCESSOR).toLowerCase()) {
+      return void 0;
+    }
+    return canonical;
+  } catch {
+    return void 0;
+  }
+}
+function quoteWindowsBatchArgument(value) {
+  if (/[\0\r\n%]/.test(value)) throw new Error("Unsafe Windows batch argument");
+  return `"${value.replace(/"/g, '""')}"`;
+}
+function resolveWindowsBatchInvocation(command, args) {
+  const comspec = validatedComspec();
+  if (!comspec) throw new Error("No validated Windows command processor is available");
+  const commandLine = `"${[command, ...args].map(quoteWindowsBatchArgument).join(" ")}"`;
+  return {
+    command: comspec,
+    args: ["/d", "/v:off", "/s", "/c", commandLine],
+    windowsVerbatimArguments: true
+  };
+}
+var SYSTEM_COMMAND_PROCESSOR, DEFAULT_PATHEXT;
+var init_windows_command = __esm({
+  "src/lib/windows-command.ts"() {
+    "use strict";
+    SYSTEM_COMMAND_PROCESSOR = "C:\\Windows\\System32\\cmd.exe";
+    DEFAULT_PATHEXT = ".COM;.EXE;.BAT;.CMD";
+  }
+});
+
 // src/cli/tmux-utils.ts
 import {
   exec,
@@ -5575,7 +5622,7 @@ import {
   execSync,
   spawnSync
 } from "child_process";
-import { basename as basename6, isAbsolute as isAbsolute3, win32 as win32Path } from "path";
+import { basename as basename6, isAbsolute as isAbsolute3, win32 as win32Path2 } from "path";
 import { promisify } from "util";
 function tmuxEnv() {
   const { TMUX: _, PSMUX_SESSION: __, ...env } = process.env;
@@ -5591,26 +5638,10 @@ function isUnixLikeOnWindows() {
 function isNativeWindowsShell() {
   return process.platform === "win32" && !isUnixLikeOnWindows();
 }
-function quoteForCmd(arg) {
-  assertSafeCmdValue(arg);
-  if (arg.length === 0) return '""';
-  if (!/[\s"%^&|<>()]/.test(arg)) return arg;
-  return `"${arg.replace(/(["%])/g, "$1$1")}"`;
-}
-function assertSafeCmdValue(value) {
-  if (/[\0\r\n]/.test(value)) {
-    throw new Error("Native Windows tmux command values cannot contain NUL, CR, or LF characters");
-  }
-}
 function resolveTmuxInvocation(args) {
   const resolvedBinary = resolveTmuxBinaryPath();
   if (process.platform === "win32" && /\.(cmd|bat)$/i.test(resolvedBinary)) {
-    const comspec = process.env.COMSPEC || "cmd.exe";
-    const commandLine = [quoteForCmd(resolvedBinary), ...args.map(quoteForCmd)].join(" ");
-    return {
-      command: comspec,
-      args: ["/d", "/s", "/c", commandLine]
-    };
+    return resolveWindowsBatchInvocation(resolvedBinary, args);
   }
   return {
     command: resolvedBinary,
@@ -5620,7 +5651,12 @@ function resolveTmuxInvocation(args) {
 function tmuxExec(args, opts) {
   const { stripTmux: _, ...execOpts } = opts ?? {};
   const invocation = resolveTmuxInvocation(args);
-  return execFileSync3(invocation.command, invocation.args, { encoding: "utf-8", ...execOpts, env: resolveEnv(opts) });
+  return execFileSync3(invocation.command, invocation.args, {
+    encoding: "utf-8",
+    ...execOpts,
+    env: resolveEnv(opts),
+    ...invocation.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}
+  });
 }
 async function tmuxExecAsync(args, opts) {
   const { stripTmux: _, timeout, ...rest } = opts ?? {};
@@ -5629,7 +5665,8 @@ async function tmuxExecAsync(args, opts) {
     encoding: "utf-8",
     env: resolveEnv(opts),
     ...timeout !== void 0 ? { timeout } : {},
-    ...rest
+    ...rest,
+    ...invocation.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}
   });
 }
 function tmuxShell(command, opts) {
@@ -5663,8 +5700,8 @@ function resolveTmuxBinaryPath() {
     });
     if (result.status !== 0) return "tmux";
     const candidates = result.stdout?.split(/\r?\n/).map((line) => line.trim()).filter(Boolean) ?? [];
-    const first = candidates[0];
-    if (first && (isAbsolute3(first) || win32Path.isAbsolute(first))) {
+    const first = selectWindowsExecutableCandidate(candidates);
+    if (first && (isAbsolute3(first) || win32Path2.isAbsolute(first))) {
       return first;
     }
   } catch {
@@ -5674,6 +5711,7 @@ function resolveTmuxBinaryPath() {
 var init_tmux_utils = __esm({
   "src/cli/tmux-utils.ts"() {
     "use strict";
+    init_windows_command();
   }
 });
 
@@ -6398,7 +6436,7 @@ var init_file_lock = __esm({
 
 // src/team/worker-launch-ack.ts
 import { createHash as createHash6, randomUUID as randomUUID9 } from "node:crypto";
-import { constants as constants3, existsSync as existsSync10 } from "node:fs";
+import { constants as constants3, existsSync as existsSync11 } from "node:fs";
 import { link as link2, lstat as lstat5, mkdir as mkdir6, mkdtemp, open as open3, readFile as readFile9, rm as rm5, unlink as unlink4, writeFile as writeFile5 } from "node:fs/promises";
 import { dirname as dirname14, isAbsolute as isAbsolute4, join as join12, relative as relative4, resolve as resolve5, sep as sep4 } from "node:path";
 import { tmpdir as tmpdir2 } from "node:os";
@@ -6609,7 +6647,7 @@ async function prepareWorkerLaunchAttempt(input) {
     runtimeCliPath: input.runtimeCliPath,
     ...input.context ? { context: input.context } : {}
   };
-  if (existsSync10(attempt.expectedPath) || existsSync10(attempt.ackPath) || existsSync10(attempt.decisionPath) || existsSync10(attempt.startedPath) || existsSync10(attempt.transportOwnerPath) || existsSync10(attempt.bootstrapDescriptorPath) || existsSync10(attempt.wrapperPath) || existsSync10(attempt.transportCleanupCompletePath)) {
+  if (existsSync11(attempt.expectedPath) || existsSync11(attempt.ackPath) || existsSync11(attempt.decisionPath) || existsSync11(attempt.startedPath) || existsSync11(attempt.transportOwnerPath) || existsSync11(attempt.bootstrapDescriptorPath) || existsSync11(attempt.wrapperPath) || existsSync11(attempt.transportCleanupCompletePath)) {
     throw new Error("worker_launch_attempt_path_conflict");
   }
   await writeExclusiveAtomic(attempt.expectedPath, identity);
@@ -6789,7 +6827,7 @@ async function materializeWorkerLaunchTransport(input) {
         await writeExclusiveAtomic(attempt.transportOwnerPath, owner);
         ownerCreated = true;
       }
-      if (existsSync10(attempt.bootstrapDescriptorPath) || existsSync10(attempt.wrapperPath)) {
+      if (existsSync11(attempt.bootstrapDescriptorPath) || existsSync11(attempt.wrapperPath)) {
         throw new Error("worker_launch_transport_path_conflict");
       }
       await writeExclusiveAtomic(attempt.bootstrapDescriptorPath, spec);
@@ -6803,19 +6841,19 @@ async function materializeWorkerLaunchTransport(input) {
       await unlink4(attempt.wrapperPath).catch(() => {
         cleanupVerified = false;
       });
-      cleanupVerified &&= !existsSync10(attempt.wrapperPath);
+      cleanupVerified &&= !existsSync11(attempt.wrapperPath);
     }
     if (descriptorCreated) {
       await unlink4(attempt.bootstrapDescriptorPath).catch(() => {
         cleanupVerified = false;
       });
-      cleanupVerified &&= !existsSync10(attempt.bootstrapDescriptorPath);
+      cleanupVerified &&= !existsSync11(attempt.bootstrapDescriptorPath);
     }
     if (ownerCreated) {
       await unlink4(attempt.transportOwnerPath).catch(() => {
         cleanupVerified = false;
       });
-      cleanupVerified &&= !existsSync10(attempt.transportOwnerPath);
+      cleanupVerified &&= !existsSync11(attempt.transportOwnerPath);
     }
     if (!cleanupVerified) {
       const cleanupError = new Error("worker_launch_transport_partial_cleanup_unverified");
@@ -6836,7 +6874,7 @@ async function cleanupWorkerLaunchTransportUnlocked(attempt, reason) {
   if (owner.kind === "malformed" || proof.kind === "malformed") return false;
   if (owner.kind === "value" && !transportOwnerMatches(owner.value, attempt)) return false;
   if (proof.kind === "value" && !cleanupProofMatches(proof.value, attempt)) return false;
-  const hasTransportFiles = existsSync10(attempt.bootstrapDescriptorPath) || existsSync10(attempt.wrapperPath);
+  const hasTransportFiles = existsSync11(attempt.bootstrapDescriptorPath) || existsSync11(attempt.wrapperPath);
   if (owner.kind === "absent") {
     return !hasTransportFiles && (proof.kind === "absent" || cleanupProofMatches(proof.value, attempt));
   }
@@ -6846,7 +6884,7 @@ async function cleanupWorkerLaunchTransportUnlocked(attempt, reason) {
   await unlink4(attempt.wrapperPath).catch((error) => {
     if (error.code !== "ENOENT") throw error;
   });
-  if (existsSync10(attempt.bootstrapDescriptorPath) || existsSync10(attempt.wrapperPath)) return false;
+  if (existsSync11(attempt.bootstrapDescriptorPath) || existsSync11(attempt.wrapperPath)) return false;
   if (proof.kind === "absent") {
     await writeExclusiveAtomic(attempt.transportCleanupCompletePath, {
       ...identityOf(attempt),
@@ -6856,7 +6894,7 @@ async function cleanupWorkerLaunchTransportUnlocked(attempt, reason) {
     });
   }
   const completed = await readJson(attempt.transportCleanupCompletePath);
-  return completed.kind === "value" && cleanupProofMatches(completed.value, attempt) && !existsSync10(attempt.bootstrapDescriptorPath) && !existsSync10(attempt.wrapperPath);
+  return completed.kind === "value" && cleanupProofMatches(completed.value, attempt) && !existsSync11(attempt.bootstrapDescriptorPath) && !existsSync11(attempt.wrapperPath);
 }
 async function cleanupWorkerLaunchTransport(attempt, reason = "transport_cleanup") {
   if (!attemptTransportPathsAreDeterministic(attempt)) return false;
@@ -7373,7 +7411,7 @@ async function readValidProviderStarted(attempt, options = {}) {
   if (started.kind !== "value") return null;
   if (!started.value || typeof started.value !== "object" || Array.isArray(started.value)) return null;
   const record = started.value;
-  if (!options.allowSupervisorCompletion && record.supervisor_completion_path !== void 0 && (typeof record.supervisor_completion_path !== "string" || record.supervisor_completion_path.trim().length === 0 || existsSync10(record.supervisor_completion_path))) return null;
+  if (!options.allowSupervisorCompletion && record.supervisor_completion_path !== void 0 && (typeof record.supervisor_completion_path !== "string" || record.supervisor_completion_path.trim().length === 0 || existsSync11(record.supervisor_completion_path))) return null;
   if (options.allowSupervisorCompletion && record.supervisor_completion_path !== void 0 && (typeof record.supervisor_completion_path !== "string" || record.supervisor_completion_path.trim().length === 0)) return null;
   return identityMatches(record, attempt) && record.kind === "worker_launch_provider_started" && Number.isSafeInteger(record.pid) && record.pid > 0 && typeof record.process_start_identity === "string" && record.process_start_identity.trim().length > 0 && (record.containment_nonce === void 0 || isExactText(record.containment_nonce)) && typeof record.written_at === "string" && Number.isFinite(Date.parse(record.written_at)) ? record : null;
 }
@@ -7444,7 +7482,7 @@ var init_worker_launch_ack = __esm({
 
 // src/team/recovery-request-store.ts
 import { createHash as createHash7, randomUUID as randomUUID10 } from "crypto";
-import { existsSync as existsSync11, linkSync as linkSync4, mkdirSync as mkdirSync6, readFileSync as readFileSync8, readdirSync as readdirSync3, renameSync as renameSync3, unlinkSync as unlinkSync6, writeFileSync as writeFileSync5 } from "fs";
+import { existsSync as existsSync12, linkSync as linkSync4, mkdirSync as mkdirSync6, readFileSync as readFileSync8, readdirSync as readdirSync3, renameSync as renameSync3, unlinkSync as unlinkSync6, writeFileSync as writeFileSync5 } from "fs";
 import { dirname as dirname15, join as join13 } from "path";
 function isSafeRecoveryRequestId(requestId) {
   return requestId.length > 0 && requestId.length <= 128 && requestId !== "." && requestId !== ".." && /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(requestId);
@@ -7512,7 +7550,7 @@ function replaceDerivedIndex(target, value) {
   try {
     renameSync3(temp, target);
   } finally {
-    if (existsSync11(temp)) unlinkSync6(temp);
+    if (existsSync12(temp)) unlinkSync6(temp);
   }
   const repaired = parseCanonical(target);
   if (!repaired || canonicalize2(repaired) !== bytes) throw new Error("immutable_recovery_record_verification_failed");
@@ -7611,7 +7649,7 @@ function resolveCanonicalRecoveryRequestId(cwd, requestId) {
     visited.add(currentRequestId);
     const reservation = readRecoveryRequestReservation(cwd, currentRequestId);
     if (!reservation) {
-      if (alias || existsSync11(reservationPath(cwd, currentRequestId))) return null;
+      if (alias || existsSync12(reservationPath(cwd, currentRequestId))) return null;
       return currentRequestId;
     }
     if (alias && !hasMatchingReservationTuple(alias, reservation)) return null;
@@ -7690,7 +7728,7 @@ function isValidRecoveryResult(value) {
 }
 function readRecoveryFinalState(cwd, requestId) {
   const path4 = finalPath(cwd, requestId);
-  if (!existsSync11(path4)) return { kind: "missing" };
+  if (!existsSync12(path4)) return { kind: "missing" };
   const final = parseCanonical(path4);
   if (!final || final.schema_version !== 1 || final.kind !== "final" || !isMatchingRecoveryFinal(final, { requestId })) {
     return { kind: "invalid" };
@@ -7700,11 +7738,11 @@ function readRecoveryFinalState(cwd, requestId) {
   const byTeam = absPath(cwd, TeamPaths.recoveryResultByTeam(reservation.workspace_hash, final.team_name, final.recovery_id));
   try {
     const expectedBytes = canonicalize2(final);
-    const indexed = existsSync11(byTeam) ? parseCanonical(byTeam) : null;
+    const indexed = existsSync12(byTeam) ? parseCanonical(byTeam) : null;
     if (!indexed || canonicalize2(indexed) !== expectedBytes) {
       const lockPath = absPath(cwd, TeamPaths.recoveryFinalIndexLock(reservation.workspace_hash, final.team_name, final.recovery_id));
       withProcessIdentityFileLockSync(lockPath, () => {
-        const current = existsSync11(byTeam) ? parseCanonical(byTeam) : null;
+        const current = existsSync12(byTeam) ? parseCanonical(byTeam) : null;
         if (!current || canonicalize2(current) !== expectedBytes) replaceDerivedIndex(byTeam, final);
       });
     }
@@ -7804,7 +7842,7 @@ __export(runtime_owner_client_exports, {
 });
 import { spawn } from "node:child_process";
 import { createHash as createHash8, randomUUID as randomUUID11 } from "node:crypto";
-import { existsSync as existsSync12, readdirSync as readdirSync4, readFileSync as readFileSync9 } from "node:fs";
+import { existsSync as existsSync13, readdirSync as readdirSync4, readFileSync as readFileSync9 } from "node:fs";
 import { link as link3, mkdir as mkdir7, open as open4, readFile as readFile10, unlink as unlink5 } from "node:fs/promises";
 import { basename as basename8, dirname as dirname16, join as join14 } from "node:path";
 function workspaceHash(cwd) {
@@ -7947,7 +7985,7 @@ async function publishRecoveryOwnerBootstrapCandidate(input, recoveryId, expecte
 function hasLiveOrUnknownBootstrapCandidate(input, recoveryId, expectedEpoch, predecessor) {
   const candidateDirectory = dirname16(recoveryOwnerBootstrapCandidatePath(input.cwd, input.teamName, expectedEpoch, "candidate"));
   const legacyCandidate = join14(dirname16(candidateDirectory), `${expectedEpoch}.json`);
-  if (existsSync12(legacyCandidate)) return true;
+  if (existsSync13(legacyCandidate)) return true;
   let entries;
   try {
     entries = readdirSync4(candidateDirectory);
@@ -8070,7 +8108,7 @@ function timeoutResult(input, recoveryId) {
 }
 async function teamRecoveryState(cwd, teamName) {
   const configPath = absPath(cwd, TeamPaths.config(teamName));
-  if (!existsSync12(configPath)) return "team_not_found";
+  if (!existsSync13(configPath)) return "team_not_found";
   try {
     const revisioned = await readRevisionedTeamConfig(teamName, cwd);
     if (revisioned) return "v2";
@@ -8505,7 +8543,7 @@ __export(tmux_session_exports, {
   workerPaneBelongsToOwnedProviderTarget: () => workerPaneBelongsToOwnedProviderTarget,
   workerPaneBelongsToProviderTarget: () => workerPaneBelongsToProviderTarget
 });
-import { existsSync as existsSync13, statSync as statSync3 } from "fs";
+import { existsSync as existsSync14, statSync as statSync3 } from "fs";
 import { createHash as createHash9, randomUUID as randomUUID12 } from "crypto";
 import { execFile as execFile3 } from "child_process";
 import { promisify as promisify3 } from "util";
@@ -8563,7 +8601,7 @@ function resolveTmuxServerGuardRuntime() {
   return { nodePath, runtimePath };
 }
 function isRegularFile(path4) {
-  if (!existsSync13(path4)) return false;
+  if (!existsSync14(path4)) return false;
   try {
     return statSync3(path4).isFile();
   } catch {
@@ -9194,14 +9232,14 @@ function resolveShellFromPath(candidatePath) {
   for (const dir of pathEntries(process.env.PATH)) {
     for (const name of pathCandidateNames(candidatePath)) {
       const full = join15(dir, name);
-      if (existsSync13(full)) return full;
+      if (existsSync14(full)) return full;
     }
   }
   return null;
 }
 function resolveShellFromCandidates(paths, rcFile) {
   for (const p of paths) {
-    if (existsSync13(p)) return { shell: p, rcFile };
+    if (existsSync14(p)) return { shell: p, rcFile };
     const resolvedFromPath = resolveShellFromPath(p);
     if (resolvedFromPath) return { shell: resolvedFromPath, rcFile };
   }
@@ -9211,7 +9249,7 @@ function resolveSupportedShellAffinity(shellPath2) {
   if (!shellPath2) return null;
   const name = basename9(shellPath2.replace(/\\/g, "/")).replace(/\.(exe|cmd|bat)$/i, "");
   if (name !== "zsh" && name !== "bash") return null;
-  if (!existsSync13(shellPath2)) return null;
+  if (!existsSync14(shellPath2)) return null;
   const home = process.env.HOME ?? "";
   const rcFile = home ? `${home}/.${name}rc` : null;
   return { shell: shellPath2, rcFile };
@@ -9362,7 +9400,7 @@ function workerPaneShellCommand() {
 function escapeForCmdSet(value) {
   return value.replace(/(["%])/g, "$1$1");
 }
-function assertSafeCmdValue2(value) {
+function assertSafeCmdValue(value) {
   if (/[\r\n\0]/.test(value)) throw new Error("Invalid Windows command value: contains CR, LF, or NUL");
 }
 function shellNameFromPath(shellPath2) {
@@ -9432,11 +9470,11 @@ function buildWorkerStartCommand(config) {
     }
     const envPrefix = Object.entries(windowsEnvVars).map(([key, value]) => {
       assertSafeEnvKey(key);
-      assertSafeCmdValue2(value);
+      assertSafeCmdValue(value);
       return `set "${key}=${escapeForCmdSet(value)}"`;
     }).join(" && ");
     const launch = launchWords.map((part) => {
-      assertSafeCmdValue2(part);
+      assertSafeCmdValue(part);
       return `"${escapeForCmdSet(part)}"`;
     }).join(" ");
     const cmdBody = envPrefix ? `${envPrefix} && ${launch}` : launch;
@@ -10403,7 +10441,7 @@ async function spawnWorkerInPane(sessionName2, paneId, config) {
     if (config.launchAttempt) {
       await revokeWorkerLaunchAttempt(config.launchAttempt, "launch_failed").catch(() => void 0);
     }
-    if (config.launchAttempt && (!materializedTransport || existsSync13(materializedTransport.bootstrapDescriptorPath))) {
+    if (config.launchAttempt && (!materializedTransport || existsSync14(materializedTransport.bootstrapDescriptorPath))) {
       const cleaned = await cleanupWorkerLaunchTransport(config.launchAttempt, "launch_failed").catch(() => false);
       if (!cleaned) {
         logWorkerSpawnDiagnostic(
@@ -11402,7 +11440,7 @@ var init_tmux_session = __esm({
 });
 
 // src/team/mcp-comm.ts
-import { realpathSync as realpathSync4 } from "node:fs";
+import { realpathSync as realpathSync5 } from "node:fs";
 import { basename as basename10, dirname as dirname17, join as join16 } from "node:path";
 function isConfirmedNotification(outcome) {
   if (!outcome.ok) return false;
@@ -11426,10 +11464,10 @@ function isExactText2(value) {
 }
 function canonicalNotificationLockIdentity(lockPath) {
   try {
-    return realpathSync4(lockPath);
+    return realpathSync5(lockPath);
   } catch {
     try {
-      return join16(realpathSync4(dirname17(lockPath)), basename10(lockPath));
+      return join16(realpathSync5(dirname17(lockPath)), basename10(lockPath));
     } catch {
       return lockPath;
     }
@@ -12097,7 +12135,7 @@ var init_cache_occupancy = __esm({
 
 // src/utils/paths.ts
 import { join as join20, dirname as dirname20 } from "path";
-import { existsSync as existsSync14, readFileSync as readFileSync12, readdirSync as readdirSync7, statSync as statSync4, lstatSync as lstatSync4, unlinkSync as unlinkSync8, rmSync, renameSync as renameSync4, symlinkSync } from "fs";
+import { existsSync as existsSync15, readFileSync as readFileSync12, readdirSync as readdirSync7, statSync as statSync4, lstatSync as lstatSync4, unlinkSync as unlinkSync8, rmSync, renameSync as renameSync4, symlinkSync } from "fs";
 import { homedir as homedir3 } from "os";
 function getConfigDir() {
   if (process.platform === "win32") {
@@ -12608,7 +12646,7 @@ var init_delegation_routing = __esm({
 });
 
 // src/team/glm-config.ts
-import { existsSync as existsSync15, statSync as statSync5 } from "fs";
+import { existsSync as existsSync16, statSync as statSync5 } from "fs";
 import { isAbsolute as isAbsolute7 } from "path";
 import { spawnSync as spawnSync4 } from "child_process";
 function validateGlmCommand(command) {
@@ -12654,7 +12692,7 @@ function resolveGlmExecutable(command) {
     resolved = result.stdout.split(/\r?\n/).find((line) => line.trim())?.trim() ?? "";
   }
   validateGlmCommand(resolved);
-  if (!isAbsolute7(resolved) || !existsSync15(resolved) || !statSync5(resolved).isFile()) {
+  if (!isAbsolute7(resolved) || !existsSync16(resolved) || !statSync5(resolved).isFile()) {
     throw new Error("GLM executable unavailable (fallback disabled)");
   }
   return resolved;
@@ -12697,7 +12735,7 @@ var init_glm_config = __esm({
 });
 
 // src/config/loader.ts
-import { readFileSync as readFileSync13, existsSync as existsSync16 } from "fs";
+import { readFileSync as readFileSync13, existsSync as existsSync17 } from "fs";
 import { join as join21, dirname as dirname21 } from "path";
 function buildDefaultConfig() {
   const defaultTierModels = getDefaultTierModels();
@@ -12868,7 +12906,7 @@ function getConfigPaths(cwd = process.cwd()) {
   };
 }
 function loadJsoncFile(path4) {
-  if (!existsSync16(path4)) {
+  if (!existsSync17(path4)) {
     return null;
   }
   try {
@@ -13970,7 +14008,7 @@ var init_skill_pipeline = __esm({
 });
 
 // src/utils/skill-resources.ts
-import { existsSync as existsSync17, readdirSync as readdirSync8 } from "fs";
+import { existsSync as existsSync18, readdirSync as readdirSync8 } from "fs";
 import { dirname as dirname22, relative as relative6 } from "path";
 var init_skill_resources = __esm({
   "src/utils/skill-resources.ts"() {
@@ -13998,7 +14036,7 @@ var init_builtin_skill_entitlements = __esm({
 });
 
 // src/features/builtin-skills/skills.ts
-import { existsSync as existsSync18, readdirSync as readdirSync9, readFileSync as readFileSync14 } from "fs";
+import { existsSync as existsSync19, readdirSync as readdirSync9, readFileSync as readFileSync14 } from "fs";
 import { join as join22, dirname as dirname23, basename as basename13, resolve as resolve8, relative as relative7, isAbsolute as isAbsolute8, win32 as win322 } from "path";
 import { fileURLToPath as fileURLToPath4 } from "url";
 function getPackageDir3() {
@@ -14306,7 +14344,7 @@ var init_jev_model_routing = __esm({
 });
 
 // src/features/delegation-enforcer.ts
-import { existsSync as existsSync19, readFileSync as readFileSync15 } from "fs";
+import { existsSync as existsSync20, readFileSync as readFileSync15 } from "fs";
 import { join as join23 } from "path";
 function normalizeToCcAlias(model) {
   if (isProviderSpecificModelId(model)) {
@@ -14340,7 +14378,7 @@ var init_delegation_enforcer = __esm({
 });
 
 // src/lib/security-config.ts
-import { existsSync as existsSync20, readFileSync as readFileSync16 } from "fs";
+import { existsSync as existsSync21, readFileSync as readFileSync16 } from "fs";
 import { join as join24 } from "path";
 function loadSecurityFromConfigFiles() {
   const paths = [
@@ -14348,7 +14386,7 @@ function loadSecurityFromConfigFiles() {
     join24(getConfigDir(), "claude-omc", "config.jsonc")
   ];
   for (const configPath of paths) {
-    if (!existsSync20(configPath)) continue;
+    if (!existsSync21(configPath)) continue;
     try {
       const content = readFileSync16(configPath, "utf-8");
       const parsed = parseJsonc(content);
@@ -14421,7 +14459,7 @@ var init_security_config = __esm({
 
 // src/team/model-contract.ts
 import { spawnSync as spawnSync5 } from "child_process";
-import { isAbsolute as isAbsolute9, normalize as normalize3, sep as sep5, win32 as win32Path2 } from "path";
+import { isAbsolute as isAbsolute9, normalize as normalize3, sep as sep5, posix as posixPath, win32 as win32Path3 } from "path";
 function getTrustedPrefixes() {
   const trusted = [
     "/usr/local/bin",
@@ -14453,25 +14491,32 @@ function assertBinaryName(binary) {
     throw new Error(`Invalid CLI binary name: ${binary}`);
   }
 }
+function resolvedBinaryCandidate(stdout) {
+  const candidates = stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  if (process.platform !== "win32") return candidates[0] ?? "";
+  return selectWindowsExecutableCandidate(candidates) ?? "";
+}
+function platformPath() {
+  return process.platform === "win32" ? win32Path3 : posixPath;
+}
 function resolveCliBinaryPath(binary) {
   assertBinaryName(binary);
   const cached = resolvedPathCache.get(binary);
   if (cached) return cached;
   const finder = process.platform === "win32" ? "where" : "which";
   const result = spawnSync5(finder, [binary], {
-    timeout: 5e3,
-    env: process.env
+    timeout: 5e3
   });
   if (result.status !== 0) {
     throw new Error(`CLI binary '${binary}' not found in PATH`);
   }
   const stdout = result.stdout?.toString().trim() ?? "";
-  const firstLine = stdout.split("\n").map((line) => line.trim()).find(Boolean) ?? "";
-  if (!firstLine) {
+  const candidate = resolvedBinaryCandidate(stdout);
+  if (!candidate) {
     throw new Error(`CLI binary '${binary}' not found in PATH`);
   }
-  const resolvedPath = normalize3(firstLine);
-  if (!isAbsolute9(resolvedPath)) {
+  const resolvedPath = platformPath().normalize(candidate);
+  if (!platformPath().isAbsolute(resolvedPath)) {
     throw new Error(`Resolved CLI binary '${binary}' to relative path`);
   }
   if (UNTRUSTED_PATH_PATTERNS.some((pattern) => pattern.test(resolvedPath))) {
@@ -14502,20 +14547,23 @@ function getContract(agentType) {
   return agentType === "glm" ? { ...contract, binary: getGlmConfig(loadConfig()).command } : contract;
 }
 function validateBinaryRef(binary) {
-  if (isAbsolute9(binary)) return;
+  if (typeof binary !== "string" || !binary.trim() || /[\0\r\n]/.test(binary)) {
+    throw new Error(`Unsafe CLI binary reference: ${binary}`);
+  }
+  if (platformPath().isAbsolute(binary)) return;
   if (/^[A-Za-z0-9._-]+$/.test(binary)) return;
   throw new Error(`Unsafe CLI binary reference: ${binary}`);
 }
 function resolveBinaryPath(binary) {
   validateBinaryRef(binary);
-  if (isAbsolute9(binary)) return binary;
+  if (platformPath().isAbsolute(binary)) return binary;
   try {
     const resolver = process.platform === "win32" ? "where" : "which";
     const result = spawnSync5(resolver, [binary], { timeout: 5e3, encoding: "utf8" });
     if (result.status !== 0) return binary;
     const lines = result.stdout?.split(/\r?\n/).map((line) => line.trim()).filter(Boolean) ?? [];
-    const firstPath = lines[0];
-    const isResolvedAbsolute = !!firstPath && (isAbsolute9(firstPath) || win32Path2.isAbsolute(firstPath));
+    const firstPath = resolvedBinaryCandidate(lines.join("\n"));
+    const isResolvedAbsolute = !!firstPath && platformPath().isAbsolute(firstPath);
     return isResolvedAbsolute ? firstPath : binary;
   } catch {
     return binary;
@@ -14541,7 +14589,7 @@ function buildWorkerArgv(agentType, config) {
 }
 function validateWorkerLaunchDescriptor(value) {
   const descriptor = value;
-  if (!descriptor || descriptor.schema_version !== 1 || typeof descriptor.provider !== "string" || !Object.prototype.hasOwnProperty.call(descriptor, "model") || descriptor.model !== null && (typeof descriptor.model !== "string" || descriptor.model.length === 0) || typeof descriptor.binary !== "string" || descriptor.binary.length === 0 || descriptor.binary.includes("\0") || !(isAbsolute9(descriptor.binary) || win32Path2.isAbsolute(descriptor.binary)) || !Array.isArray(descriptor.args) || descriptor.args.some((arg) => typeof arg !== "string" || arg.includes("\0"))) {
+  if (!descriptor || descriptor.schema_version !== 1 || typeof descriptor.provider !== "string" || !Object.prototype.hasOwnProperty.call(descriptor, "model") || descriptor.model !== null && (typeof descriptor.model !== "string" || descriptor.model.length === 0) || typeof descriptor.binary !== "string" || descriptor.binary.length === 0 || descriptor.binary.includes("\0") || !(isAbsolute9(descriptor.binary) || win32Path3.isAbsolute(descriptor.binary)) || !Array.isArray(descriptor.args) || descriptor.args.some((arg) => typeof arg !== "string" || arg.includes("\0"))) {
     throw new Error("Invalid worker launch descriptor");
   }
   getContract(descriptor.provider);
@@ -14694,6 +14742,7 @@ var init_model_contract = __esm({
     init_security_config();
     init_glm_config();
     init_loader();
+    init_windows_command();
     resolvedPathCache = /* @__PURE__ */ new Map();
     UNTRUSTED_PATH_PATTERNS = [
       /^\/tmp(\/|$)/,
@@ -15234,7 +15283,7 @@ var init_allocation_policy = __esm({
 
 // src/team/mailbox-outstanding.ts
 import { readFile as readFile11, readdir as readdir4 } from "fs/promises";
-import { existsSync as existsSync21 } from "fs";
+import { existsSync as existsSync22 } from "fs";
 import { join as join26 } from "path";
 function safeString(value) {
   return typeof value === "string" ? value : "";
@@ -15259,7 +15308,7 @@ function messageToWorker(message) {
 }
 async function readMailboxFileMessages(filePath) {
   try {
-    if (!existsSync21(filePath)) return [];
+    if (!existsSync22(filePath)) return [];
     const raw = await readFile11(filePath, "utf-8");
     const parsed = JSON.parse(raw);
     if (Array.isArray(parsed)) return parsed;
@@ -15273,7 +15322,7 @@ async function readMailboxFileMessages(filePath) {
 }
 async function readMailboxFileMessagesJsonl(filePath) {
   try {
-    if (!existsSync21(filePath)) return [];
+    if (!existsSync22(filePath)) return [];
     const raw = await readFile11(filePath, "utf-8");
     const messages = [];
     for (const line of raw.split("\n")) {
@@ -15354,7 +15403,7 @@ var init_mailbox_outstanding = __esm({
 import { randomUUID as randomUUID14 } from "crypto";
 import { dirname as dirname25 } from "path";
 import { mkdir as mkdir10, readFile as readFile12, appendFile as appendFile3 } from "fs/promises";
-import { existsSync as existsSync22 } from "fs";
+import { existsSync as existsSync23 } from "fs";
 async function appendTeamEvent(teamName, event, cwd) {
   const full = {
     event_id: randomUUID14(),
@@ -15470,12 +15519,12 @@ var init_phase_controller = __esm({
 });
 
 // src/lib/worktree-cleanup-safety.ts
-import { existsSync as existsSync23, lstatSync as lstatSync5, realpathSync as realpathSync5 } from "node:fs";
+import { existsSync as existsSync24, lstatSync as lstatSync5, realpathSync as realpathSync6 } from "node:fs";
 import { homedir as homedir4 } from "node:os";
 import { isAbsolute as isAbsolute10, join as join27, parse as parse3, relative as relative8, resolve as resolve9 } from "node:path";
 function realpathOrResolve(path4) {
   try {
-    return realpathSync5(path4);
+    return realpathSync6(path4);
   } catch {
     return resolve9(path4);
   }
@@ -15519,7 +15568,7 @@ function validateWorktreeRemovalTarget(options) {
     throw new Error(`worktree_path_suspicious:${rawCandidate}`);
   }
   const lexicalPath = resolve9(rawCandidate);
-  if (!existsSync23(lexicalPath)) {
+  if (!existsSync24(lexicalPath)) {
     if (requireExisting) {
       throw new Error(`worktree_path_missing:${lexicalPath}`);
     }
@@ -15544,7 +15593,7 @@ function validateWorktreeRemovalTarget(options) {
       throw new Error(`worktree_path_is_main_repo:${resolvedPath}`);
     }
   }
-  if (existsSync23(join27(resolvedPath, ".git"))) {
+  if (existsSync24(join27(resolvedPath, ".git"))) {
     const gitStat = lstatSync5(join27(resolvedPath, ".git"));
     if (gitStat.isDirectory()) {
       throw new Error(`worktree_path_is_main_repo:${resolvedPath}`);
@@ -15559,7 +15608,7 @@ var init_worktree_cleanup_safety = __esm({
 });
 
 // src/team/git-worktree.ts
-import { existsSync as existsSync24, readFileSync as readFileSync17, readdirSync as readdirSync10, rmSync as rmSync2, unlinkSync as unlinkSync9, writeFileSync as writeFileSync6 } from "node:fs";
+import { existsSync as existsSync25, readFileSync as readFileSync17, readdirSync as readdirSync10, rmSync as rmSync2, unlinkSync as unlinkSync9, writeFileSync as writeFileSync6 } from "node:fs";
 import { join as join28, resolve as resolve10 } from "node:path";
 import { execFileSync as execFileSync5 } from "node:child_process";
 function getWorktreePath(repoRoot, teamName, workerName) {
@@ -15669,7 +15718,7 @@ function getRootAgentsBackupPath(repoRoot, teamName, workerName) {
 }
 function readRootAgentsBackup(repoRoot, teamName, workerName) {
   const backupPath = getRootAgentsBackupPath(repoRoot, teamName, workerName);
-  if (!existsSync24(backupPath)) return null;
+  if (!existsSync25(backupPath)) return null;
   try {
     return JSON.parse(readFileSync17(backupPath, "utf-8"));
   } catch (err) {
@@ -15690,7 +15739,7 @@ function installWorktreeRootAgents(teamName, workerName, repoRoot, worktreePath,
   validateResolvedPath(backupPath, omcRoot);
   ensureDirWithMode(getWorkerStateDir(repoRoot, teamName, workerName));
   const previous = readRootAgentsBackup(repoRoot, teamName, workerName);
-  const currentContent = existsSync24(agentsPath) ? readFileSync17(agentsPath, "utf-8") : void 0;
+  const currentContent = existsSync25(agentsPath) ? readFileSync17(agentsPath, "utf-8") : void 0;
   if (previous && currentContent !== void 0 && currentContent !== previous.installedContent) {
     const error = new Error(`agents_dirty: preserving modified worktree root AGENTS.md at ${agentsPath}`);
     error.code = "agents_dirty";
@@ -15714,7 +15763,7 @@ function restoreWorktreeRootAgents(teamName, workerName, repoRoot, worktreePath)
   if (!backup) return { restored: false, reason: "no_backup" };
   const resolvedWorktreePath = worktreePath ?? backup.worktreePath;
   validateResolvedPath(resolvedWorktreePath, omcRoot);
-  if (!existsSync24(resolvedWorktreePath)) {
+  if (!existsSync25(resolvedWorktreePath)) {
     try {
       unlinkSync9(backupPath);
     } catch {
@@ -15723,14 +15772,14 @@ function restoreWorktreeRootAgents(teamName, workerName, repoRoot, worktreePath)
   }
   const agentsPath = join28(resolvedWorktreePath, "AGENTS.md");
   validateResolvedPath(agentsPath, resolvedWorktreePath);
-  const currentContent = existsSync24(agentsPath) ? readFileSync17(agentsPath, "utf-8") : void 0;
+  const currentContent = existsSync25(agentsPath) ? readFileSync17(agentsPath, "utf-8") : void 0;
   const isPartialInstallOriginal = backup.hadOriginal && currentContent === (backup.originalContent ?? "");
   if (currentContent !== void 0 && currentContent !== backup.installedContent && !isPartialInstallOriginal) {
     return { restored: false, reason: "agents_dirty" };
   }
   if (backup.hadOriginal) {
     writeFileSync6(agentsPath, backup.originalContent ?? "", "utf-8");
-  } else if (existsSync24(agentsPath)) {
+  } else if (existsSync25(agentsPath)) {
     unlinkSync9(agentsPath);
   }
   try {
@@ -15744,7 +15793,7 @@ function readMetadataResult(repoRoot, teamName) {
   const byWorker = /* @__PURE__ */ new Map();
   const issues = [];
   for (const metaPath of paths) {
-    if (!existsSync24(metaPath)) continue;
+    if (!existsSync25(metaPath)) continue;
     try {
       const entries = JSON.parse(readFileSync17(metaPath, "utf-8"));
       for (const entry of entries) byWorker.set(entry.workerName, entry);
@@ -15762,12 +15811,12 @@ function readMetadata(repoRoot, teamName) {
 }
 function listRootAgentsBackupIssues(repoRoot, teamName, entries) {
   const workersDir = join28(getOmcRoot(repoRoot), "state", "team", sanitizeName(teamName), "workers");
-  if (!existsSync24(workersDir)) return [];
+  if (!existsSync25(workersDir)) return [];
   const knownWorkers = new Set(entries.map((entry) => sanitizeName(entry.workerName)));
   const issues = [];
   for (const workerName of readdirSync10(workersDir)) {
     const backupPath = join28(workersDir, workerName, "worktree-root-agents.json");
-    if (!existsSync24(backupPath)) continue;
+    if (!existsSync25(backupPath)) continue;
     try {
       JSON.parse(readFileSync17(backupPath, "utf-8"));
     } catch (error) {
@@ -15847,7 +15896,7 @@ function ensureWorkerWorktree(teamName, workerName, repoRoot, options = {}) {
     execFileSync5("git", ["worktree", "prune"], { cwd: repoRoot, stdio: "pipe", windowsHide: true });
   } catch {
   }
-  if (existsSync24(wtPath)) {
+  if (existsSync25(wtPath)) {
     assertCompatibleExistingWorktree(repoRoot, wtPath, branch, mode);
     const info2 = {
       path: wtPath,
@@ -15886,7 +15935,7 @@ function ensureWorkerWorktree(teamName, workerName, repoRoot, options = {}) {
 function checkWorkerWorktreeRemovalSafety(teamName, workerName, repoRoot, worktreePath) {
   const wtPath = worktreePath ?? getWorktreePath(repoRoot, teamName, workerName);
   const backup = readRootAgentsBackup(repoRoot, teamName, workerName);
-  if (!existsSync24(wtPath)) return;
+  if (!existsSync25(wtPath)) return;
   validateWorktreeRemovalTarget({
     candidatePath: wtPath,
     expectedRoots: [join28(getOmcRoot(repoRoot), "team", sanitizeName(teamName), "worktrees")],
@@ -15896,7 +15945,7 @@ function checkWorkerWorktreeRemovalSafety(teamName, workerName, repoRoot, worktr
   if (backup) {
     const agentsPath = join28(wtPath, "AGENTS.md");
     validateResolvedPath(agentsPath, wtPath);
-    const currentContent = existsSync24(agentsPath) ? readFileSync17(agentsPath, "utf-8") : void 0;
+    const currentContent = existsSync25(agentsPath) ? readFileSync17(agentsPath, "utf-8") : void 0;
     const isPartialInstallOriginal = backup.hadOriginal && currentContent === (backup.originalContent ?? "");
     if (currentContent !== void 0 && currentContent !== backup.installedContent && !isPartialInstallOriginal) {
       const error = new Error(`agents_dirty: preserving modified worktree root AGENTS.md at ${agentsPath}`);
@@ -15947,7 +15996,7 @@ function removeWorkerWorktree(teamName, workerName, repoRoot) {
       execFileSync5("git", ["branch", "-D", branch], { cwd: repoRoot, stdio: "pipe", windowsHide: true });
     } catch {
     }
-    if (existsSync24(wtPath) && !isRegisteredWorktreePath(repoRoot, wtPath)) {
+    if (existsSync25(wtPath) && !isRegisteredWorktreePath(repoRoot, wtPath)) {
       validateWorktreeRemovalTarget({
         candidatePath: wtPath,
         expectedRoots: [join28(getOmcRoot(repoRoot), "team", sanitizeName(teamName), "worktrees")],
@@ -16639,7 +16688,7 @@ var init_merge_coordinator = __esm({
 
 // src/team/leader-inbox.ts
 import { appendFile as appendFile4, mkdir as mkdir11, writeFile as writeFile8 } from "fs/promises";
-import { existsSync as existsSync25 } from "fs";
+import { existsSync as existsSync26 } from "fs";
 import { dirname as dirname26, join as join30 } from "path";
 function leaderInboxPath(teamName, cwd) {
   const safe = sanitizeName(teamName);
@@ -16649,7 +16698,7 @@ async function ensureLeaderInbox(teamName, cwd) {
   const inboxPath = leaderInboxPath(teamName, cwd);
   validateResolvedPath(inboxPath, teamStateRoot(cwd, sanitizeName(teamName)));
   await mkdir11(dirname26(inboxPath), { recursive: true });
-  if (!existsSync25(inboxPath)) {
+  if (!existsSync26(inboxPath)) {
     await writeFile8(inboxPath, LEADER_INBOX_HEADER, "utf-8");
   }
   return inboxPath;
@@ -16745,7 +16794,7 @@ var init_conflict_mailbox = __esm({
 });
 
 // src/team/worker-commit-cadence.ts
-import { existsSync as existsSync26, watch as fsWatch } from "fs";
+import { existsSync as existsSync27, watch as fsWatch } from "fs";
 import { readFile as readFile13, writeFile as writeFile9, mkdir as mkdir12, unlink as unlink6 } from "fs/promises";
 import { join as join31, dirname as dirname27 } from "path";
 import { exec as exec2 } from "child_process";
@@ -16825,7 +16874,7 @@ async function resumeHookViaSentinel(worktreePath) {
   }
 }
 function isHookPaused(worktreePath) {
-  return existsSync26(join31(worktreePath, SENTINEL_FILENAME));
+  return existsSync27(join31(worktreePath, SENTINEL_FILENAME));
 }
 function startFallbackPoller(worktreePath, workerName, opts) {
   assertSafeWorkerName(workerName);
@@ -16923,7 +16972,7 @@ var init_worker_commit_cadence = __esm({
 
 // src/team/merge-orchestrator.ts
 import { execFileSync as execFileSync7 } from "node:child_process";
-import { existsSync as existsSync27 } from "node:fs";
+import { existsSync as existsSync28 } from "node:fs";
 import { mkdir as mkdir13, appendFile as appendFile5 } from "node:fs/promises";
 import { dirname as dirname28, join as join32 } from "node:path";
 function mergerWorktreePathFor(repoRoot, teamName) {
@@ -17008,7 +17057,7 @@ function gitPath(worktreePath, gitPathName) {
   return join32(worktreePath, ".git", gitPathName);
 }
 function isRebaseInProgress(worktreePath) {
-  return existsSync27(gitPath(worktreePath, "rebase-merge"));
+  return existsSync28(gitPath(worktreePath, "rebase-merge"));
 }
 function isWorktreeRegistered(repoRoot, wtPath) {
   try {
@@ -17029,7 +17078,7 @@ function isWorktreeRegistered(repoRoot, wtPath) {
 }
 function ensureMergerWorktree(repoRoot, mergerPath, leaderBranch) {
   ensureDirWithMode(dirname28(mergerPath));
-  if (existsSync27(mergerPath) && isWorktreeRegistered(repoRoot, mergerPath)) {
+  if (existsSync28(mergerPath) && isWorktreeRegistered(repoRoot, mergerPath)) {
     return;
   }
   execFileSync7("git", ["worktree", "add", "--force", mergerPath, leaderBranch], {
@@ -17077,7 +17126,7 @@ async function startMergeOrchestrator(config) {
   configureHarnessMergeAttributes(config.repoRoot);
   const persistedPath = persistedStatePath(config.repoRoot, config.teamName);
   let persisted = { lastShas: {} };
-  if (existsSync27(persistedPath)) {
+  if (existsSync28(persistedPath)) {
     try {
       const { readFileSync: readFileSync22 } = await import("node:fs");
       persisted = JSON.parse(readFileSync22(persistedPath, "utf-8"));
@@ -17484,7 +17533,7 @@ ${unmerged.map((u) => `- ${u.workerName}: ${u.reason}`).join("\n")}`;
 async function recoverFromRestart(config) {
   const persistedPath = persistedStatePath(config.repoRoot, config.teamName);
   let persistedShasLoaded = 0;
-  if (existsSync27(persistedPath)) {
+  if (existsSync28(persistedPath)) {
     try {
       const { readFileSync: readFileSync22 } = await import("node:fs");
       const persisted = JSON.parse(readFileSync22(persistedPath, "utf-8"));
@@ -17730,7 +17779,7 @@ __export(runtime_v2_exports, {
   writeWatchdogFailedMarker: () => writeWatchdogFailedMarker
 });
 import { join as join34, resolve as resolve12 } from "path";
-import { existsSync as existsSync28 } from "fs";
+import { existsSync as existsSync29 } from "fs";
 import { link as link4, lstat as lstat6, mkdir as mkdir16, open as open5, readdir as readdir5, readFile as readFile16, rm as rm8, unlink as unlink7, writeFile as writeFile11 } from "fs/promises";
 import { performance } from "perf_hooks";
 import { execFileSync as execFileSync8 } from "node:child_process";
@@ -17778,7 +17827,7 @@ async function recoverDeadWorkerV2(teamName, cwd, { workerName, requestId = rand
   try {
     const requestReservationPath = absPath(cwd, TeamPaths.recoveryRequestPending(requestId));
     const existing = readRecoveryRequestReservation(cwd, requestId);
-    if (!existing && existsSync28(requestReservationPath)) {
+    if (!existing && existsSync29(requestReservationPath)) {
       throw new Error("invalid_persisted_state");
     }
     if (existing) {
@@ -20123,7 +20172,7 @@ ${recoveryContract}` : ""}`;
         let providerLive = false;
         try {
           const launchedRecord = JSON.parse(await readFile16(launchedPath, "utf8"));
-          providerLive = Number.isInteger(launchedRecord.provider_pid) && typeof launchedRecord.provider_start_identity === "string" && (launchedRecord.supervisor_completion_path === void 0 || typeof launchedRecord.supervisor_completion_path === "string" && launchedRecord.supervisor_completion_path.trim().length > 0 && !existsSync28(launchedRecord.supervisor_completion_path)) && await isProcessIdentityLive(
+          providerLive = Number.isInteger(launchedRecord.provider_pid) && typeof launchedRecord.provider_start_identity === "string" && (launchedRecord.supervisor_completion_path === void 0 || typeof launchedRecord.supervisor_completion_path === "string" && launchedRecord.supervisor_completion_path.trim().length > 0 && !existsSync29(launchedRecord.supervisor_completion_path)) && await isProcessIdentityLive(
             launchedRecord.provider_pid,
             launchedRecord.provider_start_identity,
             Date.now() + 1e3
@@ -20232,7 +20281,7 @@ async function rollbackUnpersistedNativeWorktreeStartup(teamName, cwd, cause, in
       }
     }
     await rm8(teamRoot, { recursive: true, force: true });
-    if (existsSync28(teamRoot)) {
+    if (existsSync29(teamRoot)) {
       await writeFailureMarker({ rollback_error: "startup_state_removal_unverified" });
       return false;
     }
@@ -22038,7 +22087,7 @@ async function shutdownTeamV2(teamName, cwd, options = {}) {
   };
   if (!config) {
     const cleanupSafety = inspectTeamWorktreeCleanupSafety(sanitized, cwd);
-    if (cleanupSafety.hasEvidence || existsSync28(absPath(cwd, TeamPaths.root(sanitized)))) {
+    if (cleanupSafety.hasEvidence || existsSync29(absPath(cwd, TeamPaths.root(sanitized)))) {
       process.stderr.write("[team/runtime-v2] preserving team state because config is missing and worktree cleanup evidence remains\n");
       return { outcome: "preserved", reason: "config_missing_cleanup_evidence", workers: [] };
     }
@@ -22354,7 +22403,7 @@ async function resumeTeamV2(teamName, cwd) {
 }
 async function findActiveTeamsV2(cwd) {
   const root = join34(getOmcRoot(cwd), "state", "team");
-  if (!existsSync28(root)) return [];
+  if (!existsSync29(root)) return [];
   const entries = await readdir5(root, { withFileTypes: true });
   const active = [];
   for (const e of entries) {
@@ -22487,7 +22536,7 @@ var init_runtime_v2 = __esm({
 import { randomUUID as randomUUID16 } from "crypto";
 import { spawn as spawn2 } from "child_process";
 import {
-  existsSync as existsSync31,
+  existsSync as existsSync32,
   mkdirSync as mkdirSync8,
   readFileSync as readFileSync21,
   renameSync as renameSync5,
@@ -22514,7 +22563,7 @@ init_recovery_request_store();
 init_git_worktree();
 init_swallowed_error();
 init_types();
-import { existsSync as existsSync29, readFileSync as readFileSync19 } from "node:fs";
+import { existsSync as existsSync30, readFileSync as readFileSync19 } from "node:fs";
 import { dirname as dirname29, join as join35, resolve as resolvePath } from "node:path";
 var TEAM_UPDATE_TASK_MUTABLE_FIELDS = /* @__PURE__ */ new Set(["subject", "description", "blocked_by", "requires_code_change", "delegation"]);
 var TEAM_UPDATE_TASK_REQUEST_FIELDS = /* @__PURE__ */ new Set(["team_name", "task_id", "workingDirectory", ...TEAM_UPDATE_TASK_MUTABLE_FIELDS]);
@@ -22671,7 +22720,7 @@ function parseTaskDelegationPlan(value) {
 function teamStateExists(teamName, candidateCwd) {
   if (!TEAM_NAME_SAFE_PATTERN.test(teamName)) return false;
   const teamRoot = join35(getOmcRoot(candidateCwd), "state", "team", teamName);
-  return existsSync29(join35(teamRoot, "config.json")) || existsSync29(join35(teamRoot, "tasks")) || existsSync29(teamRoot);
+  return existsSync30(join35(teamRoot, "config.json")) || existsSync30(join35(teamRoot, "tasks")) || existsSync30(teamRoot);
 }
 function parseTeamWorkerEnv(raw) {
   if (typeof raw !== "string" || raw.trim() === "") return null;
@@ -22733,7 +22782,7 @@ async function executeTeamCleanupViaRuntime(teamName, cwd, options = {}) {
   if (shutdown.outcome !== "cleaned") throw new Error(`team_shutdown_${shutdown.outcome}:${shutdown.reason}`);
 }
 function readTeamStateRootFromFile(path4) {
-  if (!existsSync29(path4)) return null;
+  if (!existsSync30(path4)) return null;
   try {
     const parsed = JSON.parse(readFileSync19(path4, "utf8"));
     return typeof parsed.team_state_root === "string" && parsed.team_state_root.trim() !== "" ? parsed.team_state_root.trim() : null;
@@ -22764,7 +22813,7 @@ function stateRootToWorkingDirectory(stateRoot2) {
 }
 function resolveTeamWorkingDirectoryFromMetadata(teamName, candidateCwd, workerContext) {
   const teamRoot = join35(getOmcRoot(candidateCwd), "state", "team", teamName);
-  if (!existsSync29(teamRoot)) return null;
+  if (!existsSync30(teamRoot)) return null;
   if (workerContext?.teamName === teamName) {
     const workerRoot = readTeamStateRootFromFile(join35(teamRoot, "workers", workerContext.workerName, "identity.json"));
     if (workerRoot) return stateRootToWorkingDirectory(workerRoot);
@@ -23703,7 +23752,7 @@ init_paths();
 
 // src/planning/artifacts.ts
 init_worktree_paths();
-import { readdirSync as readdirSync11, readFileSync as readFileSync20, existsSync as existsSync30 } from "fs";
+import { readdirSync as readdirSync11, readFileSync as readFileSync20, existsSync as existsSync31 } from "fs";
 import { join as join37 } from "path";
 
 // src/planning/artifact-names.ts
@@ -23858,7 +23907,7 @@ function readPlanningArtifacts(cwd) {
   const prdPaths = [];
   const testSpecPaths = [];
   for (const plansDir of getPlansDirCandidates(cwd)) {
-    if (!existsSync30(plansDir)) {
+    if (!existsSync31(plansDir)) {
       continue;
     }
     try {
@@ -24049,7 +24098,7 @@ function resolveRuntimeCliPath2(env = process.env) {
   return join38(moduleDir, "../../bridge/runtime-cli.cjs");
 }
 function ensureJobsDir(jobsDir) {
-  if (!existsSync31(jobsDir)) {
+  if (!existsSync32(jobsDir)) {
     mkdirSync8(jobsDir, { recursive: true });
   }
 }

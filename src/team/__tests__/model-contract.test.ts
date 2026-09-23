@@ -1,5 +1,9 @@
 import { describe, it, expect, vi } from 'vitest';
 import { spawnSync } from 'child_process';
+import { existsSync, realpathSync } from 'fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   getContract,
   buildLaunchArgs,
@@ -19,6 +23,7 @@ import {
   resolveDefaultWorkerModel,
   shouldUseClaudeBareMode,
   _testInternals,
+  resolveValidatedCliInvocation,
   buildValidatedWorkerLaunchDescriptor,
   validateWorkerLaunchDescriptor,
 } from '../model-contract.js';
@@ -29,6 +34,15 @@ vi.mock('child_process', async (importOriginal) => {
   return {
     ...actual,
     spawnSync: vi.fn(actual.spawnSync),
+  };
+});
+
+vi.mock('fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('fs')>();
+  return {
+    ...actual,
+    existsSync: vi.fn(actual.existsSync),
+    realpathSync: vi.fn(actual.realpathSync),
   };
 });
 
@@ -70,28 +84,129 @@ describe('model-contract', () => {
 
     it('resolveCliBinaryPath resolves and caches paths', () => {
       const mockSpawnSync = vi.mocked(spawnSync);
+      mockSpawnSync.mockReset();
+      const restorePlatform = setProcessPlatform('linux');
       mockSpawnSync.mockReturnValue({ status: 0, stdout: '/usr/local/bin/claude\n', stderr: '', pid: 0, output: [], signal: null });
 
       clearResolvedPathCache();
       expect(resolveCliBinaryPath('claude')).toBe('/usr/local/bin/claude');
       expect(resolveCliBinaryPath('claude')).toBe('/usr/local/bin/claude');
       expect(mockSpawnSync).toHaveBeenCalledTimes(1);
+      restorePlatform();
       clearResolvedPathCache();
+      mockSpawnSync.mockReset();
+    });
+
+    it('prefers a PATHEXT executable over an extensionless Windows npm shim', () => {
+      const mockSpawnSync = vi.mocked(spawnSync);
+      const restorePlatform = setProcessPlatform('win32');
+      vi.stubEnv('PATHEXT', '.COM;.EXE;.BAT;.CMD');
+      mockSpawnSync.mockReturnValue({
+        status: 0,
+        stdout: 'C:\\Users\\tester\\AppData\\Roaming\\npm\\codex\r\nC:\\Users\\tester\\AppData\\Roaming\\npm\\codex.cmd\r\n',
+        stderr: '', pid: 0, output: [], signal: null,
+      });
+
+      clearResolvedPathCache();
+      expect(resolveCliBinaryPath('codex')).toBe('C:\\Users\\tester\\AppData\\Roaming\\npm\\codex.cmd');
+
+      restorePlatform();
+      clearResolvedPathCache();
+      vi.unstubAllEnvs();
+      mockSpawnSync.mockReset();
+    });
+
+    it('wraps a Windows batch shim with the validated system cmd.exe', () => {
+      const mockSpawnSync = vi.mocked(spawnSync);
+      vi.mocked(existsSync).mockReturnValueOnce(true);
+      vi.mocked(realpathSync).mockReturnValueOnce('C:\\Windows\\System32\\cmd.exe');
+      const restorePlatform = setProcessPlatform('win32');
+      vi.stubEnv('PATHEXT', '.COM;.EXE;.BAT;.CMD');
+      vi.stubEnv('COMSPEC', 'C:\\attacker\\cmd.exe');
+      mockSpawnSync.mockReturnValue({
+        status: 0,
+        stdout: 'C:\\Tools\\codex\r\nC:\\Tools\\codex.cmd\r\n',
+        stderr: '', pid: 0, output: [], signal: null,
+      });
+
+      clearResolvedPathCache();
+      expect(resolveValidatedCliInvocation('codex', ['exec', '--model', 'safe&literal'], 'codex')).toEqual({
+        command: 'C:\\Windows\\System32\\cmd.exe',
+        args: ['/d', '/v:off', '/s', '/c', '""C:\\Tools\\codex.cmd" "exec" "--model" "safe&literal""'],
+        windowsVerbatimArguments: true,
+      });
+
+      restorePlatform();
+      clearResolvedPathCache();
+      vi.unstubAllEnvs();
+      mockSpawnSync.mockReset();
+    });
+
+    it.runIf(process.platform === 'win32')('runs a batch shim with literal spaces and cmd metacharacters', () => {
+      const directory = mkdtempSync(join(tmpdir(), 'omc-codex-shim-'));
+      const shim = join(directory, 'codex.cmd');
+      const script = 'process.stdout.write(JSON.stringify(process.argv.slice(1)))';
+      writeFileSync(shim, `@echo off\r\n"${process.execPath}" -e "${script}" %*\r\n`);
+      try {
+        const expected = ['exec', '--model', 'space and & literal', 'bang!literal', 'caret^literal',
+          'quote"literal', 'quote" & echo INJECTED & rem "literal'];
+        const invocation = resolveValidatedCliInvocation('codex', expected, shim);
+        const result = spawnSync(invocation.command, invocation.args, {
+          encoding: 'utf8', shell: false, windowsHide: true,
+          windowsVerbatimArguments: invocation.windowsVerbatimArguments,
+        });
+        expect(result.status).toBe(0);
+        expect(JSON.parse(result.stdout)).toEqual(expected);
+      } finally {
+        rmSync(directory, { recursive: true, force: true });
+      }
+    });
+
+    it.runIf(process.platform === 'win32')('rejects percent expansion before a batch shim can run', () => {
+      const directory = mkdtempSync(join(tmpdir(), 'omc-codex-shim-'));
+      const shim = join(directory, 'codex.cmd');
+      writeFileSync(shim, '@echo off\r\nexit /b 0\r\n');
+      try {
+        expect(() => resolveValidatedCliInvocation('codex', ['--model', 'literal%PATH%value'], shim))
+          .toThrow('Unsafe Windows batch argument');
+      } finally {
+        rmSync(directory, { recursive: true, force: true });
+      }
+    });
+
+    it('keeps non-Windows invocations direct and shell-free', () => {
+      const mockSpawnSync = vi.mocked(spawnSync);
+      const restorePlatform = setProcessPlatform('linux');
+      mockSpawnSync.mockReturnValue({
+        status: 0, stdout: '/usr/local/bin/codex\n', stderr: '', pid: 0, output: [], signal: null,
+      });
+      clearResolvedPathCache();
+      expect(resolveValidatedCliInvocation('codex', ['exec'], 'codex')).toEqual({
+        command: '/usr/local/bin/codex', args: ['exec'],
+      });
+      restorePlatform();
+      clearResolvedPathCache();
+      mockSpawnSync.mockReset();
     });
 
     it('resolveCliBinaryPath rejects unsafe names and paths', () => {
       const mockSpawnSync = vi.mocked(spawnSync);
+      mockSpawnSync.mockReset();
+      const restorePlatform = setProcessPlatform('linux');
       expect(() => resolveCliBinaryPath('../evil')).toThrow('Invalid CLI binary name');
 
       mockSpawnSync.mockReturnValue({ status: 0, stdout: '/tmp/evil/claude\n', stderr: '', pid: 0, output: [], signal: null });
       clearResolvedPathCache();
       expect(() => resolveCliBinaryPath('claude')).toThrow('untrusted location');
       clearResolvedPathCache();
-      mockSpawnSync.mockRestore();
+      restorePlatform();
+      mockSpawnSync.mockReset();
     });
 
     it('validateCliBinaryPath returns compatibility result object', () => {
       const mockSpawnSync = vi.mocked(spawnSync);
+      mockSpawnSync.mockReset();
+      const restorePlatform = setProcessPlatform('linux');
       mockSpawnSync.mockReturnValue({ status: 0, stdout: '/usr/local/bin/claude\n', stderr: '', pid: 0, output: [], signal: null });
 
       clearResolvedPathCache();
@@ -107,8 +222,9 @@ describe('model-contract', () => {
       expect(invalid.valid).toBe(false);
       expect(invalid.binary).toBe('missing-cli');
       expect(invalid.reason).toContain('not found in PATH');
+      restorePlatform();
       clearResolvedPathCache();
-      mockSpawnSync.mockRestore();
+      mockSpawnSync.mockReset();
     });
 
     it('exposes compatibility test internals for path policy', () => {
@@ -528,6 +644,8 @@ describe('model-contract', () => {
   describe('buildWorkerArgv', () => {
     it('builds codex interactive worker argv without the exec subcommand', () => {
       const mockSpawnSync = vi.mocked(spawnSync);
+      mockSpawnSync.mockReset();
+      const restorePlatform = setProcessPlatform('linux');
       mockSpawnSync.mockReturnValueOnce({ status: 1, stdout: '', stderr: '', pid: 0, output: [], signal: null } as any);
 
       const argv = buildWorkerArgv('codex', { teamName: 'my-team', workerName: 'worker-1', cwd: '/tmp' });
@@ -537,11 +655,14 @@ describe('model-contract', () => {
       ]);
       expect(argv).not.toContain('exec');
       expect(mockSpawnSync).toHaveBeenCalledWith('which', ['codex'], { timeout: 5000, encoding: 'utf8' });
-      mockSpawnSync.mockRestore();
+      restorePlatform();
+      mockSpawnSync.mockReset();
     });
 
     it('builds claude interactive worker argv without the exec subcommand', () => {
       const mockSpawnSync = vi.mocked(spawnSync);
+      mockSpawnSync.mockReset();
+      const restorePlatform = setProcessPlatform('linux');
       mockSpawnSync.mockReturnValueOnce({ status: 1, stdout: '', stderr: '', pid: 0, output: [], signal: null } as any);
 
       let argv: string[] = [];
@@ -555,7 +676,8 @@ describe('model-contract', () => {
       expect(countArg(argv, '--bare')).toBe(1);
       expect(argv).not.toContain('exec');
       expect(mockSpawnSync).toHaveBeenCalledWith('which', ['claude'], { timeout: 5000, encoding: 'utf8' });
-      mockSpawnSync.mockRestore();
+      restorePlatform();
+      mockSpawnSync.mockReset();
     });
 
     it('prefers resolved absolute binary path when available', () => {
@@ -583,23 +705,36 @@ describe('model-contract', () => {
   describe('isCliAvailable', () => {
     it('checks version without shell:true for standard binaries', () => {
       const mockSpawnSync = vi.mocked(spawnSync);
+      mockSpawnSync.mockReset();
+      const restorePlatform = setProcessPlatform('linux');
       clearResolvedPathCache();
       mockSpawnSync
-        .mockReturnValueOnce({ status: 1, stdout: '', stderr: '', pid: 0, output: [], signal: null } as any)
+        .mockReturnValueOnce({ status: 0, stdout: '/usr/local/bin/codex\n', stderr: '', pid: 0, output: [], signal: null } as any)
         .mockReturnValueOnce({ status: 0, stdout: '', stderr: '', pid: 0, output: [], signal: null } as any);
 
       isCliAvailable('codex');
 
-      expect(mockSpawnSync).toHaveBeenNthCalledWith(1, 'which', ['codex'], { timeout: 5000, encoding: 'utf8' });
-      expect(mockSpawnSync).toHaveBeenNthCalledWith(2, 'codex', ['--version'], { timeout: 5000, shell: false });
+      expect(mockSpawnSync).toHaveBeenNthCalledWith(1, 'which', ['codex'], {
+        timeout: 5000,
+        encoding: 'utf8',
+      });
+      expect(mockSpawnSync).toHaveBeenNthCalledWith(2, '/usr/local/bin/codex', ['--version'], {
+        timeout: 5000,
+        shell: false,
+        windowsHide: true,
+      });
+      restorePlatform();
       clearResolvedPathCache();
-      mockSpawnSync.mockRestore();
+      mockSpawnSync.mockReset();
     });
 
-    it('uses COMSPEC for .cmd binaries on win32', () => {
+    it('uses the validated system cmd.exe for .cmd binaries on win32', () => {
       const mockSpawnSync = vi.mocked(spawnSync);
+      mockSpawnSync.mockReset();
+      vi.mocked(existsSync).mockReturnValueOnce(true);
+      vi.mocked(realpathSync).mockReturnValueOnce('C:\\Windows\\System32\\cmd.exe');
       const restorePlatform = setProcessPlatform('win32');
-      vi.stubEnv('COMSPEC', 'C:\\Windows\\System32\\cmd.exe');
+      vi.stubEnv('COMSPEC', 'C:\\attacker\\cmd.exe');
       clearResolvedPathCache();
 
       mockSpawnSync
@@ -608,35 +743,61 @@ describe('model-contract', () => {
 
       isCliAvailable('codex');
 
-      expect(mockSpawnSync).toHaveBeenNthCalledWith(1, 'where', ['codex'], { timeout: 5000, encoding: 'utf8' });
+      expect(mockSpawnSync).toHaveBeenNthCalledWith(1, 'where', ['codex'], {
+        timeout: 5000,
+      });
       expect(mockSpawnSync).toHaveBeenNthCalledWith(
         2,
         'C:\\Windows\\System32\\cmd.exe',
-        ['/d', '/s', '/c', '"C:\\Tools\\codex.cmd" --version'],
-        { timeout: 5000 }
+        ['/d', '/v:off', '/s', '/c', '""C:\\Tools\\codex.cmd" "--version""'],
+        { timeout: 5000, shell: false, windowsHide: true, windowsVerbatimArguments: true }
       );
       restorePlatform();
       clearResolvedPathCache();
-      mockSpawnSync.mockRestore();
+      mockSpawnSync.mockReset();
       vi.unstubAllEnvs();
     });
 
-    it('uses shell:true for unresolved binaries on win32', () => {
+    it('returns unavailable without shell mode for unresolved binaries on win32', () => {
       const mockSpawnSync = vi.mocked(spawnSync);
+      mockSpawnSync.mockReset();
       const restorePlatform = setProcessPlatform('win32');
       clearResolvedPathCache();
 
       mockSpawnSync
+        .mockReturnValueOnce({ status: 1, stdout: '', stderr: '', pid: 0, output: [], signal: null } as any);
+
+      expect(isCliAvailable('gemini')).toBe(false);
+
+      expect(mockSpawnSync).toHaveBeenCalledOnce();
+      expect(mockSpawnSync).toHaveBeenCalledWith('where', ['gemini'], {
+        timeout: 5000,
+      });
+      restorePlatform();
+      clearResolvedPathCache();
+      mockSpawnSync.mockReset();
+    });
+
+    it('falls back to a bare shell-free command on POSIX when which fails', () => {
+      const mockSpawnSync = vi.mocked(spawnSync);
+      mockSpawnSync.mockReset();
+      const restorePlatform = setProcessPlatform('linux');
+      clearResolvedPathCache();
+      mockSpawnSync
         .mockReturnValueOnce({ status: 1, stdout: '', stderr: '', pid: 0, output: [], signal: null } as any)
         .mockReturnValueOnce({ status: 0, stdout: '', stderr: '', pid: 0, output: [], signal: null } as any);
 
-      isCliAvailable('gemini');
+      expect(isCliAvailable('codex')).toBe(true);
+      expect(mockSpawnSync).toHaveBeenNthCalledWith(1, 'which', ['codex'], { timeout: 5000, encoding: 'utf8' });
+      expect(mockSpawnSync).toHaveBeenNthCalledWith(2, 'codex', ['--version'], {
+        timeout: 5000,
+        shell: false,
+        windowsHide: true,
+      });
 
-      expect(mockSpawnSync).toHaveBeenNthCalledWith(1, 'where', ['gemini'], { timeout: 5000, encoding: 'utf8' });
-      expect(mockSpawnSync).toHaveBeenNthCalledWith(2, 'gemini', ['--version'], { timeout: 5000, shell: true });
       restorePlatform();
       clearResolvedPathCache();
-      mockSpawnSync.mockRestore();
+      mockSpawnSync.mockReset();
     });
   });
 
@@ -674,8 +835,10 @@ describe('model-contract', () => {
     });
 
     it('getPromptModeArgs returns flag + instruction for antigravity', () => {
+      const restorePlatform = setProcessPlatform('linux');
       const args = getPromptModeArgs('antigravity', 'Read inbox');
       expect(args).toEqual(['-p', 'Read inbox']);
+      restorePlatform();
     });
 
     it('getPromptModeArgs returns flag + instruction for grok', () => {

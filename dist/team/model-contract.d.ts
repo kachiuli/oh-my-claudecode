@@ -37,6 +37,11 @@ export interface CliBinaryValidation {
     resolvedPath?: string;
     reason?: string;
 }
+export interface CliInvocation {
+    command: string;
+    args: string[];
+    windowsVerbatimArguments?: boolean;
+}
 declare function getTrustedPrefixes(): string[];
 declare function isTrustedPrefix(resolvedPath: string): boolean;
 /** @deprecated Backward-compat shim; non-interactive shells should generally skip RC files. */
@@ -61,9 +66,12 @@ export declare const _testInternals: {
  */
 export declare function shouldUseClaudeBareMode(env?: NodeJS.ProcessEnv): boolean;
 export declare function getContract(agentType: CliAgentType): CliAgentContract;
+export declare function validateCliCommandRef(binary: string): void;
 export declare function isCliAvailable(agentType: CliAgentType): boolean;
 export declare function validateCliAvailable(agentType: CliAgentType): void;
 export declare function resolveValidatedBinaryPath(agentType: CliAgentType): string;
+/** Resolve a CLI command and adapt Windows batch shims to an explicit COMSPEC invocation. */
+export declare function resolveValidatedCliInvocation(agentType: CliAgentType, args: string[], command?: string): CliInvocation;
 export declare function buildLaunchArgs(agentType: CliAgentType, config: WorkerLaunchConfig): string[];
 export declare function buildWorkerArgv(agentType: CliAgentType, config: WorkerLaunchConfig): string[];
 export declare function validateWorkerLaunchDescriptor(value: unknown): WorkerLaunchDescriptor;

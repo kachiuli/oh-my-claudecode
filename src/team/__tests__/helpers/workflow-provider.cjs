@@ -50,6 +50,10 @@ function event(event) {
     streamEvent(role === 'glm' ? { type: 'system', subtype: 'init', session_id: sessionId }
       : { type: 'thread.started', thread_id: '8ce7a8a3-f8f4-4132-b701-19d1ef10271a' });
   }
+  if (behavior.thinkingTokenEvents) {
+    const progress = JSON.stringify({ type: 'system', subtype: 'thinking_tokens', estimated_tokens_delta: 1 }) + '\n';
+    process.stdout.write(progress.repeat(behavior.thinkingTokenEvents));
+  }
   // Stop after the CLI has established a session, before it touches the worktree.
   if (behavior.pauseBeforeWork) await new Promise(resolve => setTimeout(resolve, 30000));
   if (behavior.beforeWorkFailure) {
@@ -117,7 +121,7 @@ function event(event) {
     return;
   }
   if (behavior.stderrBytes) process.stderr.write('WORKER_PRIVATE_TRANSCRIPT'.repeat(Math.ceil(behavior.stderrBytes / 25)));
-  if (behavior.stdoutBytes) process.stdout.write('WORKER_PRIVATE_TRANSCRIPT'.repeat(Math.ceil(behavior.stdoutBytes / 25)));
+  if (behavior.stdoutBytes) process.stdout.write('WORKER_PRIVATE_TRANSCRIPT'.repeat(Math.ceil(behavior.stdoutBytes / 25)) + '\n');
   if (behavior.fail) {
     emitUsage(true);
     event('end');
@@ -158,8 +162,21 @@ function event(event) {
     fs.mkdirSync(path.dirname(local), { recursive: true });
     fs.writeFileSync(local, handoffBytes);
   } else fs.writeFileSync(request.resultFile, handoffBytes);
-  emitUsage();
+  if (behavior.afterPublicationFailure === 'timeout') await new Promise(resolve => setTimeout(resolve, 30000));
+  if (behavior.afterPublicationFailure === 'provider') emitUsage(true);
+  else if (!behavior.omitTerminal) emitUsage();
+  if (behavior.holdOutputOpen) {
+    const { spawn } = require('node:child_process');
+    const deferredPath = path.join(process.cwd(), 'deferred-descendant.txt');
+    const deferred = behavior.deferredMutation
+      ? 'setTimeout(() => require("node:fs").writeFileSync(process.argv[1], "late mutation\\n"), 2500); setTimeout(() => {}, 3000)'
+      : 'setTimeout(() => {}, 3000)';
+    spawn(process.execPath, ['-e', deferred, deferredPath], {
+      stdio: ['ignore', 'inherit', 'inherit'], detached: true, windowsHide: true, cwd: require('node:os').tmpdir(),
+    }).unref();
+  }
   event('end');
+  if (behavior.afterPublicationFailure === 'exit') process.exitCode = 17;
 })().catch(error => {
   process.stderr.write(String(error));
   process.exitCode = 1;

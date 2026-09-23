@@ -16,6 +16,7 @@ import {
 } from 'child_process';
 import { basename, isAbsolute, win32 as win32Path } from 'path';
 import { promisify } from 'util';
+import { resolveWindowsBatchInvocation, selectWindowsExecutableCandidate } from '../lib/windows-command.js';
 
 // ── tmux environment & execution wrappers ────────────────────────────────────
 
@@ -42,6 +43,7 @@ function resolveEnv(opts?: TmuxExecOptions): NodeJS.ProcessEnv {
 interface TmuxCommandInvocation {
   command: string;
   args: string[];
+  windowsVerbatimArguments?: boolean;
 }
 
 function isUnixLikeOnWindows(): boolean {
@@ -79,12 +81,7 @@ function assertSafeCmdValue(value: string): void {
 function resolveTmuxInvocation(args: string[]): TmuxCommandInvocation {
   const resolvedBinary = resolveTmuxBinaryPath();
   if (process.platform === 'win32' && /\.(cmd|bat)$/i.test(resolvedBinary)) {
-    const comspec = process.env.COMSPEC || 'cmd.exe';
-    const commandLine = [quoteForCmd(resolvedBinary), ...args.map(quoteForCmd)].join(' ');
-    return {
-      command: comspec,
-      args: ['/d', '/s', '/c', commandLine],
-    };
+    return resolveWindowsBatchInvocation(resolvedBinary, args);
   }
 
   return {
@@ -99,7 +96,8 @@ export function tmuxExec(
 ): string {
   const { stripTmux: _, ...execOpts } = opts ?? {};
   const invocation = resolveTmuxInvocation(args);
-  return execFileSync(invocation.command, invocation.args, { encoding: 'utf-8', ...execOpts, env: resolveEnv(opts) });
+  return execFileSync(invocation.command, invocation.args, { encoding: 'utf-8', ...execOpts, env: resolveEnv(opts),
+    ...(invocation.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}) });
 }
 
 export async function tmuxExecAsync(
@@ -111,6 +109,7 @@ export async function tmuxExecAsync(
   return promisify(execFile)(invocation.command, invocation.args, {
     encoding: 'utf-8', env: resolveEnv(opts),
     ...(timeout !== undefined ? { timeout } : {}), ...rest,
+    ...(invocation.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
   });
 }
 
@@ -139,7 +138,8 @@ export function tmuxSpawn(
 ): SpawnSyncReturns<string> {
   const { stripTmux: _, ...spawnOpts } = opts ?? {};
   const invocation = resolveTmuxInvocation(args);
-  return spawnSync(invocation.command, invocation.args, { encoding: 'utf-8', ...spawnOpts, env: resolveEnv(opts) });
+  return spawnSync(invocation.command, invocation.args, { encoding: 'utf-8', ...spawnOpts, env: resolveEnv(opts),
+    ...(invocation.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}) });
 }
 
 export async function tmuxCmdAsync(
@@ -177,7 +177,7 @@ function resolveTmuxBinaryPath(): string {
       ?.split(/\r?\n/)
       .map((line) => line.trim())
       .filter(Boolean) ?? [];
-    const first = candidates[0];
+    const first = selectWindowsExecutableCandidate(candidates);
     if (first && (isAbsolute(first) || win32Path.isAbsolute(first))) {
       return first;
     }
@@ -195,13 +195,15 @@ export function isTmuxAvailable(): boolean {
   try {
     const resolvedBinary = resolveTmuxBinaryPath();
     if (process.platform === 'win32' && /\.(cmd|bat)$/i.test(resolvedBinary)) {
-      const comspec = process.env.COMSPEC || 'cmd.exe';
-      const result = spawnSync(comspec, ['/d', '/s', '/c', `"${resolvedBinary}" -V`], { timeout: 5000 });
+      const invocation = resolveWindowsBatchInvocation(resolvedBinary, ['-V']);
+      const result = spawnSync(invocation.command, invocation.args, {
+        timeout: 5000, shell: false, windowsHide: true, windowsVerbatimArguments: true,
+      });
       return result.status === 0;
     }
 
     if (process.platform === 'win32') {
-      const result = spawnSync(resolvedBinary, ['-V'], { timeout: 5000, shell: true });
+      const result = spawnSync(resolvedBinary, ['-V'], { timeout: 5000, shell: false, windowsHide: true });
       return result.status === 0;
     }
 

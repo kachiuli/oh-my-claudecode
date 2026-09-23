@@ -65,6 +65,18 @@ describe('Claude/GLM/Codex workflow with real local fake providers', () => {
     await acceptWorkflowTask(fixture.cwd, name, 'a');
   }
 
+  it('captures the legacy Codex reviewer command from the environment with explicit option precedence', async () => {
+    vi.stubEnv('OMC_CODEX_COMMAND', process.execPath);
+    const fromEnvironment = await initWorkflow(fixture.cwd, plan(), { ...options, codexCommand: undefined });
+    expect(fromEnvironment.options.codexCommand).toBe(process.execPath);
+
+    fixture.dispose();
+    fixture = createWorkflowFixture();
+    vi.stubEnv('OMC_WORKFLOW_TEST_CONFIG', fixture.configPath);
+    const explicit = await initWorkflow(fixture.cwd, plan(), { ...options, codexCommand: provider });
+    expect(explicit.options.codexCommand).toBe(provider);
+  });
+
   describe('attempt orphaned by a dead controller', () => {
     function exitedPid(): number {
       const child = spawnSync(process.execPath, ['-e', 'process.exit(0)'], { windowsHide: true });
@@ -283,6 +295,23 @@ describe('Claude/GLM/Codex workflow with real local fake providers', () => {
     expect((await readWorkflow(fixture.cwd, name)).tasks[1]!.status).toBe('completed');
   });
 
+  it('integrates a shared registry through one dependent task after parallel packets', async () => {
+    fixture.configure({ barrierCount: 2, tasks: { registry: { requiresFiles: ['feature/a.txt', 'feature/b.txt'] } } });
+    await initWorkflow(fixture.cwd, plan([task('a'), task('b'), task('registry', {
+      dependencies: ['a', 'b'], writeScope: ['feature/registry.txt'],
+    })]), { ...options, workers: 2 });
+    await runWorkflow(fixture.cwd, name);
+    expect(peakConcurrency(fixture.events())).toBe(2);
+    expect(fixture.events().filter(event => event.event === 'start').map(event => event.taskId).sort()).toEqual(['a', 'b']);
+    await acceptWorkflowTask(fixture.cwd, name, 'a');
+    await acceptWorkflowTask(fixture.cwd, name, 'b');
+    await runWorkflow(fixture.cwd, name);
+    expect((await readWorkflow(fixture.cwd, name)).tasks[2]).toMatchObject({ status: 'completed' });
+    await acceptWorkflowTask(fixture.cwd, name, 'registry');
+    const verified = await verifyWorkflow(fixture.cwd, name);
+    expect(verified.verification?.passed).toBe(true);
+    expect(readFileSync(join(fixture.cwd, 'feature/registry.txt'), 'utf8')).toContain('registry');
+  });
   it('bounds repeated worker failures and keeps huge stderr in artifacts', async () => {
     fixture.configure({ tasks: { a: { fail: true, stderrBytes: 500000 } } });
     await initWorkflow(fixture.cwd, plan(), options);
@@ -488,11 +517,18 @@ describe('Claude/GLM/Codex workflow with real local fake providers', () => {
     expect(readFileSync(replayMarker, 'utf8')).toBe('replayed');
     const prompt = JSON.parse(fixture.events().find(event => event.event === 'start')!.prompt);
     expect(prompt.task).toEqual(completed.task);
+    expect(prompt.instructions).toContain("publish exactly one outcome: failed handoff");
     expect(prompt.publication).toMatchObject({
       canonicalTask: { source: 'dispatch.task', taskId: 'a' },
       designatedResult: { path: resultFile, authorization: 'create-this-file-only', overwrite: false, stdoutIsHandoff: false },
     });
-    expect(prompt.publication.publishCommand).toContain('omc team workflow publish-result');
+    expect(prompt.publication.publishInvocation).toMatchObject({
+      command: 'omc',
+      args: expect.arrayContaining([
+        'team', 'workflow', 'publish-result', '--result-file', resultFile, '--task-id', 'a',
+      ]),
+    });
+    expect(prompt.publication.publishCommand).toBeNull();
   });
 
   it('rejects a designated handoff whose task identity does not match the canonical task', async () => {

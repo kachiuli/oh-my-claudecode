@@ -1,17 +1,17 @@
 // Re-exports from model-contract.ts for backward compatibility
 // and additional CLI detection utilities
 export { isCliAvailable, validateCliAvailable, getContract } from './model-contract.js';
-import { existsSync } from 'fs';
+export { validatedComspec } from '../lib/windows-command.js';
 import path from 'path';
 import { spawnSync } from 'child_process';
 import { resolveGlmExecutable } from './glm-config.js';
+import { selectWindowsExecutableCandidate, validatedComspec } from '../lib/windows-command.js';
 const RESOLVE_TIMEOUT_MS = 5000;
 const VERSION_TIMEOUT_MS = 3000;
 const SAFE_BINARY_NAME = /^[A-Za-z0-9._-]+$/;
 const SAFE_BATCH_PATH = /^[A-Za-z]:\\(?:[A-Za-z0-9 ._-]+\\)*[A-Za-z0-9 ._-]+\.(?:cmd|bat)$/i;
 const VALID_BATCH_EXTENSIONS = new Set(['.cmd', '.bat']);
 const ADMITTED_BATCH_START_ERRORS = new Set(['ENOENT', 'UNKNOWN', 'EINVAL']);
-const DEFAULT_COMSPEC = 'C:\\Windows\\System32\\cmd.exe';
 const INVALID_BINARY_ERROR = 'invalid CLI name';
 const RESOLVER_ERROR = 'CLI resolver failed';
 const VERSION_ERROR = 'version probe failed';
@@ -65,13 +65,10 @@ function resolveCliPath(binary, model) {
     // A finder error, timeout, signal, or nonzero exit is a resolution failure.
     if (result.error || result.signal || result.status !== 0)
         return undefined;
-    const stdout = asText(result.stdout);
-    for (const line of stdout.split(/\r\n|\n|\r/)) {
-        const candidate = line.trim();
-        if (candidate && model.pathFlavor.isAbsolute(candidate))
-            return candidate;
-    }
-    return undefined;
+    const candidates = asText(result.stdout).split(/\r\n|\n|\r/)
+        .map(line => line.trim())
+        .filter(candidate => candidate && model.pathFlavor.isAbsolute(candidate));
+    return model.isWindows ? selectWindowsExecutableCandidate(candidates) : candidates[0];
 }
 function directVersionOptions() {
     return {
@@ -90,26 +87,6 @@ function isBatchPath(resolvedPath, model) {
         return false;
     const extension = model.pathFlavor.extname(resolvedPath).toLowerCase();
     return VALID_BATCH_EXTENSIONS.has(extension);
-}
-function isValidatedComspec(candidate) {
-    if (!candidate || /[\0\r\n]/.test(candidate) || /[\\/]$/.test(candidate))
-        return false;
-    if (!path.win32.isAbsolute(candidate))
-        return false;
-    return path.win32.basename(candidate).toLowerCase() === 'cmd.exe';
-}
-function validatedComspec() {
-    const configured = process.env.ComSpec ?? process.env.COMSPEC;
-    if (isValidatedComspec(configured))
-        return configured;
-    try {
-        if (existsSync(DEFAULT_COMSPEC) && isValidatedComspec(DEFAULT_COMSPEC))
-            return DEFAULT_COMSPEC;
-    }
-    catch {
-        // An unavailable filesystem probe only disables optional enrichment.
-    }
-    return undefined;
 }
 function canUseBatchFallback(resolvedPath, directResult, model) {
     if (!model.isWindows || !isBatchPath(resolvedPath, model))
@@ -132,7 +109,6 @@ function runBatchVersion(resolvedPath) {
             shell: false,
             windowsHide: true,
             windowsVerbatimArguments: true,
-            env: process.env,
         });
     }
     catch {

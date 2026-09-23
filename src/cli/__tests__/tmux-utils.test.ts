@@ -8,7 +8,7 @@
  * - createHudWatchPane login shell wrapping
  */
 
-import { describe, expect, it, vi, afterEach } from 'vitest';
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { exec, execFile, execFileSync, spawnSync } from 'child_process';
 
 vi.mock('child_process', async (importOriginal) => {
@@ -22,11 +22,23 @@ vi.mock('child_process', async (importOriginal) => {
   };
 });
 
+vi.mock('../../lib/windows-command.js', () => ({
+  validatedComspec: vi.fn(() => 'C:\\Windows\\System32\\cmd.exe'),
+  resolveWindowsBatchInvocation: vi.fn((command: string, args: string[]) => ({
+    command: 'C:\\Windows\\System32\\cmd.exe',
+    args: ['/d', '/v:off', '/s', '/c', `"${[command, ...args].map(value => `"${value.replace(/"/g, '""')}"`).join(' ')}"`],
+    windowsVerbatimArguments: true,
+  })),
+  selectWindowsExecutableCandidate: vi.fn((candidates: string[]) =>
+    candidates.find(candidate => /\.(?:com|exe|bat|cmd)$/i.test(candidate)) ?? candidates[0]),
+}));
+
 import {
   buildTmuxShellCommand,
   buildTmuxShellCommandWithEnv,
   createHudWatchPane,
   isClaudeAvailable,
+  isTmuxAvailable,
   isNativeWindowsShell,
   killTmuxPane,
   listHudWatchPaneIdsInCurrentWindow,
@@ -63,6 +75,10 @@ function mockExecAsync(stdout = '', stderr = ''): void {
 }
 const mockedSpawnSync = vi.mocked(spawnSync);
 const baselinePlatform = process.platform;
+
+beforeEach(() => {
+  vi.clearAllMocks();
+});
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -157,10 +173,10 @@ describe('resolveLaunchPolicy', () => {
     )).toBe('inside-tmux');
   });
 
-  it('detects tmux.cmd via COMSPEC on win32', () => {
+  it('detects tmux.cmd through the validated system command processor on win32', () => {
     const originalPlatform = process.platform;
     Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
-    vi.stubEnv('COMSPEC', 'C:\\Windows\\System32\\cmd.exe');
+    vi.stubEnv('COMSPEC', 'C:\\attacker\\cmd.exe');
     mockedSpawnSync
       .mockReturnValueOnce({
         status: 0,
@@ -184,8 +200,8 @@ describe('resolveLaunchPolicy', () => {
     expect(mockedSpawnSync).toHaveBeenNthCalledWith(
       2,
       'C:\\Windows\\System32\\cmd.exe',
-      ['/d', '/s', '/c', '"C:\\Program Files\\psmux\\tmux.cmd" -V'],
-      { timeout: 5000 }
+      ['/d', '/v:off', '/s', '/c', '""C:\\Program Files\\psmux\\tmux.cmd" "-V""'],
+      { timeout: 5000, shell: false, windowsHide: true, windowsVerbatimArguments: true }
     );
 
     Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true });
@@ -205,6 +221,41 @@ describe('isClaudeAvailable', () => {
     });
 
     Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true });
+  });
+});
+
+describe('isTmuxAvailable', () => {
+  it('does not use shell mode when a Windows tmux lookup is unresolved', () => {
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+    mockedSpawnSync
+      .mockReturnValueOnce({ status: 1 } as ReturnType<typeof spawnSync>)
+      .mockReturnValueOnce({ status: 1 } as ReturnType<typeof spawnSync>);
+
+    expect(isTmuxAvailable()).toBe(false);
+    expect(mockedSpawnSync).toHaveBeenNthCalledWith(2, 'tmux', ['-V'], {
+      timeout: 5000,
+      shell: false,
+      windowsHide: true,
+    });
+  });
+
+  it('uses a legitimate psmux .cmd shim when where lists an extensionless shim first', () => {
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+    vi.stubEnv('PATHEXT', '.COM;.EXE;.BAT;.CMD');
+    mockedSpawnSync
+      .mockReturnValueOnce({
+        status: 0,
+        stdout: 'C:\\Program Files\\psmux\\tmux\r\nC:\\Program Files\\psmux\\tmux.cmd\r\n',
+      } as ReturnType<typeof spawnSync>)
+      .mockReturnValueOnce({ status: 0 } as ReturnType<typeof spawnSync>);
+
+    expect(isTmuxAvailable()).toBe(true);
+    expect(mockedSpawnSync).toHaveBeenNthCalledWith(
+      2,
+      'C:\\Windows\\System32\\cmd.exe',
+      ['/d', '/v:off', '/s', '/c', '""C:\\Program Files\\psmux\\tmux.cmd" "-V""'],
+      { timeout: 5000, shell: false, windowsHide: true, windowsVerbatimArguments: true },
+    );
   });
 });
 
@@ -281,8 +332,8 @@ describe('tmux command execution parity on Windows', () => {
 
     expect(mockedExecFileSync).toHaveBeenLastCalledWith(
       'C:\\Windows\\System32\\cmd.exe',
-      ['/d', '/s', '/c', '"C:\\Program Files\\psmux\\tmux.cmd" list-sessions'],
-      expect.objectContaining({ encoding: 'utf-8' }),
+      ['/d', '/v:off', '/s', '/c', '""C:\\Program Files\\psmux\\tmux.cmd" "list-sessions""'],
+      expect.objectContaining({ encoding: 'utf-8', windowsVerbatimArguments: true }),
     );
 
     Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true });
@@ -316,8 +367,8 @@ describe('tmux command execution parity on Windows', () => {
 
     expect(mockedSpawnSync).toHaveBeenLastCalledWith(
       'C:\\Windows\\System32\\cmd.exe',
-      ['/d', '/s', '/c', '"C:\\Program Files\\psmux\\tmux.cmd" list-panes'],
-      expect.objectContaining({ encoding: 'utf-8' }),
+      ['/d', '/v:off', '/s', '/c', '""C:\\Program Files\\psmux\\tmux.cmd" "list-panes""'],
+      expect.objectContaining({ encoding: 'utf-8', windowsVerbatimArguments: true }),
     );
 
     Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true });
@@ -344,8 +395,8 @@ describe('tmux command execution parity on Windows', () => {
 
     expect(mockedExecFileSync).toHaveBeenLastCalledWith(
       'C:\\Windows\\System32\\cmd.exe',
-      ['/d', '/s', '/c', '"C:\\Program Files\\psmux\\tmux.cmd" send-keys "foo(bar)"'],
-      expect.objectContaining({ encoding: 'utf-8' }),
+      ['/d', '/v:off', '/s', '/c', '""C:\\Program Files\\psmux\\tmux.cmd" "send-keys" "foo(bar)""'],
+      expect.objectContaining({ encoding: 'utf-8', windowsVerbatimArguments: true }),
     );
 
     Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true });
@@ -371,8 +422,8 @@ describe('tmux command execution parity on Windows', () => {
     expect(mockedExec).not.toHaveBeenCalled();
     expect(mockedExecFile).toHaveBeenLastCalledWith(
       'C:\\Windows\\System32\\cmd.exe',
-      ['/d', '/s', '/c', '"C:\\Program Files\\psmux\\tmux.cmd" display-message -p #{window_width}'],
-      expect.objectContaining({ encoding: 'utf-8' }),
+      ['/d', '/v:off', '/s', '/c', '""C:\\Program Files\\psmux\\tmux.cmd" "display-message" "-p" "#{window_width}""'],
+      expect.objectContaining({ encoding: 'utf-8', windowsVerbatimArguments: true }),
       expect.any(Function),
     );
   });

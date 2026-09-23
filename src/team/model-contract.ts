@@ -1,5 +1,5 @@
 import { spawnSync } from 'child_process';
-import { isAbsolute, normalize, sep, win32 as win32Path } from 'path';
+import { isAbsolute, normalize, sep, posix as posixPath, win32 as win32Path } from 'path';
 import { validateTeamName } from './team-name.js';
 import { normalizeToCcAlias } from '../features/delegation-enforcer.js';
 import { isBedrock, isVertexAI, isProviderSpecificModelId } from '../config/models.js';
@@ -8,6 +8,7 @@ import type { WorkerLaunchDescriptor } from './types.js';
 import type { ExternalModelsDefaults } from '../shared/types.js';
 import { getGlmConfig, resolveGlmExecutable } from './glm-config.js';
 import { loadConfig } from '../config/loader.js';
+import { resolveWindowsBatchInvocation, selectWindowsExecutableCandidate } from '../lib/windows-command.js';
 
 export type CliAgentType = 'claude' | 'codex' | 'gemini' | 'cursor' | 'grok' | 'antigravity' | 'glm';
 
@@ -48,6 +49,12 @@ export interface CliBinaryValidation {
   binary: string;
   resolvedPath?: string;
   reason?: string;
+}
+
+export interface CliInvocation {
+  command: string;
+  args: string[];
+  windowsVerbatimArguments?: boolean;
 }
 
 const resolvedPathCache = new Map<string, string>();
@@ -104,6 +111,16 @@ function assertBinaryName(binary: string): void {
   }
 }
 
+function resolvedBinaryCandidate(stdout: string): string {
+  const candidates = stdout.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+  if (process.platform !== 'win32') return candidates[0] ?? '';
+  return selectWindowsExecutableCandidate(candidates) ?? '';
+}
+
+function platformPath(): typeof posixPath {
+  return process.platform === 'win32' ? win32Path : posixPath;
+}
+
 /** @deprecated Backward-compat shim; non-interactive shells should generally skip RC files. */
 export function shouldLoadShellRc(): boolean {
   return false;
@@ -118,7 +135,6 @@ export function resolveCliBinaryPath(binary: string): string {
   const finder = process.platform === 'win32' ? 'where' : 'which';
   const result = spawnSync(finder, [binary], {
     timeout: 5000,
-    env: process.env,
   });
 
   if (result.status !== 0) {
@@ -126,13 +142,13 @@ export function resolveCliBinaryPath(binary: string): string {
   }
 
   const stdout = result.stdout?.toString().trim() ?? '';
-  const firstLine = stdout.split('\n').map(line => line.trim()).find(Boolean) ?? '';
-  if (!firstLine) {
+  const candidate = resolvedBinaryCandidate(stdout);
+  if (!candidate) {
     throw new Error(`CLI binary '${binary}' not found in PATH`);
   }
 
-  const resolvedPath = normalize(firstLine);
-  if (!isAbsolute(resolvedPath)) {
+  const resolvedPath = platformPath().normalize(candidate);
+  if (!platformPath().isAbsolute(resolvedPath)) {
     throw new Error(`Resolved CLI binary '${binary}' to relative path`);
   }
 
@@ -344,14 +360,21 @@ export function getContract(agentType: CliAgentType): CliAgentContract {
 }
 
 function validateBinaryRef(binary: string): void {
-  if (isAbsolute(binary)) return;
+  if (typeof binary !== 'string' || !binary.trim() || /[\0\r\n]/.test(binary)) {
+    throw new Error(`Unsafe CLI binary reference: ${binary}`);
+  }
+  if (platformPath().isAbsolute(binary)) return;
   if (/^[A-Za-z0-9._-]+$/.test(binary)) return;
   throw new Error(`Unsafe CLI binary reference: ${binary}`);
 }
 
+export function validateCliCommandRef(binary: string): void {
+  validateBinaryRef(binary);
+}
+
 function resolveBinaryPath(binary: string): string {
   validateBinaryRef(binary);
-  if (isAbsolute(binary)) return binary;
+  if (platformPath().isAbsolute(binary)) return binary;
 
   try {
     const resolver = process.platform === 'win32' ? 'where' : 'which';
@@ -363,8 +386,8 @@ function resolveBinaryPath(binary: string): string {
       .map((line) => line.trim())
       .filter(Boolean) ?? [];
 
-    const firstPath = lines[0];
-    const isResolvedAbsolute = !!firstPath && (isAbsolute(firstPath) || win32Path.isAbsolute(firstPath));
+    const firstPath = resolvedBinaryCandidate(lines.join('\n'));
+    const isResolvedAbsolute = !!firstPath && platformPath().isAbsolute(firstPath);
     return isResolvedAbsolute ? firstPath : binary;
   } catch {
     return binary;
@@ -380,16 +403,12 @@ export function isCliAvailable(agentType: CliAgentType): boolean {
       });
       return result.status === 0;
     }
-    const resolvedBinary = resolveBinaryPath(contract.binary);
-    if (process.platform === 'win32' && /\.(cmd|bat)$/i.test(resolvedBinary)) {
-      const comspec = process.env.COMSPEC || 'cmd.exe';
-      const result = spawnSync(comspec, ['/d', '/s', '/c', `"${resolvedBinary}" --version`], { timeout: 5000 });
-      return result.status === 0;
-    }
-
-    const result = spawnSync(resolvedBinary, ['--version'], {
+    const invocation = resolveValidatedCliInvocation(agentType, ['--version'], contract.binary);
+    const result = spawnSync(invocation.command, invocation.args, {
       timeout: 5000,
-      shell: process.platform === 'win32',
+      shell: false,
+      windowsHide: true,
+      ...(invocation.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
     });
     return result.status === 0;
   } catch {
@@ -414,6 +433,24 @@ export function resolveValidatedBinaryPath(agentType: CliAgentType): string {
   const contract = getContract(agentType);
   if (agentType === 'glm') return resolveGlmExecutable(contract.binary);
   return resolveCliBinaryPath(contract.binary);
+}
+
+/** Resolve a CLI command and adapt Windows batch shims to an explicit COMSPEC invocation. */
+export function resolveValidatedCliInvocation(
+  agentType: CliAgentType,
+  args: string[],
+  command = getContract(agentType).binary,
+): CliInvocation {
+  validateBinaryRef(command);
+  const resolved = platformPath().isAbsolute(command)
+    ? command
+    : process.platform === 'win32'
+      ? resolveCliBinaryPath(command)
+      : resolveBinaryPath(command);
+  if (process.platform === 'win32' && /\.(?:cmd|bat)$/i.test(resolved)) {
+    return resolveWindowsBatchInvocation(resolved, args);
+  }
+  return { command: resolved, args: [...args] };
 }
 
 export function buildLaunchArgs(agentType: CliAgentType, config: WorkerLaunchConfig): string[] {

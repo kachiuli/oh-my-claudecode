@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { runWorkflowProcess } from '../workflow-process.js';
+import { resolveValidatedCliInvocation } from '../model-contract.js';
 
 describe('bounded one-shot workflow process', () => {
   let cwd: string;
@@ -21,6 +22,18 @@ describe('bounded one-shot workflow process', () => {
     const result = await run('process.stdout.write(JSON.stringify(process.argv.slice(1)))', [untrusted]);
     expect(result.passed).toBe(true);
     expect(JSON.parse(readFileSync(result.artifacts[0]!.path, 'utf8'))).toEqual([untrusted]);
+  });
+
+  it.runIf(process.platform === 'win32')('runs an explicitly quoted batch invocation without shell mode', async () => {
+    const shim = join(cwd, 'codex.cmd');
+    const script = 'process.stdout.write(JSON.stringify(process.argv.slice(1)))';
+    writeFileSync(shim, `@echo off\r\n"${process.execPath}" -e "${script}" %*\r\n`);
+    const expected = ['exec', '--model', 'space and & literal', 'bang!literal', 'caret^literal', 'quote"literal'];
+    const invocation = resolveValidatedCliInvocation('codex', expected, shim);
+    const result = await runWorkflowProcess({ ...invocation, cwd, timeoutMs: 5000,
+      artifactPrefix: join(cwd, 'windows-batch') });
+    expect(result.passed).toBe(true);
+    expect(JSON.parse(readFileSync(result.artifacts[0]!.path, 'utf8'))).toEqual(expected);
   });
 
   it.each([undefined, 'claude', 'codex', 'glm'] as const)('removes lead lease credentials from a %s child', async provider => {
@@ -165,16 +178,43 @@ describe('bounded one-shot workflow process', () => {
       timeoutMs, artifactPrefix: join(cwd, 'measured') });
   }
 
-  it('collects terminal usage beyond the captured log boundary', async () => {
+  it('filters thinking-token progress before the cap and retains the terminal event', async () => {
     const result = await runMeasured(`
-      process.stdout.write(('x'.repeat(20000)+'\\n').repeat(60));
+      const progress = JSON.stringify({type:'system',subtype:'thinking_tokens',estimated_tokens_delta:1})+'\\n';
+      process.stdout.write(progress.repeat(Math.ceil((1024*1024)/Buffer.byteLength(progress))+1000));
       process.stdout.write(JSON.stringify({type:'result',subtype:'success',session_id:'12345678-1234-4123-8123-123456789abc',
         modelUsage:{glm:{inputTokens:100,outputTokens:30,cacheReadInputTokens:80,cacheCreationInputTokens:20}}})+'\\n');
     `);
     expect(result.passed).toBe(true);
     expect(result.telemetry).toMatchObject({ inputTokens: 200, outputTokens: 30, cacheReadTokens: 80, cacheWriteTokens: 20 });
     expect(result.telemetry!.durationMs).toBeGreaterThan(0);
-    expect(readFileSync(result.artifacts[0]!.path, 'utf8')).not.toContain('modelUsage');
+    const output = readFileSync(result.artifacts[0]!.path, 'utf8');
+    expect(output).toContain('modelUsage');
+    expect(output).not.toContain('thinking_tokens');
+    expect(result.stdoutTruncated).toBe(false);
+    expect(result.artifacts[0]!.sizeBytes).toBeLessThanOrEqual(1024 * 1024);
+  });
+
+  it('retains malformed thinking-token and ordinary stream-json records', async () => {
+    const result = await runMeasured(`
+      process.stdout.write('{"type":"system","subtype":"thinking_tokens"\\n');
+      process.stdout.write(JSON.stringify({type:'system',subtype:'status',message:'working'})+'\\n');
+      process.stdout.write(JSON.stringify({type:'result',subtype:'success'})+'\\n');
+    `);
+    expect(result.passed).toBe(true);
+    const output = readFileSync(result.artifacts[0]!.path, 'utf8');
+    expect(output).toContain('{"type":"system","subtype":"thinking_tokens"');
+    expect(output).toContain('"subtype":"status"');
+    expect(output).toContain('"type":"result"');
+  });
+
+  it('bounds capture for many short ordinary stream-json records', async () => {
+    const result = await runMeasured(`
+      process.stdout.write('{}\\n'.repeat(400000));
+      process.stdout.write(JSON.stringify({type:'result',subtype:'success'})+'\\n');
+    `);
+    expect(result.passed).toBe(true);
+    expect(result.stdoutTruncated).toBe(true);
     expect(result.artifacts[0]!.sizeBytes).toBeLessThanOrEqual(1024 * 1024);
   });
 
