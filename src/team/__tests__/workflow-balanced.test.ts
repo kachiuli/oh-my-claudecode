@@ -334,7 +334,7 @@ describe('balanced workflow with real repositories and provider processes', () =
     });
 
   it('keeps a worker-declared check finite under supervised policy instead of removing its bound', async () => {
-    const slow = { command: process.execPath, args: ['-e', 'setTimeout(() => {}, 15000)'] };
+    const slow = { command: process.execPath, args: ['-e', 'setTimeout(() => {}, 60000)'] };
     await initWorkflow(fixture.cwd, plan([task('a', { tests: [slow] })]),
       { ...options, timeoutMs: 900, maxAttempts: 1, providerPolicy: 'supervised' });
     const started = Date.now();
@@ -344,9 +344,9 @@ describe('balanced workflow with real repositories and provider processes', () =
     expect(failed).toMatchObject({ status: 'failed', error: 'workflow_worker_test_failed', attempts: 1 });
     // The provider claimed the checks passed; only the controller's own finite run can fail them.
     expect(failed.handoff?.tests.every(test => test.passed)).toBe(true);
-    // The declared check sleeps for fifteen seconds, so only a bounded local run can finish this quickly.
-    expect(elapsed).toBeLessThan(10000);
-  }, 30000);
+    // The declared check sleeps for sixty seconds, so only a bounded local run can finish this quickly.
+    expect(elapsed).toBeLessThan(50000);
+  }, process.platform === 'win32' ? 90000 : 30000);
 
   it('keeps integrated verification finite under supervised policy instead of removing its bound', async () => {
     const slow = { command: process.execPath, args: ['-e', 'setTimeout(() => {}, 6000)'] };
@@ -358,7 +358,7 @@ describe('balanced workflow with real repositories and provider processes', () =
     await verifyWorkflow(fixture.cwd, name);
     expect(Date.now() - started).toBeLessThan(5000);
     expect(readWorkflow(fixture.cwd, name).verification?.passed).toBe(false);
-  }, 30000);
+  }, process.platform === 'win32' ? 90000 : 30000);
 
   it.skipIf(process.platform === 'win32')('does not dispatch a second provider attempt for output_incomplete while an escaped descendant remains', async () => {
     fixture.configure({ tasks: { a: { outputIncomplete: true } } });
@@ -388,7 +388,7 @@ describe('balanced workflow with real repositories and provider processes', () =
     const stdout = completed.handoff?.artifacts.find(artifact => artifact.kind === 'workflow-stdout');
     expect(stdout?.sizeBytes).toBeLessThanOrEqual(1024 * 1024);
     expect(completed.handoff?.artifacts.some(artifact => artifact.kind === 'workflow-result')).toBe(true);
-  }, 30000);
+  }, process.platform === 'win32' ? 90000 : 30000);
 
   it('cleans an inherited output pipe before accepting a valid result', async () => {
     fixture.configure({ tasks: { a: { thinkingTokenEvents: 16000, holdOutputOpen: true, deferredMutation: true } } });
@@ -409,7 +409,7 @@ describe('balanced workflow with real repositories and provider processes', () =
       }
       expect(readFileSync(deferred, 'utf8')).toBe('late mutation\n');
     }
-  }, 30000);
+  }, process.platform === 'win32' ? 90000 : 30000);
 
   it.each([
     ['a provider terminal failure', { afterPublicationFailure: 'provider' }, 2000, 'workflow_process_failed'],

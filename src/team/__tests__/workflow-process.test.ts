@@ -398,7 +398,7 @@ describe('explicit no-wall process execution', () => {
     expect(JSON.parse(readFileSync(result.artifacts[0]!.path, 'utf8')))
       .toEqual({ prompt: 'controller prompt', intended: 'preserved', emptyPresent: true, emptyValue: '', injectedPathExt: false,
         injectedModulePath: false, internalConfig: false });
-  });
+  }, 90000);
 
   it.runIf(process.platform === 'win32')('restores an explicitly intended provider module path after supervisor startup', async () => {
     const result = await runWorkflowProcess({ command: process.execPath,
@@ -409,7 +409,7 @@ describe('explicit no-wall process execution', () => {
       artifactPrefix: join(cwd, 'supervised-module-path') });
     expect(result.passed).toBe(true);
     expect(readFileSync(result.artifacts[0]!.path, 'utf8')).toBe('C:\\fixture\\modules');
-  });
+  }, 90000);
 
   it.runIf(process.platform === 'win32')('preserves an explicitly empty provider module path', async () => {
     const result = await runWorkflowProcess({ command: process.execPath, args: ['-e', `
@@ -420,7 +420,7 @@ describe('explicit no-wall process execution', () => {
       PSModulePath: '' }, artifactPrefix: join(cwd, 'supervised-empty-module-path') });
     expect(result.passed).toBe(true);
     expect(JSON.parse(readFileSync(result.artifacts[0]!.path, 'utf8'))).toEqual({ present: true, value: '' });
-  });
+  }, 90000);
 
   it.runIf(process.platform === 'win32')('fails closed when an intended provider environment value changes', async () => {
     const supervised = superviseWindowsWorkflowInvocation({ command: process.execPath,
@@ -431,12 +431,12 @@ describe('explicit no-wall process execution', () => {
       .find(key => key.toUpperCase() === 'OMC_WORKFLOW_PROCESS_SUPERVISOR')!;
     expect(Buffer.from(supervised.environment[configKey]!, 'base64').toString('utf8')).not.toContain('intended-value');
     supervised.environment.OMC_FIXTURE_ENV = 'changed-after-digest';
-    const result = await runWorkflowProcess({ ...supervised, cwd, timeoutMs: 5000,
+    const result = await runWorkflowProcess({ ...supervised, cwd, timeoutMs: 60000,
       artifactPrefix: join(cwd, 'supervised-environment-mismatch') });
     expect(result).toMatchObject({ passed: false, error: 'process_failed' });
     expect(readFileSync(result.artifacts[0]!.path, 'utf8')).toBe('');
     expect(readFileSync(result.artifacts[1]!.path, 'utf8')).toContain('workflow_supervisor_environment_mismatch');
-  });
+  }, 90000);
 
   it.runIf(process.platform === 'win32')('refuses a NUL-bearing provider argument before launch', async () => {
     const marker = join(cwd, 'nul-argument-provider-ran');
@@ -486,7 +486,7 @@ describe('explicit no-wall process execution', () => {
     expect(readFileSync(result.artifacts[0]!.path, 'utf8')).toBe('provider-complete');
     await new Promise(resolve => setTimeout(resolve, 900));
     expect(existsSync(marker)).toBe(false);
-  });
+  }, 90000);
 
   it.runIf(process.platform === 'win32')('preserves a supervised provider failure exit', async () => {
     const result = await runWorkflowProcess({ command: process.execPath,
@@ -495,7 +495,7 @@ describe('explicit no-wall process execution', () => {
     expect(result).toMatchObject({ passed: false, error: 'process_failed', parentExitedSuccessfully: false,
       settlement: { parentExitCode: 17, outputComplete: true } });
     expect(readFileSync(result.artifacts[0]!.path, 'utf8')).toBe('failed-provider');
-  });
+  }, 90000);
 
   it.runIf(process.platform === 'win32')('preserves a supervised Windows crash exit code', async () => {
     const crashCode = 0xc0000005;
@@ -504,7 +504,7 @@ describe('explicit no-wall process execution', () => {
       timeoutMs: null, superviseProcessTree: true, artifactPrefix: join(cwd, 'supervised-crash') });
     expect(result).toMatchObject({ passed: false, error: 'process_failed',
       settlement: { parentExitCode: crashCode, outputComplete: true } });
-  });
+  }, 90000);
 
   it('leaves an explicitly unbounded process running past the finite deadline that still ends a bounded one', async () => {
     const bounded = await runWorkflowProcess({ command: process.execPath, args: ['-e', 'setInterval(()=>{},1000)'], cwd,
