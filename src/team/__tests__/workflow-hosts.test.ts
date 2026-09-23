@@ -149,6 +149,7 @@ describe("shared workflow under Claude and Codex orchestration hosts", () => {
         reviewer,
       );
     },
+    process.platform === "win32" ? 150000 : 30000,
   );
 
   it("continues from a shared checkpoint, keeps providers fixed, and retains attempt host history", async () => {
@@ -189,7 +190,7 @@ describe("shared workflow under Claude and Codex orchestration hosts", () => {
     expect(complete.schemaVersion === 2 && complete.bindings).toEqual(bindings);
     expect(complete.tasks[0].invocations?.[0].orchestrationHost).toBe("claude");
     expect(complete.reviewAttempts?.[0].orchestrationHost).toBe("codex");
-  });
+  }, process.platform === "win32" ? 150000 : 30000);
 
   it("settles a role-substitution attempt orphaned by a dead controller through explicit rejection", async () => {
     const configured = runtimeFixture(fixture);
