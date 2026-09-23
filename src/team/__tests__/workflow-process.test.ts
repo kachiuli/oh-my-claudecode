@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { runWorkflowProcess } from '../workflow-process.js';
+import { superviseWindowsWorkflowInvocation } from '../workflow-process-supervisor.js';
 import { resolveValidatedCliInvocation } from '../model-contract.js';
 
 describe('bounded one-shot workflow process', () => {
@@ -31,7 +32,7 @@ describe('bounded one-shot workflow process', () => {
     const expected = ['exec', '--model', 'space and & literal', 'bang!literal', 'caret^literal', 'quote"literal'];
     const invocation = resolveValidatedCliInvocation('codex', expected, shim);
     const result = await runWorkflowProcess({ ...invocation, cwd, timeoutMs: 5000,
-      artifactPrefix: join(cwd, 'windows-batch') });
+      artifactPrefix: join(cwd, 'windows-batch'), superviseProcessTree: true });
     expect(result.passed).toBe(true);
     expect(JSON.parse(readFileSync(result.artifacts[0]!.path, 'utf8'))).toEqual(expected);
   });
@@ -218,6 +219,88 @@ describe('bounded one-shot workflow process', () => {
     expect(result.artifacts[0]!.sizeBytes).toBeLessThanOrEqual(1024 * 1024);
   });
 
+  it('retains the terminal event after high-volume ordinary stream-json output', async () => {
+    const result = await runMeasured(`
+      const progress = JSON.stringify({type:'system',subtype:'compaction',preserved_messages:'x'.repeat(2000)})+'\\n';
+      process.stdout.write(progress.repeat(600));
+      process.stdout.write(JSON.stringify({type:'result',subtype:'success',
+        session_id:'12345678-1234-4123-8123-123456789abc',
+        modelUsage:{glm:{inputTokens:100,outputTokens:30,cacheReadInputTokens:80,cacheCreationInputTokens:20}}})+'\\n');
+    `);
+    expect(result.passed).toBe(true);
+    expect(result.stdoutTruncated).toBe(true);
+    expect(result.telemetry).toMatchObject({ terminal: 'success' });
+    expect(result.telemetry?.diagnostics ?? []).not.toContain('process_failed');
+    const output = readFileSync(result.artifacts[0]!.path, 'utf8');
+    expect(output.includes('"type":"result"')).toBe(true);
+    expect(result.artifacts[0]!.sizeBytes).toBeLessThanOrEqual(1024 * 1024);
+  });
+
+  it('keeps only complete records when a credential crosses the retained stdout boundary', async () => {
+    vi.stubEnv('OMC_FIXTURE_API_TOKEN', 'splice-sensitive-credential-1234567890');
+    const result = await runMeasured(`
+      const secret = process.env.OMC_FIXTURE_API_TOKEN;
+      const split = 12;
+      const terminal = JSON.stringify({type:'result',subtype:'success'})+'\\n';
+      const fillerBytes = 1024*1024-Buffer.byteLength(secret.slice(split))-2-Buffer.byteLength(terminal);
+      process.stdout.write('{}\\n'.repeat(1000));
+      process.stdout.write(secret+'\\n');
+      process.stdout.write('x'.repeat(fillerBytes)+'\\n');
+      process.stdout.write(terminal);
+    `);
+    expect(result.passed).toBe(true);
+    expect(result.stdoutTruncated).toBe(true);
+    const output = readFileSync(result.artifacts[0]!.path, 'utf8');
+    expect(output.includes('splice-sensitive')).toBe(false);
+    expect(output.includes('credential-1234567890')).toBe(false);
+    expect(output.includes('"type":"result"')).toBe(true);
+    expect(result.artifacts[0]!.sizeBytes).toBeLessThanOrEqual(1024 * 1024);
+  });
+
+  it('drops a partial private JSON record at the retained stdout end', async () => {
+    const secret = 'tail-partial-sensitive-credential-1234567890';
+    const result = await runWorkflowProcess({ command: process.execPath, args: ['-e', `
+      const progress = JSON.stringify({type:'system',subtype:'compaction',preserved_messages:'x'.repeat(2000)})+'\\n';
+      process.stdout.write(progress.repeat(600));
+      process.stdout.write(JSON.stringify({type:'result',subtype:'success'})+'\\n');
+      process.stdout.write('{"type":"PARTIAL_PRIVATE_RECORD","message":"'+${JSON.stringify(secret)}.slice(0,18));
+    `], cwd, provider: 'glm', collectUsage: true, timeoutMs: 5000, artifactPrefix: join(cwd, 'partial-tail'),
+    environment: {}, redactionEnvironment: { OMC_FIXTURE_API_TOKEN: secret } });
+    expect(result.passed).toBe(true);
+    const output = readFileSync(result.artifacts[0]!.path, 'utf8');
+    expect(output.includes('PARTIAL_PRIVATE_RECORD')).toBe(false);
+    expect(output.includes('tail-partial')).toBe(false);
+    expect(output.includes('"type":"result"')).toBe(true);
+    expect(result.artifacts[0]!.sizeBytes).toBeLessThanOrEqual(1024 * 1024);
+  });
+
+  it('drops incomplete trailing JSON containing a prefix of an inherited secret', async () => {
+    vi.stubEnv('OMC_FIXTURE_API_TOKEN', 'splice-sensitive-credential-1234567890');
+    const result = await runMeasured(`
+      const progress = JSON.stringify({type:'system',subtype:'compaction',preserved_messages:'x'.repeat(2000)})+'\\n';
+      process.stdout.write(progress.repeat(600));
+      process.stdout.write(JSON.stringify({type:'result',subtype:'success'})+'\\n');
+      process.stdout.write('{"type":"error","message":"'+process.env.OMC_FIXTURE_API_TOKEN.slice(0,16)+'","unfinished":"x');
+    `);
+    expect(result.passed).toBe(true);
+    const output = readFileSync(result.artifacts[0]!.path, 'utf8');
+    expect(output.includes('splice-sensitive')).toBe(false);
+    expect(output.includes('"unfinished":"x')).toBe(false);
+    expect(output.includes('"type":"result"')).toBe(true);
+  });
+
+  it('retains a valid terminal JSON record without a trailing newline', async () => {
+    const result = await runMeasured(`
+      const progress = JSON.stringify({type:'system',subtype:'compaction',preserved_messages:'x'.repeat(2000)})+'\\n';
+      process.stdout.write(progress.repeat(600));
+      process.stdout.write(JSON.stringify({type:'result',subtype:'success'}));
+    `);
+    expect(result.passed).toBe(true);
+    expect(result.stdoutTruncated).toBe(true);
+    const output = readFileSync(result.artifacts[0]!.path, 'utf8');
+    expect(output.includes('"type":"result"')).toBe(true);
+  });
+
   it('fails structured provider failures even when the executable exits successfully', async () => {
     const result = await runMeasured(`process.stdout.write(JSON.stringify({type:'result',subtype:'error_during_execution'})+'\\n')`);
     expect(result.passed).toBe(false);
@@ -297,6 +380,132 @@ describe('explicit no-wall process execution', () => {
       artifactPrefix: join(cwd, prefix) });
   }
 
+  it.runIf(process.platform === 'win32')('supervises a provider without consuming its stdin or stdout', async () => {
+    const result = await runWorkflowProcess({ command: process.execPath, args: ['-e', `
+      const fs = require('node:fs');
+      const emptyKey = Object.keys(process.env).find(key => key.toUpperCase() === 'OMC_FIXTURE_EMPTY');
+      process.stdout.write(JSON.stringify({ prompt: fs.readFileSync(0, 'utf8'),
+        intended: process.env.OMC_FIXTURE_ENV,
+        emptyPresent: emptyKey !== undefined, emptyValue: emptyKey === undefined ? null : process.env[emptyKey],
+        injectedPathExt: Object.keys(process.env).some(key => key.toUpperCase() === 'PATHEXT'),
+        injectedModulePath: Object.keys(process.env).some(key => key.toUpperCase() === 'PSMODULEPATH'),
+        internalConfig: Object.keys(process.env).some(key => key.toUpperCase() === 'OMC_WORKFLOW_PROCESS_SUPERVISOR') }));
+    `], cwd, stdin: 'controller prompt', timeoutMs: null, superviseProcessTree: true,
+    environment: { SystemRoot: process.env.SystemRoot, PATH: process.env.PATH, TEMP: process.env.TEMP, TMP: process.env.TMP,
+      OMC_FIXTURE_ENV: 'preserved', OMC_FIXTURE_EMPTY: '', omc_workflow_process_supervisor: 'caller-value' },
+    artifactPrefix: join(cwd, 'supervised-stdio') });
+    expect(result).toMatchObject({ passed: true, settlement: { outputComplete: true, descendants: 'cleaned' } });
+    expect(JSON.parse(readFileSync(result.artifacts[0]!.path, 'utf8')))
+      .toEqual({ prompt: 'controller prompt', intended: 'preserved', emptyPresent: true, emptyValue: '', injectedPathExt: false,
+        injectedModulePath: false, internalConfig: false });
+  }, 90000);
+
+  it.runIf(process.platform === 'win32')('restores an explicitly intended provider module path after supervisor startup', async () => {
+    const result = await runWorkflowProcess({ command: process.execPath,
+      args: ['-e', 'process.stdout.write(process.env.PSModulePath ?? "missing")'], cwd,
+      timeoutMs: null, superviseProcessTree: true,
+      environment: { SystemRoot: process.env.SystemRoot, PATH: process.env.PATH, TEMP: process.env.TEMP, TMP: process.env.TMP,
+        PSModulePath: 'C:\\fixture\\modules' },
+      artifactPrefix: join(cwd, 'supervised-module-path') });
+    expect(result.passed).toBe(true);
+    expect(readFileSync(result.artifacts[0]!.path, 'utf8')).toBe('C:\\fixture\\modules');
+  }, 90000);
+
+  it.runIf(process.platform === 'win32')('preserves an explicitly empty provider module path', async () => {
+    const result = await runWorkflowProcess({ command: process.execPath, args: ['-e', `
+      const key = Object.keys(process.env).find(name => name.toUpperCase() === 'PSMODULEPATH');
+      process.stdout.write(JSON.stringify({ present: key !== undefined, value: key === undefined ? null : process.env[key] }));
+    `], cwd, timeoutMs: null, superviseProcessTree: true,
+    environment: { SystemRoot: process.env.SystemRoot, PATH: process.env.PATH, TEMP: process.env.TEMP, TMP: process.env.TMP,
+      PSModulePath: '' }, artifactPrefix: join(cwd, 'supervised-empty-module-path') });
+    expect(result.passed).toBe(true);
+    expect(JSON.parse(readFileSync(result.artifacts[0]!.path, 'utf8'))).toEqual({ present: true, value: '' });
+  }, 90000);
+
+  it.runIf(process.platform === 'win32')('fails closed when an intended provider environment value changes', async () => {
+    const supervised = superviseWindowsWorkflowInvocation({ command: process.execPath,
+      args: ['-e', 'process.stdout.write("must-not-run")'], cwd,
+      environment: { SystemRoot: process.env.SystemRoot, PATH: process.env.PATH, TEMP: process.env.TEMP, TMP: process.env.TMP,
+        OMC_FIXTURE_ENV: 'intended-value' } });
+    const configKey = Object.keys(supervised.environment)
+      .find(key => key.toUpperCase() === 'OMC_WORKFLOW_PROCESS_SUPERVISOR')!;
+    expect(Buffer.from(supervised.environment[configKey]!, 'base64').toString('utf8')).not.toContain('intended-value');
+    supervised.environment.OMC_FIXTURE_ENV = 'changed-after-digest';
+    const result = await runWorkflowProcess({ ...supervised, cwd, timeoutMs: 60000,
+      artifactPrefix: join(cwd, 'supervised-environment-mismatch') });
+    expect(result).toMatchObject({ passed: false, error: 'process_failed' });
+    expect(readFileSync(result.artifacts[0]!.path, 'utf8')).toBe('');
+    expect(readFileSync(result.artifacts[1]!.path, 'utf8')).toContain('workflow_supervisor_environment_mismatch');
+  }, 90000);
+
+  it.runIf(process.platform === 'win32')('refuses a NUL-bearing provider argument before launch', async () => {
+    const marker = join(cwd, 'nul-argument-provider-ran');
+    const provider = `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'ran')`;
+    await expect(runWorkflowProcess({ command: process.execPath,
+      args: ['-e', provider, 'before\0after'], cwd, timeoutMs: null, superviseProcessTree: true,
+      artifactPrefix: join(cwd, 'nul-argument') })).rejects.toThrow('workflow_invalid_process_arguments');
+    expect(existsSync(marker)).toBe(false);
+  });
+
+  it.runIf(process.platform === 'win32')('refuses a NUL-bearing provider environment before launch', async () => {
+    const marker = join(cwd, 'nul-environment-provider-ran');
+    const provider = `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'ran')`;
+    await expect(runWorkflowProcess({ command: process.execPath, args: ['-e', provider], cwd,
+      timeoutMs: null, superviseProcessTree: true,
+      environment: { SystemRoot: process.env.SystemRoot, PATH: process.env.PATH,
+        PSModulePath: 'foo\0OMC_INJECTED=yes' }, artifactPrefix: join(cwd, 'nul-environment') }))
+      .rejects.toThrow('workflow_supervisor_environment_invalid');
+    expect(existsSync(marker)).toBe(false);
+  });
+
+  it.runIf(process.platform === 'win32')('refuses invalid or aliased Windows environment keys', () => {
+    const base = { command: process.execPath, args: ['-e', ''], cwd };
+    expect(() => superviseWindowsWorkflowInvocation({ ...base,
+      environment: { SystemRoot: process.env.SystemRoot, 'BAD=KEY': 'value' } }))
+      .toThrow('workflow_supervisor_environment_invalid');
+    expect(() => superviseWindowsWorkflowInvocation({ ...base,
+      environment: { SystemRoot: process.env.SystemRoot, PATH: 'first', Path: 'second' } }))
+      .toThrow('workflow_supervisor_environment_invalid');
+    expect(() => superviseWindowsWorkflowInvocation({ ...base, args: ['before\0after'], environment: process.env }))
+      .toThrow('workflow_supervisor_process_arguments_invalid');
+    expect(() => superviseWindowsWorkflowInvocation({ ...base, cwd: `${cwd}\0other`, environment: process.env }))
+      .toThrow('workflow_supervisor_process_arguments_invalid');
+  });
+
+  it.runIf(process.platform === 'win32')('kills inherited detached descendants before accepting provider success', async () => {
+    const marker = join(cwd, 'late-descendant-marker');
+    const descendant = `setTimeout(() => require('node:fs').writeFileSync(process.argv[1], 'late'), 700); setTimeout(() => {}, 1200)`;
+    const result = await runWorkflowProcess({ command: process.execPath, args: ['-e', `
+      const { spawn } = require('node:child_process');
+      spawn(process.execPath, ['-e', ${JSON.stringify(descendant)}, ${JSON.stringify(marker)}],
+        { stdio: ['ignore', 'inherit', 'inherit'], detached: true, windowsHide: true }).unref();
+      process.stdout.write('provider-complete');
+    `], cwd, timeoutMs: null, superviseProcessTree: true,
+    artifactPrefix: join(cwd, 'supervised-descendant') });
+    expect(result).toMatchObject({ passed: true, settlement: { outputComplete: true, descendants: 'cleaned' } });
+    expect(readFileSync(result.artifacts[0]!.path, 'utf8')).toBe('provider-complete');
+    await new Promise(resolve => setTimeout(resolve, 900));
+    expect(existsSync(marker)).toBe(false);
+  }, 90000);
+
+  it.runIf(process.platform === 'win32')('preserves a supervised provider failure exit', async () => {
+    const result = await runWorkflowProcess({ command: process.execPath,
+      args: ['-e', 'process.stdout.write("failed-provider"); process.exitCode=17'], cwd,
+      timeoutMs: null, superviseProcessTree: true, artifactPrefix: join(cwd, 'supervised-failure') });
+    expect(result).toMatchObject({ passed: false, error: 'process_failed', parentExitedSuccessfully: false,
+      settlement: { parentExitCode: 17, outputComplete: true } });
+    expect(readFileSync(result.artifacts[0]!.path, 'utf8')).toBe('failed-provider');
+  }, 90000);
+
+  it.runIf(process.platform === 'win32')('preserves a supervised Windows crash exit code', async () => {
+    const crashCode = 0xc0000005;
+    const result = await runWorkflowProcess({ command: process.execPath,
+      args: ['-e', `process.exit(${crashCode})`], cwd,
+      timeoutMs: null, superviseProcessTree: true, artifactPrefix: join(cwd, 'supervised-crash') });
+    expect(result).toMatchObject({ passed: false, error: 'process_failed',
+      settlement: { parentExitCode: crashCode, outputComplete: true } });
+  }, 90000);
+
   it('leaves an explicitly unbounded process running past the finite deadline that still ends a bounded one', async () => {
     const bounded = await runWorkflowProcess({ command: process.execPath, args: ['-e', 'setInterval(()=>{},1000)'], cwd,
       timeoutMs: 400, artifactPrefix: join(cwd, 'bounded') });
@@ -348,6 +557,23 @@ describe('explicit no-wall process execution', () => {
       termination: 'not-requested', directChild: 'exited', descendants: 'unverified' });
     expect(result.artifacts).toHaveLength(2);
     expect(Date.now() - startedAt).toBeLessThan(30_000);
+  });
+
+  it('does not label a clean provider exit as process_failed when inherited output remains open', async () => {
+    const result = await runWorkflowProcess({ command: process.execPath, args: ['-e', `
+      const { spawn } = require('node:child_process');
+      process.stdout.write(JSON.stringify({type:'result',subtype:'success',
+        session_id:'12345678-1234-4123-8123-123456789abc',
+        modelUsage:{glm:{inputTokens:100,outputTokens:30,cacheReadInputTokens:80,cacheCreationInputTokens:20}}})+'\\n');
+      spawn(process.execPath, ['-e', 'setTimeout(() => {}, 3000)'],
+        { stdio: ['ignore', 'inherit', 'inherit'], detached: true, windowsHide: true, cwd: require('node:os').tmpdir() });
+      setTimeout(() => process.exit(0), 50);
+    `], cwd, provider: 'glm', collectUsage: true, timeoutMs: null, artifactPrefix: join(cwd, 'measured-incomplete') });
+    expect(result).toMatchObject({ passed: false, error: 'output_incomplete',
+      settlement: { parentExitCode: 0, parentExitSignal: null, outputComplete: false },
+      telemetry: { status: 'partial', terminal: 'success' } });
+    expect(result.telemetry?.diagnostics).toContain('output_incomplete');
+    expect(result.telemetry?.diagnostics ?? []).not.toContain('process_failed');
   });
 
   it.skipIf(process.platform === 'win32')('retains finite timeout termination of the inherited group after parent exit', async () => {

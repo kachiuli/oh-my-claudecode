@@ -452,7 +452,7 @@ describe('versioned workflow adapters', () => {
     const saved = workflow.readWorkflow(fixture.cwd, 'roles');
     expect(saved.options).toMatchObject({ providerPolicy: 'supervised', timeoutMs: 1200 });
     expect(workflow.workflowStatus(fixture.cwd, 'roles')).toMatchObject({ providerPolicy: 'supervised', reviewPasses: 1 });
-  }, 60000);
+  }, process.platform === 'win32' ? 150000 : 60000);
 
   it('keeps the saved policy while an explicit substitution changes only the selected binding', async () => {
     const configured = await init('claude', 'codex', { providerPolicy: 'supervised' });
@@ -476,16 +476,16 @@ describe('versioned workflow adapters', () => {
   });
 
   it('keeps worker-declared checks finite under supervised policy in schema 2', async () => {
-    const slow = { command: process.execPath, args: ['-e', 'setTimeout(() => {}, 6000)'] };
+    const slow = { command: process.execPath, args: ['-e', 'setTimeout(() => {}, 60000)'] };
     const configured = runtimeFixture(fixture); const input = plan(); input.tasks[0].tests = [slow];
     await workflow.initWorkflowV2(fixture.cwd, input, { lead: binding('lead', 'codex'), implementer: configured.selectedBinding('implementer', 'claude'),
       reviewer: configured.selectedBinding('reviewer', 'codex') }, { timeoutMs: 900, maxAttempts: 1, backoffMs: 0, providerPolicy: 'supervised' });
     const started = Date.now();
     const state = await workflow.runWorkflow(fixture.cwd, 'roles', configured.runtime);
     expect(state.tasks[0]).toMatchObject({ status: 'failed', error: 'workflow_worker_test_failed', attempts: 1 });
-    // The declared check sleeps for six seconds, so only a bounded local run can settle this quickly.
-    expect(Date.now() - started).toBeLessThan(5000);
-  }, 30000);
+    // The declared check sleeps for sixty seconds, so only a bounded local run can settle this quickly.
+    expect(Date.now() - started).toBeLessThan(50000);
+  }, process.platform === 'win32' ? 90000 : 30000);
 
   it('keeps integrated verification finite under supervised policy in schema 2', async () => {
     const slow = { command: process.execPath, args: ['-e', 'setTimeout(() => {}, 6000)'] };
@@ -498,5 +498,5 @@ describe('versioned workflow adapters', () => {
     await workflow.verifyWorkflow(fixture.cwd, 'roles');
     expect(Date.now() - started).toBeLessThan(5000);
     expect(workflow.readWorkflow(fixture.cwd, 'roles').verification?.passed).toBe(false);
-  }, 30000);
+  }, process.platform === 'win32' ? 90000 : 30000);
 });

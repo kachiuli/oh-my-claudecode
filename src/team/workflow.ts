@@ -60,7 +60,8 @@ async function runWorkflowProvider(input: Parameters<typeof runWorkflowProcess>[
   let outputArtifactPath = resultFile;
   const decoder = transport.kind === 'claude-native-structured' ? createClaudeWorkflowResultDecoder() : undefined;
   try {
-    result = await runWorkflowProcess({ ...input, ...(decoder ? { onStdout: decoder.write } : {}) });
+    result = await runWorkflowProcess({ ...input, ...(input.timeoutMs === null ? { superviseProcessTree: true } : {}),
+      ...(decoder ? { onStdout: decoder.write } : {}) });
     if (decoder) {
       try {
         const decoded = decoder.finish();
