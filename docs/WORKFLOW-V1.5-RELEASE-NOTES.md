@@ -19,6 +19,18 @@ The archive keeps package version 5.5.0 and records the tagged source commit in 
 
 `workflow-v1.5.1` ships the same runtime as `workflow-v1.5` plus one CI maintenance change: the packaged project-hosts smoke gives the clean `npm install` of the archive its own fifteen-minute timeout, because that step regularly exceeded the shared three-minute bound on hosted Windows runners during the v1.5 release checks. Install it with the same commands above, replacing `workflow-v1.5` with `workflow-v1.5.1` in the archive URL.
 
+## workflow-v1.5.2 maintenance
+
+This release repairs direct-CLI worker publication (#15), the Windows Codex reviewer command and override (#16), and workflow CLI startup warnings (#17). It also corrects orphaned-attempt recovery instructions (#18). The npm package version remains 5.5.0. Install it with the commands above, replacing `workflow-v1.5` with `workflow-v1.5.2` in the archive URL.
+
+Worker dispatch now includes structured `publication.publishInvocation` arguments. Custom workers should execute those arguments directly; `publication.publishCommand` is a safe shell fallback only for recognized Node entrypoints and is `null` for unknown launchers. Windows batch shims require the canonical `C:\Windows\System32\cmd.exe` path in this release.
+
+Projects can set editable routing defaults without a controller-specific profile schema: put a short prompt in `.omc/routing.md`. OMC setup projects the instruction to read it into both Claude and Codex lead guidance. For example, a project can adapt this prompt:
+
+> For OMC, use Claude Opus 5.5 as lead, Fable 5.1 for design, GLM 5.3 for implementation (Flash on frozen tasks), Sol 6.0 for packet review (fall back to `gpt-5.6-sol`), and Astra for final review. Review at high effort, ultra for risky work. Verify availability, honor overrides, record actual model/effort/CLI and fallback reason, preserve gates, and attach an attributed PR verdict for external review.
+
+The prompt supplies project preferences; workflow state, command safety and review gates remain enforced by OMC. Automated catalog fallback and a native PR-review stage from #19 are still separate work.
+
 ## What changed since workflow-v1.4.1
 
 ### Upstream 5.5.0 merge
@@ -33,14 +45,16 @@ The fork `main` now contains upstream `main` at `9fd35ece5` (release 5.5.0: 22 f
 
 ### Recovery of attempts orphaned by a dead lead
 
-When a lead process dies while `omc team workflow run`, `resume`, `verify` or `review` is in flight (for example, the Claude Code Bash tool's default two-minute timeout), the shared state used to keep a running attempt with a live claim while the operation lock stayed held, and neither `recover` nor `reject` could settle it. V1.5 makes this fail closed but recoverable:
+When a lead process dies while `omc team workflow run`, `resume`, `verify` or `review` is in flight (for example, the Claude Code Bash tool's default two-minute timeout), the shared state could keep a running attempt with a live claim while the checkout operation lock stayed held. V1.5 makes this fail closed and allows explicit recovery after inspection:
 
 - Every attempt records the controller process identity as well as the provider process identity as soon as it spawns.
-- `omc orchestrator recover` treats a running attempt as orphaned only when the recorded provider (or, before spawn, the controller) is verifiably dead, the invocation is the task's current attempt, and the workflow and task projections live under the workflow's own state directory. Live or unverifiable processes still block recovery for inspection.
-- Abandoned lock files older than thirty seconds whose owner is dead (including identity-bearing locks) are reaped by every quiescence check instead of wedging later commands.
-- `omc team workflow reject <name> <task> --reason <text>` validates the reason, settles the orphaned attempt as `workflow_invocation_interrupted`, revokes the attempt's unused publication capability, and drops the task's claim; the attempt is never re-dispatched.
+- `omc orchestrator recover --checkpoint <kind> [--workflow <name>]` releases an abandoned checkout operation lock and host lease only after verifying the owning process has exited. It does not settle a workflow attempt. Live or unverifiable processes still block recovery for inspection.
+- Workflow-local stale lock files older than thirty seconds whose owner is dead (including identity-bearing locks) are reaped by quiescence checks. The checkout-wide `operation.lock` requires explicit recovery.
+- `omc team workflow reject <name> <task> --reason <text>` validates the reason, settles the orphaned attempt as `workflow_invocation_interrupted`, revokes the attempt's unused publication capability, and drops the task's claim. The task becomes permanently rejected.
 - A Claude project launch sets `BASH_DEFAULT_TIMEOUT_MS` and `BASH_MAX_TIMEOUT_MS` to the controller's maximum provider timeout unless the user set them, and the shared host guidance tells leads to give workflow commands the full provider timeout and never to background, kill or retry them.
 - The Windows process-identity probe no longer leaks PowerShell's error text when a native process exits before its lease registration completes.
+
+After confirming the controller and provider have exited and inspecting their artifacts, run `orchestrator recover --checkpoint <kind>` to release the lock and lease, then `team workflow reject` to settle the running attempt. A rejected task cannot be retried; add replacement work as a new task, or use `team workflow add-fix` for a review finding.
 
 See the [Claude lead live verification record](WORKFLOW-V1.4-CLAUDE-LEAD-VERIFICATION.md) for the defect evidence and the regression list.
 

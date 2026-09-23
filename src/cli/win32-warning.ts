@@ -6,7 +6,8 @@ import { isTmuxAvailable } from './tmux-utils.js';
  * Called at CLI startup from src/cli/index.ts.
  * If a tmux-compatible binary (e.g. psmux) is on PATH, the warning is skipped.
  */
-export function warnIfWin32(): void {
+export function warnIfWin32(args: readonly string[] = []): void {
+  if (args[0]?.toLowerCase() === 'team' && args[1]?.toLowerCase() === 'workflow') return;
   if (process.platform === 'win32' && !isTmuxAvailable()) {
     console.warn(chalk.yellow.bold('\n⚠  WARNING: Native Windows (win32) detected — no tmux found'));
     console.warn(chalk.yellow('   OMC features that require tmux will not work.'));

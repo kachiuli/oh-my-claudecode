@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync, readFileSync, symlinkSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, rmSync, unlinkSync, writeFileSync, readFileSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { issueWorkflowPublication, type IssuedWorkflowPublication } from '../../../team/workflow-publication.js';
+import { issueWorkflowPublication, workflowPublicationContract, type IssuedWorkflowPublication } from '../../../team/workflow-publication.js';
 
 const api = vi.hoisted(() => ({
   initWorkflow: vi.fn(async () => ({ plan: { name: 'feature' } })),
@@ -50,7 +50,7 @@ describe('team workflow CLI', () => {
     return file;
   }
 
-  function publicationAuthority(taskId = 'task-a', attempt = 1): { destination: string; issued: IssuedWorkflowPublication } {
+  function publicationAuthority(taskId = 'task-a', attempt = 1): { source: string; destination: string; issued: IssuedWorkflowPublication } {
     const workflowName = 'feature'; const worker = `task-${taskId}`; const sha = 'a'.repeat(40);
     const check = { command: process.execPath, args: ['-e', 'process.exit(0)'] };
     const task = { id: taskId, objective: 'Publish verified result', baseCommit: sha, writeScope: ['feature/a.txt'], readScope: [],
@@ -66,10 +66,11 @@ describe('team workflow CLI', () => {
       reviews: [],
     }));
     const destination = join(artifacts, `${worker}-${attempt}.result.json`);
+    const source = join(root, workflowPublicationContract(taskId, destination).helperResult.path);
     const issued = issueWorkflowPublication({ workflowRoot: root, workflowName, taskId, worker, attempt, worktree: root, resultFile: destination });
     for (const [key, value] of Object.entries(issued.environment)) vi.stubEnv(key, value);
     vi.stubEnv('OMC_TEAM_WORKER', worker); vi.stubEnv('OMC_TEAM_WORKTREE_PATH', root);
-    return { destination, issued };
+    return { source, destination, issued };
   }
 
   it('documents explicit V1.2 selection and private runtime without making independence mandatory', async () => {
@@ -81,36 +82,42 @@ describe('team workflow CLI', () => {
   });
 
   it('publishes verified handoff bytes exclusively to the designated result path', async () => {
-    const source = join(root, 'verified.json'); const { destination, issued } = publicationAuthority();
+    const { source, destination, issued } = publicationAuthority();
     const bytes = `${JSON.stringify({ taskId: 'task-a', outcome: 'completed', commitSha: 'a'.repeat(40),
       changedFiles: ['feature/a.txt'], tests: [], interfaceChanges: [], assumptions: [], risks: [], summary: 'Complete.' }, null, 2)}\n`;
-    writeFileSync(source, bytes);
+    writeFileSync(source, bytes, { flag: 'wx' });
     await workflowCommand(['publish-result', '--source', source, '--result-file', destination, '--task-id', 'task-a'], root);
     expect(readFileSync(destination, 'utf8')).toBe(bytes);
+    expect(existsSync(source)).toBe(false);
     issued.revoke();
     const next = publicationAuthority();
-    await expect(workflowCommand(['publish-result', '--source', source, '--result-file', destination, '--task-id', 'task-a'], root))
+    writeFileSync(next.source, bytes, { flag: 'wx' });
+    await expect(workflowCommand(['publish-result', '--source', next.source, '--result-file', destination, '--task-id', 'task-a'], root))
       .rejects.toThrow('workflow_result_already_exists');
+    expect(readFileSync(next.source, 'utf8')).toBe(bytes);
     next.issued.revoke();
     expect(readFileSync(destination, 'utf8')).toBe(bytes);
   });
 
   it('rejects malformed or mismatched helper results before creating designated evidence', async () => {
-    const source = join(root, 'invalid.json'); const { destination, issued } = publicationAuthority();
-    for (const bytes of ['not json', JSON.stringify({ taskId: 'another-task', outcome: 'failed', changedFiles: [], tests: [],
-      interfaceChanges: [], assumptions: [], risks: [], summary: 'Failed.' })]) {
-      writeFileSync(source, bytes);
+    const values = ['not json', JSON.stringify({ taskId: 'another-task', outcome: 'failed', changedFiles: [], tests: [],
+      interfaceChanges: [], assumptions: [], risks: [], summary: 'Failed.' })];
+    for (const [index, bytes] of values.entries()) {
+      const { source, destination, issued } = publicationAuthority('task-a', index + 1);
+      writeFileSync(source, bytes, { flag: 'wx' });
       await expect(workflowCommand(['publish-result', '--source', source, '--result-file', destination, '--task-id', 'task-a'], root))
         .rejects.toThrow(/workflow_/);
-      expect(() => readFileSync(destination)).toThrow();
+      expect(existsSync(destination)).toBe(false);
+      expect(readFileSync(source, 'utf8')).toBe(bytes);
+      issued.revoke();
     }
-    issued.revoke();
   });
 
-  it('binds publication authority to the exact live task, attempt, and designated path', async () => {
-    const source = join(root, 'verified.json'); const { destination, issued } = publicationAuthority();
-    writeFileSync(source, JSON.stringify({ taskId: 'task-a', outcome: 'completed', commitSha: 'a'.repeat(40), changedFiles: ['feature/a.txt'],
-      tests: [], interfaceChanges: [], assumptions: [], risks: [], summary: 'Complete.' }));
+  it('binds publication authority to the exact helper, live task, attempt, and designated path', async () => {
+    const { source, destination, issued } = publicationAuthority();
+    const bytes = JSON.stringify({ taskId: 'task-a', outcome: 'completed', commitSha: 'a'.repeat(40), changedFiles: ['feature/a.txt'],
+      tests: [], interfaceChanges: [], assumptions: [], risks: [], summary: 'Complete.' });
+    writeFileSync(source, bytes, { flag: 'wx' });
     for (const [target, taskId] of [
       [join(root, 'arbitrary-result.json'), 'task-a'],
       [destination.replace('-1.result.json', '-2.result.json'), 'task-a'],
@@ -120,6 +127,21 @@ describe('team workflow CLI', () => {
         .rejects.toThrow('workflow_publication_not_authorized');
       expect(() => readFileSync(target)).toThrow();
     }
+    const arbitrarySource = join(root, 'arbitrary-helper.json');
+    writeFileSync(arbitrarySource, bytes, { flag: 'wx' });
+    await expect(workflowCommand(['publish-result', '--source', arbitrarySource, '--result-file', destination, '--task-id', 'task-a'], root))
+      .rejects.toThrow('workflow_publication_not_authorized');
+    expect(readFileSync(arbitrarySource, 'utf8')).toBe(bytes);
+    expect(readFileSync(source, 'utf8')).toBe(bytes);
+
+    unlinkSync(source);
+    const linkTarget = join(root, 'linked-helper.json');
+    writeFileSync(linkTarget, bytes, { flag: 'wx' });
+    symlinkSync(linkTarget, source, 'file');
+    await expect(workflowCommand(['publish-result', '--source', source, '--result-file', destination, '--task-id', 'task-a'], root))
+      .rejects.toThrow('workflow_result_symlink_rejected');
+    expect(lstatSync(source).isSymbolicLink()).toBe(true);
+    expect(existsSync(destination)).toBe(false);
     issued.revoke();
   });
 
@@ -148,6 +170,31 @@ describe('team workflow CLI', () => {
     expect(api.initWorkflow).toHaveBeenCalledWith(root, { name: 'feature' }, { mode: 'balanced' });
     expect(api.initWorkflowV2).not.toHaveBeenCalled();
   });
+
+  it('forwards the legacy Codex reviewer command override from init', async () => {
+    const file = planFile();
+    await workflowCommand(['init', '--file', file, '--codex-command', process.execPath], root);
+    expect(api.initWorkflow).toHaveBeenCalledWith(root, { name: 'feature' }, { codexCommand: process.execPath });
+    expect(api.initWorkflowV2).not.toHaveBeenCalled();
+  });
+
+  it('documents and limits the Codex reviewer command override to legacy init', async () => {
+    await workflowCommand(['--help'], root);
+    expect(console.log).toHaveBeenCalledWith(expect.stringContaining('--codex-command <executable>'));
+    expect(console.log).toHaveBeenCalledWith(expect.stringContaining('OMC_CODEX_COMMAND'));
+    await expect(workflowCommand(['review', 'feature', '--codex-command', process.execPath], root))
+      .rejects.toThrow('workflow_unknown_option');
+    await expect(workflowCommand(['init', '--file', planFile(), '--profile', 'role-substitution',
+      '--bindings', bindingsFile(), '--codex-command', process.execPath], root))
+      .rejects.toThrow('workflow_role_substitution_profile_required');
+  });
+
+  it.each(['codex --unsafe', 'relative/path', 'bad\ncommand', ''])(
+    'rejects unsafe Codex reviewer command override %j before initialization', async command => {
+      await expect(workflowCommand(['init', '--file', planFile(), '--codex-command', command], root))
+        .rejects.toThrow(/workflow_invalid_arguments|Unsafe CLI binary reference/);
+      expect(api.initWorkflow).not.toHaveBeenCalled();
+    });
 
   it('forwards an explicit substitution intent without provider dispatch or budget options', async () => {
     const intent = { role: 'reviewer', binding: { id: 'claude-reviewer' }, expectedHead: 'a'.repeat(40),

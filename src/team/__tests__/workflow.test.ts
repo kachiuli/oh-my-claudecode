@@ -65,6 +65,18 @@ describe('Claude/GLM/Codex workflow with real local fake providers', () => {
     await acceptWorkflowTask(fixture.cwd, name, 'a');
   }
 
+  it('captures the legacy Codex reviewer command from the environment with explicit option precedence', async () => {
+    vi.stubEnv('OMC_CODEX_COMMAND', process.execPath);
+    const fromEnvironment = await initWorkflow(fixture.cwd, plan(), { ...options, codexCommand: undefined });
+    expect(fromEnvironment.options.codexCommand).toBe(process.execPath);
+
+    fixture.dispose();
+    fixture = createWorkflowFixture();
+    vi.stubEnv('OMC_WORKFLOW_TEST_CONFIG', fixture.configPath);
+    const explicit = await initWorkflow(fixture.cwd, plan(), { ...options, codexCommand: provider });
+    expect(explicit.options.codexCommand).toBe(provider);
+  });
+
   describe('attempt orphaned by a dead controller', () => {
     function exitedPid(): number {
       const child = spawnSync(process.execPath, ['-e', 'process.exit(0)'], { windowsHide: true });
@@ -492,7 +504,13 @@ describe('Claude/GLM/Codex workflow with real local fake providers', () => {
       canonicalTask: { source: 'dispatch.task', taskId: 'a' },
       designatedResult: { path: resultFile, authorization: 'create-this-file-only', overwrite: false, stdoutIsHandoff: false },
     });
-    expect(prompt.publication.publishCommand).toContain('omc team workflow publish-result');
+    expect(prompt.publication.publishInvocation).toMatchObject({
+      command: 'omc',
+      args: expect.arrayContaining([
+        'team', 'workflow', 'publish-result', '--result-file', resultFile, '--task-id', 'a',
+      ]),
+    });
+    expect(prompt.publication.publishCommand).toBeNull();
   });
 
   it('rejects a designated handoff whose task identity does not match the canonical task', async () => {

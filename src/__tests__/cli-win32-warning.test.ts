@@ -46,6 +46,17 @@ describe('CLI win32 platform warning (#923)', () => {
     expect(warnSpy).not.toHaveBeenCalled();
   });
 
+  it('skips both the warning and tmux probe for team workflow commands', async () => {
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+    vi.mocked(spawnSync).mockClear();
+
+    const { warnIfWin32 } = await import('../cli/win32-warning.js');
+    warnIfWin32(['team', 'workflow', '--help']);
+
+    expect(spawnSync).not.toHaveBeenCalled();
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
   it('should NOT warn on linux platform', async () => {
     Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
 

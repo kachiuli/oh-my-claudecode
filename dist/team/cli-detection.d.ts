@@ -1,4 +1,5 @@
 export { isCliAvailable, validateCliAvailable, getContract, type CliAgentType } from './model-contract.js';
+export { validatedComspec } from '../lib/windows-command.js';
 import { type GlmConfig } from './glm-config.js';
 export interface CliInfo {
     available: boolean;

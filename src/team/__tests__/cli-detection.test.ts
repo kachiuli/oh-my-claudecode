@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { existsSync } from 'fs';
+import { existsSync, realpathSync } from 'fs';
 import { spawnSync } from 'child_process';
-import { detectCli, detectAllClis, probeCli } from '../cli-detection.js';
+import { detectCli, detectAllClis, probeCli, validatedComspec } from '../cli-detection.js';
 
 vi.mock('child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('child_process')>();
@@ -16,6 +16,7 @@ vi.mock('fs', async (importOriginal) => {
   return {
     ...actual,
     existsSync: vi.fn(actual.existsSync),
+    realpathSync: vi.fn(actual.realpathSync),
   };
 });
 
@@ -50,11 +51,15 @@ function spawnResult(
 describe('cli-detection', () => {
   const mockSpawnSync = vi.mocked(spawnSync);
   const mockExistsSync = vi.mocked(existsSync);
+  const mockRealpathSync = vi.mocked(realpathSync);
   let restorePlatform: (() => void) | undefined;
 
   beforeEach(() => {
     mockSpawnSync.mockReset();
     mockExistsSync.mockReset();
+    mockExistsSync.mockReturnValue(true);
+    mockRealpathSync.mockReset();
+    mockRealpathSync.mockImplementation(value => String(value));
     vi.unstubAllEnvs();
   });
 
@@ -63,6 +68,7 @@ describe('cli-detection', () => {
     restorePlatform = undefined;
     vi.unstubAllEnvs();
     mockExistsSync.mockReset();
+    mockRealpathSync.mockReset();
   });
 
   it('resolves and enriches a POSIX CLI with the first absolute result', () => {
@@ -97,7 +103,7 @@ describe('cli-detection', () => {
       .mockReturnValueOnce(
         spawnResult({
           status: 0,
-          stdout: 'relative\\codex.cmd\r\nC:\\Tools\\codex.cmd\r\nC:\\Other\\codex.cmd\r\n',
+          stdout: 'relative\\codex.cmd\r\nC:\\Tools\\codex\r\nC:\\Tools\\codex.cmd\r\nC:\\Other\\codex.cmd\r\n',
         }),
       )
       .mockReturnValueOnce(spawnResult({ status: 0, stdout: 'codex 2.0.0\r\n' }));
@@ -228,7 +234,6 @@ describe('cli-detection', () => {
         shell: false,
         windowsHide: true,
         windowsVerbatimArguments: true,
-        env: process.env,
       },
     );
   });
@@ -263,6 +268,18 @@ describe('cli-detection', () => {
       error: 'version probe failed',
     });
     expect(mockSpawnSync).toHaveBeenCalledTimes(2);
+  });
+
+  it('ignores an attacker-controlled COMSPEC and verifies the trusted system fallback', () => {
+    vi.stubEnv('ComSpec', 'C:\\attacker\\cmd.exe');
+    vi.stubEnv('COMSPEC', 'C:\\attacker\\cmd.exe');
+
+    expect(validatedComspec()).toBe('C:\\Windows\\System32\\cmd.exe');
+    expect(mockExistsSync).toHaveBeenCalledWith('C:\\Windows\\System32\\cmd.exe');
+    expect(mockRealpathSync).toHaveBeenCalledWith('C:\\Windows\\System32\\cmd.exe');
+
+    mockRealpathSync.mockReturnValue('C:\\attacker\\cmd.exe');
+    expect(validatedComspec()).toBeUndefined();
   });
 
   it('rejects a relative Windows resolver candidate before any version or COMSPEC call', () => {
@@ -325,6 +342,7 @@ describe('cli-detection', () => {
   });
 
   it('preserves the legacy detectAllClis keys', () => {
+    restorePlatform = setProcessPlatform('linux');
     mockSpawnSync.mockReturnValue(spawnResult({ status: 1 }));
 
     expect(Object.keys(detectAllClis())).toEqual(['claude', 'codex', 'gemini', 'cursor', 'grok', 'antigravity']);

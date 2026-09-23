@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { runWorkflowProcess } from '../workflow-process.js';
+import { resolveValidatedCliInvocation } from '../model-contract.js';
 
 describe('bounded one-shot workflow process', () => {
   let cwd: string;
@@ -21,6 +22,18 @@ describe('bounded one-shot workflow process', () => {
     const result = await run('process.stdout.write(JSON.stringify(process.argv.slice(1)))', [untrusted]);
     expect(result.passed).toBe(true);
     expect(JSON.parse(readFileSync(result.artifacts[0]!.path, 'utf8'))).toEqual([untrusted]);
+  });
+
+  it.runIf(process.platform === 'win32')('runs an explicitly quoted batch invocation without shell mode', async () => {
+    const shim = join(cwd, 'codex.cmd');
+    const script = 'process.stdout.write(JSON.stringify(process.argv.slice(1)))';
+    writeFileSync(shim, `@echo off\r\n"${process.execPath}" -e "${script}" %*\r\n`);
+    const expected = ['exec', '--model', 'space and & literal', 'bang!literal', 'caret^literal', 'quote"literal'];
+    const invocation = resolveValidatedCliInvocation('codex', expected, shim);
+    const result = await runWorkflowProcess({ ...invocation, cwd, timeoutMs: 5000,
+      artifactPrefix: join(cwd, 'windows-batch') });
+    expect(result.passed).toBe(true);
+    expect(JSON.parse(readFileSync(result.artifacts[0]!.path, 'utf8'))).toEqual(expected);
   });
 
   it.each([undefined, 'claude', 'codex', 'glm'] as const)('removes lead lease credentials from a %s child', async provider => {

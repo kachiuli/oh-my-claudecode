@@ -138,7 +138,8 @@ export async function runWorkflowProcess(input) {
         let parentExit;
         let termination = 'not-requested';
         let streamClose = false;
-        const child = spawn(command, args, { cwd: input.cwd, env: environment, stdio: ['pipe', 'pipe', 'pipe'], shell: false, windowsHide: true, detached: process.platform !== 'win32' });
+        const child = spawn(command, args, { cwd: input.cwd, env: environment, stdio: ['pipe', 'pipe', 'pipe'], shell: false,
+            windowsHide: true, ...(input.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}), detached: process.platform !== 'win32' });
         if (child.pid && input.onSpawn) {
             // Bookkeeping never interrupts the provider. The bare PID is recorded before the start-identity probe so a
             // controller crash during the probe still leaves a verifiable record; a missing identity keeps recovery conservative.

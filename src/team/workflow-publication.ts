@@ -8,6 +8,7 @@ import {
   closeSync,
   constants,
   existsSync,
+  fstatSync,
   fsyncSync,
   lstatSync,
   openSync,
@@ -17,7 +18,7 @@ import {
   writeFileSync,
   writeSync,
 } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import {
   parseWorkflowHandoff,
   parseWorkflowState,
@@ -40,6 +41,9 @@ export interface WorkflowPublicationContract {
   canonicalTask: Readonly<{ source: "dispatch.task"; taskId: string }>;
   helperResult: Readonly<{
     purpose: "optional-local-validation";
+    path: string;
+    authorization: "create-this-file-only";
+    overwrite: false;
     publishVerifiedBytesUnchanged: true;
   }>;
   designatedResult: Readonly<{
@@ -48,7 +52,14 @@ export interface WorkflowPublicationContract {
     overwrite: false;
     stdoutIsHandoff: false;
   }>;
-  publishCommand: string;
+  publishInvocation: Readonly<{
+    command: string;
+    args: readonly string[];
+    sourceArgumentIndex: number;
+  }>;
+  publishCommand: string | null;
+  publishCommandTransport: "base64url-node-exec-file" | null;
+  publishCommandShells: readonly ["bash", "powershell", "cmd"] | null;
   finalization: readonly string[];
 }
 
@@ -62,7 +73,7 @@ export interface WorkflowHandoffArtifactRead extends WorkflowJsonArtifactRead {
 }
 
 interface WorkflowPublicationCapabilityRecord {
-  schemaVersion: 1;
+  schemaVersion: 2;
   id: string;
   tokenHash: string;
   workflowName: string;
@@ -72,7 +83,13 @@ interface WorkflowPublicationCapabilityRecord {
   workflowRoot: string;
   stateRoot: string;
   worktree: string;
+  helperResultFile: string;
   resultFile: string;
+}
+
+interface WorkflowHelperArtifact {
+  bytes: Buffer;
+  identity: Readonly<{ dev: number; ino: number }>;
 }
 
 export interface WorkflowPublicationIssue {
@@ -95,15 +112,91 @@ export interface WorkflowPublicationContext {
   environment?: NodeJS.ProcessEnv | Record<string, string | undefined>;
 }
 
+const SHELL_PUBLICATION_TRAMPOLINE =
+  "const i=JSON.parse(Buffer.from(process.argv[1],'base64url'));require('node:child_process').execFileSync(i.command,i.args,{stdio:'inherit',shell:false})";
+
+function workflowHelperResultPath(taskId: string, resultFile: string): string {
+  return `.omc-workflow-handoff-${createHash("sha256")
+    .update(`${taskId}\0${resultFile}`)
+    .digest("hex")
+    .slice(0, 16)}.json`;
+}
+
+function currentCliEntrypoint(): string | undefined {
+  try {
+    const entrypoint = realpathSync(resolve(process.argv[1] ?? ""));
+    const name = basename(entrypoint).toLowerCase();
+    const parent = basename(dirname(entrypoint)).toLowerCase();
+    if (
+      (name === "cli.cjs" && parent === "bridge") ||
+      (name === "oh-my-claudecode.js" && parent === "bin")
+    ) {
+      return entrypoint;
+    }
+  } catch {
+    /* Unknown launchers retain the installed omc argv contract without a shell fallback. */
+  }
+  return undefined;
+}
+
+function publicationCommand(
+  taskId: string,
+  resultFile: string,
+  helperResult: string,
+): Pick<
+  WorkflowPublicationContract,
+  | "publishInvocation"
+  | "publishCommand"
+  | "publishCommandTransport"
+  | "publishCommandShells"
+> {
+  const entrypoint = currentCliEntrypoint();
+  const command = entrypoint ? process.execPath : "omc";
+  const args = [
+    ...(entrypoint ? [entrypoint] : []),
+    "team",
+    "workflow",
+    "publish-result",
+    "--source",
+    helperResult,
+    "--result-file",
+    resultFile,
+    "--task-id",
+    taskId,
+  ];
+  const sourceArgumentIndex = (entrypoint ? 1 : 0) + 4;
+  const publishInvocation = Object.freeze({
+    command,
+    args: Object.freeze(args),
+    sourceArgumentIndex,
+  });
+  const publishCommand = entrypoint
+    ? `node -e "${SHELL_PUBLICATION_TRAMPOLINE}" "${Buffer.from(JSON.stringify({ command, args })).toString("base64url")}"`
+    : null;
+  return {
+    publishInvocation,
+    publishCommand,
+    publishCommandTransport: entrypoint ? "base64url-node-exec-file" : null,
+    publishCommandShells: entrypoint
+      ? Object.freeze(["bash", "powershell", "cmd"] as const)
+      : null,
+  };
+}
+
 /** Worker-facing publication contract. The command is portable across supported OMC installations. */
 export function workflowPublicationContract(
   taskId: string,
   resultFile: string,
 ): WorkflowPublicationContract {
+  const helperResult = workflowHelperResultPath(taskId, resultFile);
+  const command = publicationCommand(taskId, resultFile, helperResult);
   return {
     canonicalTask: Object.freeze({ source: "dispatch.task", taskId }),
     helperResult: Object.freeze({
       purpose: "optional-local-validation",
+      path: helperResult,
+      authorization: "create-this-file-only",
+      overwrite: false,
       publishVerifiedBytesUnchanged: true,
     }),
     designatedResult: Object.freeze({
@@ -112,12 +205,16 @@ export function workflowPublicationContract(
       overwrite: false,
       stdoutIsHandoff: false,
     }),
-    publishCommand: `omc team workflow publish-result --source <helper-local-json> --result-file ${JSON.stringify(resultFile)} --task-id ${JSON.stringify(taskId)}`,
+    ...command,
     finalization: Object.freeze([
       "Pass only dispatch.task to helpers that expect the canonical task; the full dispatch envelope is not a WorkflowTask.",
-      "Validate the helper-local JSON against the handoff schema and this canonical taskId.",
-      "Publish the already verified bytes exclusively to designatedResult.path; never overwrite an existing file.",
+      "After committing task work, exclusively create helperResult.path in the worker worktree; never overwrite an existing helper file.",
+      "Validate helperResult.path against the handoff schema and this canonical taskId.",
+      "Prefer executing publishInvocation.command with publishInvocation.args as an argument array. A shell-only worker may run publishCommand unchanged when it is present; never interpolate paths into it, and stop when it is null.",
+      "Publish the already verified bytes exclusively to designatedResult.path; never overwrite an existing result file.",
       "Re-read the destination and confirm byte equality, JSON parsing, handoff schema, and canonical taskId.",
+      "The publisher removes helperResult.path only after destination verification succeeds; do not remove it yourself.",
+      "The destination can remain if publication fails after writing it; do not alter any remaining destination or helper artifact, and stop for diagnosis.",
       "End the provider response only after the exact designated result exists and all destination checks pass.",
     ]),
   };
@@ -156,6 +253,75 @@ function regularResultBytes(path: string, expectedParent?: string): Buffer {
   return regularBytes(path, MAX_RESULT_BYTES, expectedParent);
 }
 
+function sameFileIdentity(
+  info: Readonly<{ dev: number; ino: number }>,
+  identity: Readonly<{ dev: number; ino: number }>,
+): boolean {
+  return info.dev === identity.dev && info.ino === identity.ino;
+}
+
+function readAuthorizedHelper(
+  path: string,
+  expectedParent: string,
+): WorkflowHelperArtifact {
+  canonicalParent(path, expectedParent);
+  if (!existsSync(path)) throw new Error("workflow_designated_result_missing");
+  const initial = lstatSync(path);
+  if (initial.isSymbolicLink())
+    throw new Error("workflow_result_symlink_rejected");
+  if (!initial.isFile() || initial.nlink !== 1)
+    throw new Error("workflow_result_not_regular_file");
+  if (initial.size > MAX_RESULT_BYTES)
+    throw new Error("workflow_artifact_invalid_or_oversized");
+  const identity = Object.freeze({ dev: initial.dev, ino: initial.ino });
+  const descriptor = openSync(path, constants.O_RDONLY);
+  try {
+    const opened = fstatSync(descriptor);
+    if (
+      !opened.isFile() ||
+      opened.nlink !== 1 ||
+      opened.size > MAX_RESULT_BYTES ||
+      !sameFileIdentity(opened, identity)
+    ) {
+      throw new Error("workflow_helper_identity_changed");
+    }
+    const bytes = readFileSync(descriptor);
+    const finalDescriptor = fstatSync(descriptor);
+    const finalPath = lstatSync(path);
+    if (
+      bytes.length > MAX_RESULT_BYTES ||
+      !finalDescriptor.isFile() ||
+      finalDescriptor.nlink !== 1 ||
+      finalPath.isSymbolicLink() ||
+      !finalPath.isFile() ||
+      finalPath.nlink !== 1 ||
+      !sameFileIdentity(finalDescriptor, identity) ||
+      !sameFileIdentity(finalPath, identity)
+    ) {
+      throw new Error("workflow_helper_identity_changed");
+    }
+    return { bytes, identity };
+  } finally {
+    closeSync(descriptor);
+  }
+}
+
+function removeAuthorizedHelper(
+  path: string,
+  identity: Readonly<{ dev: number; ino: number }>,
+): void {
+  const info = lstatSync(path);
+  if (
+    info.isSymbolicLink() ||
+    !info.isFile() ||
+    info.nlink !== 1 ||
+    !sameFileIdentity(info, identity)
+  ) {
+    throw new Error("workflow_helper_identity_changed");
+  }
+  unlinkSync(path);
+}
+
 function exactRecord(value: unknown): WorkflowPublicationCapabilityRecord {
   if (!value || typeof value !== "object" || Array.isArray(value))
     throw new Error("workflow_publication_not_authorized");
@@ -171,12 +337,13 @@ function exactRecord(value: unknown): WorkflowPublicationCapabilityRecord {
     "workflowRoot",
     "stateRoot",
     "worktree",
+    "helperResultFile",
     "resultFile",
   ];
   if (
     Object.keys(record).length !== keys.length ||
     Object.keys(record).some((key) => !keys.includes(key)) ||
-    record.schemaVersion !== 1 ||
+    record.schemaVersion !== 2 ||
     typeof record.id !== "string" ||
     typeof record.tokenHash !== "string" ||
     typeof record.workflowName !== "string" ||
@@ -186,6 +353,7 @@ function exactRecord(value: unknown): WorkflowPublicationCapabilityRecord {
     typeof record.workflowRoot !== "string" ||
     typeof record.stateRoot !== "string" ||
     typeof record.worktree !== "string" ||
+    typeof record.helperResultFile !== "string" ||
     typeof record.resultFile !== "string"
   )
     throw new Error("workflow_publication_not_authorized");
@@ -242,8 +410,14 @@ export function issueWorkflowPublication(
     throw new Error("workflow_invalid_publication_authority");
   }
   const token = randomBytes(32).toString("hex");
+  const helperResultFile = resolve(
+    worktree,
+    workflowHelperResultPath(taskId, resultFile),
+  );
+  if (dirname(helperResultFile) !== worktree)
+    throw new Error("workflow_invalid_publication_authority");
   const record: WorkflowPublicationCapabilityRecord = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     id,
     tokenHash: createHash("sha256").update(token).digest("hex"),
     workflowName,
@@ -253,6 +427,7 @@ export function issueWorkflowPublication(
     workflowRoot,
     stateRoot,
     worktree,
+    helperResultFile,
     resultFile,
   };
   writeFileSync(capability, `${JSON.stringify(record)}\n`, {
@@ -281,10 +456,11 @@ export function issueWorkflowPublication(
 }
 
 function authorizePublication(
+  sourceFile: string,
   resultFile: string,
   taskId: string,
   context: WorkflowPublicationContext,
-): { capability: string; worktree: string } {
+): { capability: string; helperResultFile: string; worktree: string } {
   const environment = context.environment ?? process.env;
   const id = environment[WORKFLOW_PUBLICATION_ENV.capabilityId];
   const token = environment[WORKFLOW_PUBLICATION_ENV.capabilityToken];
@@ -342,6 +518,17 @@ function authorizePublication(
   }
   if (cwd !== recordWorktree || environmentWorktree !== recordWorktree)
     throw new Error("workflow_publication_not_authorized");
+  const expectedHelperResult = resolve(
+    recordWorktree,
+    workflowHelperResultPath(taskId, record.resultFile),
+  );
+  if (
+    resolve(sourceFile) !== record.helperResultFile ||
+    record.helperResultFile !== expectedHelperResult ||
+    dirname(record.helperResultFile) !== recordWorktree
+  ) {
+    throw new Error("workflow_publication_not_authorized");
+  }
   const stateFile = join(stateRoot, "workflow.json");
   let state;
   try {
@@ -384,7 +571,11 @@ function authorizePublication(
     resolve(resultFile) !== expectedResult
   )
     throw new Error("workflow_publication_not_authorized");
-  return { capability, worktree: recordWorktree };
+  return {
+    capability,
+    helperResultFile: record.helperResultFile,
+    worktree: recordWorktree,
+  };
 }
 
 function parseResultBytes(bytes: Buffer, taskId: string): WorkflowHandoff {
@@ -408,9 +599,17 @@ export function publishWorkflowResultArtifact(
   context: WorkflowPublicationContext,
 ): { sizeBytes: number; sha256: string } {
   taskId = safeWorkflowId(taskId);
-  const authority = authorizePublication(resultFile, taskId, context);
-  validateResolvedPath(realpathSync(sourceFile), authority.worktree);
-  const source = regularResultBytes(sourceFile);
+  const authority = authorizePublication(
+    sourceFile,
+    resultFile,
+    taskId,
+    context,
+  );
+  const helper = readAuthorizedHelper(
+    authority.helperResultFile,
+    authority.worktree,
+  );
+  const source = helper.bytes;
   parseResultBytes(source, taskId);
   canonicalParent(resultFile, dirname(authority.capability));
   if (existsSync(resultFile)) throw new Error("workflow_result_already_exists");
@@ -436,6 +635,8 @@ export function publishWorkflowResultArtifact(
   if (!published.equals(source))
     throw new Error("workflow_result_publication_mismatch");
   parseResultBytes(published, taskId);
+  // Later errors retain the destination and capability; a failed helper unlink retains the helper too.
+  removeAuthorizedHelper(authority.helperResultFile, helper.identity);
   try {
     unlinkSync(authority.capability);
   } catch (error) {

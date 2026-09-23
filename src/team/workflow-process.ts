@@ -70,6 +70,8 @@ export interface WorkflowProcessResult {
 /** One-shot execution only; no shell, transcript handoff or env serialization. */
 export async function runWorkflowProcess(input: {
   command: string; args: string[]; cwd: string; stdin?: string; artifactPrefix: string;
+  /** Required for an already-quoted native cmd.exe /c payload. Never enables a shell. */
+  windowsVerbatimArguments?: boolean;
   /** Elapsed lifetime bound in milliseconds, or null for an explicitly unbounded run. */
   timeoutMs: number | null;
   provider?: WorkflowTelemetry['provider']; worker?: string; collectUsage?: boolean;
@@ -150,7 +152,8 @@ export async function runWorkflowProcess(input: {
     let parentExit: { code: number | null; signal: NodeJS.Signals | null } | undefined;
     let termination: WorkflowProcessSettlement['termination'] = 'not-requested';
     let streamClose = false;
-    const child = spawn(command, args, { cwd: input.cwd, env: environment, stdio: ['pipe', 'pipe', 'pipe'], shell: false, windowsHide: true, detached: process.platform !== 'win32' });
+    const child = spawn(command, args, { cwd: input.cwd, env: environment, stdio: ['pipe', 'pipe', 'pipe'], shell: false,
+      windowsHide: true, ...(input.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}), detached: process.platform !== 'win32' });
     if (child.pid && input.onSpawn) {
       // Bookkeeping never interrupts the provider. The bare PID is recorded before the start-identity probe so a
       // controller crash during the probe still leaves a verifiable record; a missing identity keeps recovery conservative.

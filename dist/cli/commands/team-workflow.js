@@ -2,12 +2,14 @@ import { lstatSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { publishWorkflowResultArtifact } from '../../team/workflow-publication.js';
 import { acceptWorkflowTask, addWorkflowFix, adjudicateWorkflow, cleanupWorkflow, finishWorkflow, initWorkflow, initWorkflowV2, readWorkflow, rejectWorkflowTask, resumeWorkflowTask, reviewWorkflow, runWorkflow, substituteWorkflowBinding, verifyWorkflow, workflowStatus, } from '../../team/workflow.js';
+import { validateCliCommandRef } from '../../team/model-contract.js';
 import { workflowUsage } from '../../team/workflow-report.js';
 import { boundedText, safeWorkflowId, workflowSha } from '../../team/workflow-contracts.js';
 export const WORKFLOW_HELP = `Usage: omc team workflow <operation>
 
   init --file <plan.json> [--mode v1|balanced] [--workers N] [--max-review-passes N] [--max-attempts N]
        [--timeout-ms N] [--provider-policy supervised] [--profile claude-glm-codex|role-substitution] [--bindings <roles.json>]
+       [--codex-command <executable>]
   run <name> [--runtime <absolute-private-config.json>]
   status <name>
   usage <name>
@@ -31,6 +33,8 @@ Initialization accepts an optional task timeout between 100 and 3600000 ms, incl
 omitting it saves the controller's 600000 ms default unchanged.
 Initialization accepts one optional supervised provider policy; omitting it keeps the
 legacy finite provider timeout, and no later operation accepts the flag.
+Legacy reviewer command selection uses --codex-command, then OMC_CODEX_COMMAND,
+then codex on PATH. The command must be an executable name or absolute path.
 Local worker checks and integrated verification always keep the finite saved timeout.
 Substitution records intent without dispatch or budget reset. Self-review is allowed.
 See docs/GLM-WORKFLOW.md, docs/GLM-WORKFLOW-V1.2.md and docs/GLM-WORKFLOW-V1.3.md for
@@ -166,7 +170,7 @@ export async function workflowCommand(args, cwd = process.cwd()) {
     }
     const { positional, flags } = parseArgs(rest);
     const allowed = {
-        init: ['--file', '--mode', '--workers', '--max-review-passes', '--max-attempts', '--timeout-ms', '--provider-policy', '--profile', '--bindings'],
+        init: ['--file', '--mode', '--workers', '--max-review-passes', '--max-attempts', '--timeout-ms', '--provider-policy', '--profile', '--bindings', '--codex-command'],
         run: ['--runtime'], status: [], usage: [], resume: ['--expected-head', '--reason', '--runtime'], accept: [], reject: ['--reason'], verify: [], review: ['--runtime'],
         substitute: ['--file'], adjudicate: ['--file'], 'add-fix': ['--file'], finish: [], cleanup: [],
         'publish-result': ['--source', '--result-file', '--task-id'],
@@ -214,6 +218,13 @@ export async function workflowCommand(args, cwd = process.cwd()) {
             throw new Error('workflow_role_substitution_profile_required');
         if (profile === 'role-substitution' && !flags.has('--bindings'))
             throw new Error('workflow_bindings_required');
+        if (profile === 'role-substitution' && flags.has('--codex-command'))
+            throw new Error('workflow_role_substitution_profile_required');
+        const codexCommand = flags.get('--codex-command');
+        if (codexCommand !== undefined) {
+            validateCliCommandRef(codexCommand);
+            options.codexCommand = codexCommand;
+        }
         const mode = flags.get('--mode');
         if (mode !== undefined) {
             if (mode !== 'v1' && mode !== 'balanced')

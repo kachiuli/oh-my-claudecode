@@ -122,6 +122,7 @@ describe("project host setup", () => {
     const root = temporaryRepository();
     write(join(root, "CLAUDE.md"), "# User Claude guidance\n");
     write(join(root, "AGENTS.md"), "# User Codex guidance\n");
+    write(join(root, ".omc", "routing.md"), "# Project routing defaults\n");
     write(
       join(root, ".codex", "config.toml"),
       '[mcp_servers.user]\ncommand = "user-server"\n',
@@ -146,6 +147,14 @@ describe("project host setup", () => {
     );
     expect(readFileSync(join(root, "AGENTS.md"), "utf8")).toContain(
       "# User Codex guidance",
+    );
+    for (const file of ["CLAUDE.md", "AGENTS.md"]) {
+      const guidance = readFileSync(join(root, file), "utf8");
+      expect(guidance).toContain("`.omc/routing.md`");
+      expect(guidance).toContain("publication.publishCommand");
+    }
+    expect(readFileSync(join(root, ".omc", "routing.md"), "utf8")).toBe(
+      "# Project routing defaults\n",
     );
     expect(readFileSync(join(root, ".codex", "config.toml"), "utf8")).toContain(
       "[mcp_servers.user]",

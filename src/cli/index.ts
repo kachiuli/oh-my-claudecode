@@ -106,7 +106,7 @@ export function applyPluginDirOption(rawPath: string | undefined): void {
 const program = new Command();
 
 // Win32 platform warning - OMC requires tmux which is not available on native Windows
-warnIfWin32();
+warnIfWin32(process.argv.slice(2));
 
 // Default action when running 'omc' with no subcommand
 // Forwards all args to launchCommand so 'omc --notify false --madmax' etc. work directly

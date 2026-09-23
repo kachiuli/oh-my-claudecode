@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { copyFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'fs';
-import { delimiter, join } from 'path';
+import { spawnSync } from 'child_process';
+import { basename, delimiter, dirname, extname, join } from 'path';
 import { tmpdir } from 'os';
 import { probeCli } from '../cli-detection.js';
 
@@ -16,6 +17,7 @@ describe.skipIf(!isWindows)('cli-detection native Windows integration', () => {
   let originalPath: string | undefined;
   let originalComspec: string | undefined;
   let originalCOMSPEC: string | undefined;
+  let originalPathext: string | undefined;
   let sentinelPath: string | undefined;
   let originalSentinelEnv: string | undefined;
 
@@ -24,6 +26,7 @@ describe.skipIf(!isWindows)('cli-detection native Windows integration', () => {
     originalPath = process.env.PATH;
     originalComspec = process.env.ComSpec;
     originalCOMSPEC = process.env.COMSPEC;
+    originalPathext = process.env.PATHEXT;
     originalSentinelEnv = process.env.OMC_CLI_DETECTION_EXPECTED_LAUNCH;
     fixtureRoot = mkdtempSync(join(tmpdir(), 'omc cli detection '));
     sentinelPath = join(fixtureRoot, 'injected-side-effect.txt');
@@ -37,6 +40,8 @@ describe.skipIf(!isWindows)('cli-detection native Windows integration', () => {
     else process.env.ComSpec = originalComspec;
     if (originalCOMSPEC === undefined) delete process.env.COMSPEC;
     else process.env.COMSPEC = originalCOMSPEC;
+    if (originalPathext === undefined) delete process.env.PATHEXT;
+    else process.env.PATHEXT = originalPathext;
     if (originalSentinelEnv === undefined) delete process.env.OMC_CLI_DETECTION_EXPECTED_LAUNCH;
     else process.env.OMC_CLI_DETECTION_EXPECTED_LAUNCH = originalSentinelEnv;
     if (fixtureRoot) rmSync(fixtureRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
@@ -44,16 +49,36 @@ describe.skipIf(!isWindows)('cli-detection native Windows integration', () => {
     sentinelPath = undefined;
   });
 
-  it('resolves a temporary .exe through where.exe and PATHEXT', () => {
-    const exePath = join(fixtureRoot!, 'omc-native-exe.exe');
-    copyFileSync(process.execPath, exePath);
+  it('resolves the running Node .exe through where.exe and PATHEXT', () => {
+    const executableName = basename(process.execPath, extname(process.execPath));
+    process.env.PATH = `${dirname(process.execPath)}${delimiter}${originalPath ?? ''}`;
 
-    const result = probeCli('omc-native-exe');
+    const result = probeCli(executableName);
 
     expect(result.found).toBe(true);
     expect(result.path).toBeDefined();
-    expect(canonicalWindowsPath(result.path!)).toBe(canonicalWindowsPath(exePath));
+    expect(canonicalWindowsPath(result.path!)).toBe(canonicalWindowsPath(process.execPath));
     expect(result.version).toBeDefined();
+  });
+
+  it('prefers the runnable .cmd when an npm-style extensionless shim is listed first', () => {
+    const extensionless = join(fixtureRoot!, 'omc-npm-shim');
+    const batch = join(fixtureRoot!, 'omc-npm-shim.cmd');
+    writeFileSync(extensionless, '#!/bin/sh\n', 'utf8');
+    writeFileSync(batch, '@echo off\r\nif /i not "%~1"=="--version" exit /b 17\r\necho omc-npm-shim 1.0.0\r\n', 'utf8');
+    process.env.PATHEXT = '.COM;.EXE;.BAT;.CMD';
+
+    const lookup = spawnSync('where.exe', ['omc-npm-shim'], { encoding: 'utf8', shell: false, windowsHide: true });
+    expect(lookup.status).toBe(0);
+    const candidates = lookup.stdout.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+    expect(candidates).toHaveLength(2);
+    expect(canonicalWindowsPath(candidates[0]!)).toBe(canonicalWindowsPath(extensionless));
+    expect(canonicalWindowsPath(candidates[1]!)).toBe(canonicalWindowsPath(batch));
+
+    const result = probeCli('omc-npm-shim', 'win32');
+    expect(result).toMatchObject({ found: true, version: 'omc-npm-shim 1.0.0' });
+    expect(result.path).toBeDefined();
+    expect(canonicalWindowsPath(result.path!)).toBe(canonicalWindowsPath(batch));
   });
 
   it('chooses the first absolute where.exe result and preserves spaces in a safe batch path', () => {

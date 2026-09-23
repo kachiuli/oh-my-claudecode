@@ -14,7 +14,7 @@ import { ensureWorkerWorktree, getBranchName, getWorktreePath, removeWorkerWorkt
 import { applyGlmProfile, getGlmConfig, resolveGlmExecutable } from './glm-config.js';
 import { ABSOLUTE_MAX_WORKERS } from './types.js';
 import { resolveRoleAssignment } from './stage-router.js';
-import { buildLaunchArgs, resolveValidatedBinaryPath } from './model-contract.js';
+import { buildLaunchArgs, resolveValidatedCliInvocation, validateCliCommandRef } from './model-contract.js';
 import { runWorkflowProcess, redactWorkflowText } from './workflow-process.js';
 import { createClaudeWorkflowResultDecoder, prepareWorkflowBinding, workflowWorkerArguments, workflowReviewerArguments, workflowReviewProvenance } from './workflow-adapters.js';
 import { buildWorkflowPrompt, workflowContextFingerprint, workflowPromptFingerprint, workflowSessionFingerprint } from './workflow-prompt.js';
@@ -256,12 +256,14 @@ async function initializeWorkflow(cwd, rawPlan, options, bindings) {
             throw new Error('workflow_role_routing_requires_glm_executor_and_codex_reviewer');
         const config = getGlmConfig(routing);
         const maxWorkers = count(options.maxWorkers, config.maxWorkers, ABSOLUTE_MAX_WORKERS);
+        const codexCommand = options.codexCommand ?? process.env.OMC_CODEX_COMMAND ?? 'codex';
+        validateCliCommandRef(codexCommand);
         const resolvedOptions = {
             ...(options.mode === undefined ? {} : { mode: options.mode }),
             workers: count(options.workers, Math.min(config.defaultWorkers, maxWorkers), maxWorkers), maxWorkers,
             maxAttempts: count(options.maxAttempts, 2, 5), maxReviewPasses: count(options.maxReviewPasses, 2, 10),
             timeoutMs: count(options.timeoutMs, 600_000, 3_600_000, 100), backoffMs: count(options.backoffMs, 1000, 30_000, 0),
-            glmCommand: options.glmCommand ?? config.command, codexCommand: options.codexCommand ?? 'codex',
+            glmCommand: options.glmCommand ?? config.command, codexCommand,
             ...(options.glmModel ?? (executor.model || config.model) ? { glmModel: options.glmModel ?? (executor.model || config.model) } : {}),
             ...(options.codexModel ?? reviewer.model ? { codexModel: options.codexModel ?? reviewer.model } : {}),
             ...(providerPolicy === undefined ? {} : { providerPolicy }),
@@ -902,7 +904,6 @@ export async function reviewWorkflow(cwd, name, runtime) {
         const prepared = state.schemaVersion === 2 ? prepareBinding(state, state.bindings.reviewer, runtime) : undefined;
         const context = state.schemaVersion === 2 ? reviewContext(state) : undefined;
         const provenance = prepared && runtime ? workflowReviewProvenance(prepared, head, runtime) : undefined;
-        const command = prepared?.command ?? (state.options.codexCommand === 'codex' ? resolveValidatedBinaryPath('codex') : resolveGlmExecutable(state.options.codexCommand));
         const balanced = state.options.mode === 'balanced';
         const started = Date.now();
         state.reviewPasses++;
@@ -943,9 +944,13 @@ export async function reviewWorkflow(cwd, name, runtime) {
                     : 'Independently inspect the integrated code against baseCommit and acceptance criteria. Read only: do not modify files, commits or refs. Do not inspect worker transcripts. Return the required JSON findings with P0/P1/P2/P3 severities. Each finding.file must be a repository-relative POSIX path or null, for example src/example.ts; do not return absolute paths or traversal segments.' });
             if (prepared && Buffer.byteLength(request) > 384 * 1024)
                 throw new Error('workflow_review_context_too_large');
-            const result = await runWorkflowProvider({ command, args: prepared ? workflowReviewerArguments(prepared, schemaFile, resultFile, boundedJson(schemaFile))
-                    : ['exec', '--sandbox', 'read-only', '--ephemeral', ...(balanced ? ['--json'] : []),
-                        ...(state.options.codexModel ? ['--model', state.options.codexModel] : []), '--output-schema', schemaFile, '--output-last-message', resultFile, '-'],
+            const legacyArgs = ['exec', '--sandbox', 'read-only', '--ephemeral', ...(balanced ? ['--json'] : []),
+                ...(state.options.codexModel ? ['--model', state.options.codexModel] : []), '--output-schema', schemaFile, '--output-last-message', resultFile, '-'];
+            const invocation = prepared
+                ? { command: prepared.command, args: workflowReviewerArguments(prepared, schemaFile, resultFile, boundedJson(schemaFile)) }
+                : resolveValidatedCliInvocation('codex', legacyArgs, state.options.codexCommand);
+            const result = await runWorkflowProvider({ command: invocation.command, args: invocation.args,
+                ...(invocation.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
                 cwd, stdin: request, ...(prepared ? { environment: prepared.environment, redactionEnvironment: prepared.redactionEnvironment } : {}),
                 timeoutMs: providerTimeoutMs(state), artifactPrefix: prefix, provider: prepared?.binding.providerRoute ?? 'codex', ...(balanced ? { collectUsage: true } : {}) }, resultFile, prepared?.binding.providerRoute === 'claude' ? { kind: 'claude-native-structured' } : { kind: 'provider-designated-json' });
             if (attempt) {
