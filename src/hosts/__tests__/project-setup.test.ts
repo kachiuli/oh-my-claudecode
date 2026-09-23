@@ -151,6 +151,8 @@ describe("project host setup", () => {
     for (const file of ["CLAUDE.md", "AGENTS.md"]) {
       const guidance = readFileSync(join(root, file), "utf8");
       expect(guidance).toContain("`.omc/routing.md`");
+      expect(guidance).toContain("overridable defaults");
+      expect(guidance).toContain("actual model, effort, executable/CLI version and reason for any fallback");
       expect(guidance).toContain("publication.publishCommand");
     }
     expect(readFileSync(join(root, ".omc", "routing.md"), "utf8")).toBe(

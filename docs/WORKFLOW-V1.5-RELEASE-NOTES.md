@@ -21,7 +21,7 @@ The archive keeps package version 5.5.0 and records the tagged source commit in 
 
 ## workflow-v1.5.2 maintenance
 
-This release repairs direct-CLI worker publication (#15), the Windows Codex reviewer command and override (#16), and workflow CLI startup warnings (#17). It also corrects orphaned-attempt recovery instructions (#18). The npm package version remains 5.5.0. Install it with the commands above, replacing `workflow-v1.5` with `workflow-v1.5.2` in the archive URL.
+This release repairs direct-CLI worker publication (#15), the Windows Codex reviewer command and override (#16), and workflow CLI startup warnings (#17). It also corrects orphaned-attempt recovery instructions (#18) and preserves completion evidence when verbose Claude stream-json output fills the stdout log cap (#20). The npm package version remains 5.5.0. Install it with the commands above, replacing `workflow-v1.5` with `workflow-v1.5.2` in the archive URL.
 
 Worker dispatch now includes structured `publication.publishInvocation` arguments. Custom workers should execute those arguments directly; `publication.publishCommand` is a safe shell fallback only for recognized Node entrypoints and is `null` for unknown launchers. Windows batch shims require the canonical `C:\Windows\System32\cmd.exe` path in this release.
 
@@ -29,8 +29,16 @@ Projects can set editable routing defaults without a controller-specific profile
 
 > For OMC, use Claude Opus 5.5 as lead, Fable 5.1 for design, GLM 5.3 for implementation (Flash on frozen tasks), Sol 6.0 for packet review (fall back to `gpt-5.6-sol`), and Astra for final review. Review at high effort, ultra for risky work. Verify availability, honor overrides, record actual model/effort/CLI and fallback reason, preserve gates, and attach an attributed PR verdict for external review.
 
-The prompt supplies project preferences; workflow state, command safety and review gates remain enforced by OMC. Automated catalog fallback and a native PR-review stage from #19 are still separate work.
+The prompt-first contract is the chosen resolution for #19: project preferences are read each lead session, remain overridable, and the lead records actual model, effort, CLI and fallback reason in workflow evidence. Model-catalog lookup and PR-review attribution are lead actions; this release does not add an automatic catalog resolver or a native PR-review gate. Workflow state, command safety and existing review gates remain enforced by OMC.
 
+### Verbose provider output (#20)
+
+The bounded worker stdout artifact now filters high-volume `system/thinking_tokens` progress records, so a terminal stream-json event remains visible after long reasoning output. Usage telemetry still consumes the untouched full stream. A canonical completed handoff can settle missing terminal framing after ordinary stdout truncation only when the provider exits cleanly and its output closes. An inherited pipe that does not close remains `workflow_output_incomplete` for inspection; failed exits, timeouts, interruptions and failed handoffs remain failures.
+### Failed handoffs and shared registries (#21, #22)
+
+A worker whose declared checks fail or whose work exceeds its scope is instructed to publish a failed handoff with the available evidence. The lead can inspect and reject that packet, then create a small follow-up workflow at the integration head with corrected scope and checks to reapply, accept and verify the retained work. This is an explicit workaround; there is no direct `team workflow adopt` command in 1.5.2.
+
+Parallel packets may each prepare changes that require one shared registry update. Keep their write scopes disjoint; after accepting them, a single dependent integration task owns the registry, adds every entry and runs the cross-check. Overlapping independent write scopes remain refused; there is no automatic line-wise merge.
 ## What changed since workflow-v1.4.1
 
 ### Upstream 5.5.0 merge

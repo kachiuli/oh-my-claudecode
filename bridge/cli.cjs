@@ -127916,6 +127916,7 @@ function createWorkflowUsageCollector(provider) {
 // src/team/workflow-process.ts
 init_team_owner_epoch();
 var MAX_LOG_BYTES = 1024 * 1024;
+var MAX_STREAM_JSON_LINE_BYTES = 256 * 1024;
 var MAX_TIMEOUT_MS = 2147483647;
 var SETTLEMENT_GRACE_MS = 2e3;
 var WORKFLOW_PUBLICATION_ENV = Object.freeze({
@@ -127998,7 +127999,7 @@ async function runWorkflowProcess(input) {
   const startedAt = performance.now();
   const usage = input.collectUsage && input.provider ? createWorkflowUsageCollector(input.provider) : void 0;
   const result = await new Promise((resolve50) => {
-    const stdout = [];
+    let stdout;
     const stderr = [];
     let stdoutBytes = 0;
     let stderrBytes = 0;
@@ -128039,6 +128040,66 @@ async function runWorkflowProcess(input) {
       directChild: !started ? "not-started" : parentExit ? "exited" : "unconfirmed",
       descendants: !started ? "not-started" : "unverified"
     });
+    const captureStdout = (chunk) => {
+      const keptBytes = Math.min(chunk.length, Math.max(0, MAX_LOG_BYTES - stdoutBytes));
+      if (keptBytes) {
+        stdout ??= Buffer.allocUnsafe(MAX_LOG_BYTES);
+        chunk.copy(stdout, stdoutBytes, 0, keptBytes);
+      }
+      stdoutTruncated ||= keptBytes < chunk.length;
+      stdoutBytes += keptBytes;
+    };
+    const filterThinkingProgress = input.collectUsage === true && input.provider !== void 0 && input.provider !== "codex";
+    let streamJsonLine;
+    let streamJsonLineBytes = 0;
+    let streamJsonPassthrough = false;
+    const clearStreamJsonLine = () => {
+      streamJsonLineBytes = 0;
+    };
+    const flushStreamJsonLine = () => {
+      if (streamJsonLine && streamJsonLineBytes) captureStdout(streamJsonLine.subarray(0, streamJsonLineBytes));
+      clearStreamJsonLine();
+    };
+    const thinkingProgressLine = () => {
+      if (!streamJsonLine) return false;
+      let event;
+      try {
+        event = JSON.parse(streamJsonLine.subarray(0, streamJsonLineBytes).toString("utf8").trim());
+      } catch {
+        return false;
+      }
+      return event !== null && typeof event === "object" && !Array.isArray(event) && event.type === "system" && event.subtype === "thinking_tokens";
+    };
+    const captureFilteredStdout = (chunk) => {
+      if (!filterThinkingProgress) {
+        captureStdout(chunk);
+        return;
+      }
+      if (stdoutTruncated) return;
+      let offset = 0;
+      while (offset < chunk.length) {
+        const newline = chunk.indexOf(10, offset);
+        const end = newline < 0 ? chunk.length : newline + 1;
+        const part = chunk.subarray(offset, end);
+        if (streamJsonPassthrough) captureStdout(part);
+        else if (streamJsonLineBytes + part.length > MAX_STREAM_JSON_LINE_BYTES) {
+          flushStreamJsonLine();
+          captureStdout(part);
+          streamJsonPassthrough = newline < 0;
+        } else {
+          streamJsonLine ??= Buffer.allocUnsafe(MAX_STREAM_JSON_LINE_BYTES);
+          part.copy(streamJsonLine, streamJsonLineBytes);
+          streamJsonLineBytes += part.length;
+          if (newline >= 0) {
+            if (thinkingProgressLine()) clearStreamJsonLine();
+            else flushStreamJsonLine();
+          }
+        }
+        if (stdoutTruncated) break;
+        if (newline >= 0) streamJsonPassthrough = false;
+        offset = end;
+      }
+    };
     const finish = (code) => {
       if (finished) return;
       finished = true;
@@ -128047,6 +128108,7 @@ async function runWorkflowProcess(input) {
       if (settlementTimer) clearTimeout(settlementTimer);
       process.removeListener("SIGINT", interrupt);
       process.removeListener("SIGTERM", interrupt);
+      flushStreamJsonLine();
       const captured = (chunks, truncated) => {
         const buffer = Buffer.concat(chunks);
         if (!truncated) return buffer;
@@ -128071,8 +128133,9 @@ async function runWorkflowProcess(input) {
       resolve50({
         code,
         error: error2,
-        stdout: captured(stdout, stdoutTruncated),
+        stdout: captured(stdout ? [stdout.subarray(0, stdoutBytes)] : [], stdoutTruncated),
         stderr: captured(stderr, stderrTruncated),
+        stdoutTruncated,
         ...noWall ? { settlement: settlement() } : {}
       });
     };
@@ -128146,10 +128209,7 @@ async function runWorkflowProcess(input) {
           terminate();
         }
       }
-      const kept = chunk.subarray(0, Math.max(0, MAX_LOG_BYTES - stdoutBytes));
-      if (kept.length) stdout.push(kept);
-      stdoutTruncated ||= kept.length < chunk.length;
-      stdoutBytes += kept.length;
+      captureFilteredStdout(chunk);
     });
     child.stderr.on("data", (chunk) => {
       const kept = chunk.subarray(0, Math.max(0, MAX_LOG_BYTES - stderrBytes));
@@ -128186,6 +128246,10 @@ async function runWorkflowProcess(input) {
     }
   });
   const telemetry = usage?.finish({ durationMs: performance.now() - startedAt, passed: result.code === 0 && !result.error });
+  if (telemetry && result.stdoutTruncated) {
+    telemetry.diagnostics = [.../* @__PURE__ */ new Set([...telemetry.diagnostics ?? [], "stdout_truncated"])].sort();
+    if (telemetry.status === "measured") telemetry.status = "partial";
+  }
   if (telemetry?.sessionId && redactWorkflowText(telemetry.sessionId, true, redactionEnvironment) !== telemetry.sessionId) {
     delete telemetry.sessionId;
     telemetry.diagnostics = [.../* @__PURE__ */ new Set([...telemetry.diagnostics ?? [], "session_identity_invalid"])].sort();
@@ -128193,10 +128257,13 @@ async function runWorkflowProcess(input) {
   }
   const failure3 = result.error ?? (result.code !== 0 ? /\b429\b|rate[_ -]?limit|too many requests/i.test(`${result.stdout.toString("utf8")}
 ${result.stderr.toString("utf8")}`) ? "throttled" : "process_failed" : telemetry && telemetry.terminal !== "success" ? "process_failed" : void 0);
+  const parentExitedSuccessfully = result.settlement ? result.settlement.parentExitCode === 0 && result.settlement.parentExitSignal === null && result.settlement.directChild === "exited" : result.code === 0;
   return {
     passed: result.code === 0 && !failure3,
     ...failure3 ? { error: failure3 } : {},
     artifacts,
+    parentExitedSuccessfully,
+    stdoutTruncated: result.stdoutTruncated,
     ...result.settlement ? { settlement: result.settlement } : {},
     ...telemetry ? { telemetry } : {}
   };
@@ -128991,7 +129058,7 @@ function createClaudeWorkflowResultDecoder() {
 
 // src/team/workflow-prompt.ts
 var import_node_crypto19 = require("node:crypto");
-var INSTRUCTIONS = "Implement only your writeScope and follow all contracts and acceptanceCriteria. Run the declared tests. Do not merge, push, modify other branches or spawn nested workers. Do not alter workflow state, budgets or previous artifacts. The sole state-directory exception is exclusive creation of the dispatch publication.designatedResult.path. Make exactly one coherent commit on baseCommit and leave your worktree clean. The handoff JSON contains taskId, outcome (completed|failed), commitSha, changedFiles, tests ({command,args,passed}), interfaceChanges, assumptions, risks, summary. Keep summary <=1000 characters and lists <=30 items. Follow publication.finalization exactly; stdout/stderr and helper-local JSON are evidence, never the controller handoff. Do not emit credentials.";
+var INSTRUCTIONS = "Implement only your writeScope and follow all contracts and acceptanceCriteria. Run the declared tests. If a declared check fails or work exceeds writeScope, publish exactly one outcome: failed handoff with the commit, changed files, test results and evidence available; create it before helperResult so publication can validate it. Exit normally only after the failed handoff is published. Do not merge, push, modify other branches or spawn nested workers. Do not alter workflow state, budgets or previous artifacts. The sole state-directory exception is exclusive creation of the dispatch publication.designatedResult.path. Make exactly one coherent commit on baseCommit and leave your worktree clean. The handoff JSON contains taskId, outcome (completed|failed), commitSha, changedFiles, tests ({command,args,passed}), interfaceChanges, assumptions, risks, summary. Keep summary <=1000 characters and lists <=30 items. Follow publication.finalization exactly; stdout/stderr and helper-local JSON are evidence, never the controller handoff. Do not emit credentials.";
 var BALANCED_INSTRUCTIONS = `${INSTRUCTIONS} The complete current task contract and current filesystem take precedence over prior session history and shared summaries. Dependency handoffs are previews: inspect their referenced result artifacts and current source whenever details are needed. Preserve the specified model capability, required context, tests and acceptance criteria; do not trade correctness for token savings.`;
 function workflowPromptFingerprint(prompt) {
   return (0, import_node_crypto19.createHash)("sha256").update(prompt).digest("hex");
@@ -129387,6 +129454,10 @@ var NON_RETRYABLE_WORKER_ERRORS = [
 function nonRetryableWorkerError(error2) {
   return NON_RETRYABLE_WORKER_ERRORS.some((entry2) => entry2 === error2);
 }
+function designatedResultOverridesProcessFailure(result, handoff) {
+  if (!result.stdoutTruncated || !result.parentExitedSuccessfully || handoff.outcome !== "completed" || handoff.tests.some((test) => !test.passed) || result.telemetry?.terminal === "failure") return false;
+  return result.error === "process_failed" && result.telemetry?.terminal === void 0 && result.telemetry?.diagnostics?.includes("missing_terminal_event") === true;
+}
 function settleOrphanedAttempt(state, entry2) {
   if (classifyOrphanedAttempt(entry2) !== "orphaned") throw new Error("workflow_interrupted_worker_requires_inspection");
   const invocation = entry2.invocations.at(-1);
@@ -129718,10 +129789,21 @@ async function executeTask(state, entry2, command, resumeReason, prepared, refAu
         }
         entry2.session.confirmed = result.telemetry?.sessionId === entry2.session.id;
       }
-      if (!result.passed) throw new Error(`workflow_${result.error}`);
-      if (result.outputError) throw result.outputError;
-      validateResolvedPath(result.outputArtifactPath, root2);
-      const handoff = parseWorkflowHandoff(result.output, entry2.task.id);
+      let handoff;
+      let handoffError = result.outputError;
+      if (!handoffError) {
+        try {
+          validateResolvedPath(result.outputArtifactPath, root2);
+          handoff = parseWorkflowHandoff(result.output, entry2.task.id);
+        } catch (error2) {
+          handoffError = error2;
+        }
+      }
+      if (!result.passed && !(handoff && designatedResultOverridesProcessFailure(result, handoff))) {
+        throw new Error(`workflow_${result.error}`);
+      }
+      if (handoffError) throw handoffError;
+      if (!handoff) throw new Error("workflow_invalid_result");
       const safeHandoff = parseWorkflowHandoff(JSON.parse(redactWorkflowText(JSON.stringify(handoff))), entry2.task.id);
       entry2.handoff = { ...safeHandoff, artifacts: [...result.artifacts, createArtifactDescriptorFromPath(result.outputArtifactPath, {
         kind: "workflow-result",

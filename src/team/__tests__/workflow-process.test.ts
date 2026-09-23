@@ -178,16 +178,43 @@ describe('bounded one-shot workflow process', () => {
       timeoutMs, artifactPrefix: join(cwd, 'measured') });
   }
 
-  it('collects terminal usage beyond the captured log boundary', async () => {
+  it('filters thinking-token progress before the cap and retains the terminal event', async () => {
     const result = await runMeasured(`
-      process.stdout.write(('x'.repeat(20000)+'\\n').repeat(60));
+      const progress = JSON.stringify({type:'system',subtype:'thinking_tokens',estimated_tokens_delta:1})+'\\n';
+      process.stdout.write(progress.repeat(Math.ceil((1024*1024)/Buffer.byteLength(progress))+1000));
       process.stdout.write(JSON.stringify({type:'result',subtype:'success',session_id:'12345678-1234-4123-8123-123456789abc',
         modelUsage:{glm:{inputTokens:100,outputTokens:30,cacheReadInputTokens:80,cacheCreationInputTokens:20}}})+'\\n');
     `);
     expect(result.passed).toBe(true);
     expect(result.telemetry).toMatchObject({ inputTokens: 200, outputTokens: 30, cacheReadTokens: 80, cacheWriteTokens: 20 });
     expect(result.telemetry!.durationMs).toBeGreaterThan(0);
-    expect(readFileSync(result.artifacts[0]!.path, 'utf8')).not.toContain('modelUsage');
+    const output = readFileSync(result.artifacts[0]!.path, 'utf8');
+    expect(output).toContain('modelUsage');
+    expect(output).not.toContain('thinking_tokens');
+    expect(result.stdoutTruncated).toBe(false);
+    expect(result.artifacts[0]!.sizeBytes).toBeLessThanOrEqual(1024 * 1024);
+  });
+
+  it('retains malformed thinking-token and ordinary stream-json records', async () => {
+    const result = await runMeasured(`
+      process.stdout.write('{"type":"system","subtype":"thinking_tokens"\\n');
+      process.stdout.write(JSON.stringify({type:'system',subtype:'status',message:'working'})+'\\n');
+      process.stdout.write(JSON.stringify({type:'result',subtype:'success'})+'\\n');
+    `);
+    expect(result.passed).toBe(true);
+    const output = readFileSync(result.artifacts[0]!.path, 'utf8');
+    expect(output).toContain('{"type":"system","subtype":"thinking_tokens"');
+    expect(output).toContain('"subtype":"status"');
+    expect(output).toContain('"type":"result"');
+  });
+
+  it('bounds capture for many short ordinary stream-json records', async () => {
+    const result = await runMeasured(`
+      process.stdout.write('{}\\n'.repeat(400000));
+      process.stdout.write(JSON.stringify({type:'result',subtype:'success'})+'\\n');
+    `);
+    expect(result.passed).toBe(true);
+    expect(result.stdoutTruncated).toBe(true);
     expect(result.artifacts[0]!.sizeBytes).toBeLessThanOrEqual(1024 * 1024);
   });
 

@@ -378,6 +378,42 @@ describe('balanced workflow with real repositories and provider processes', () =
     expect(readWorkflow(fixture.cwd, name).tasks[0]!.attempts).toBe(1);
   }, 30000);
 
+  it('accepts a validated designated result after bounded ordinary output omits terminal framing', async () => {
+    fixture.configure({ tasks: { a: { thinkingTokenEvents: 16000, stdoutBytes: 1_200_000, omitTerminal: true } } });
+    await initWorkflow(fixture.cwd, plan(), { ...options, timeoutMs: 2000, maxAttempts: 1, providerPolicy: 'supervised' });
+    await runWorkflow(fixture.cwd, name);
+    const completed = readWorkflow(fixture.cwd, name).tasks[0]!;
+    expect(completed).toMatchObject({ status: 'completed', attempts: 1 });
+    expect(completed.handoff?.outcome).toBe('completed');
+    const stdout = completed.handoff?.artifacts.find(artifact => artifact.kind === 'workflow-stdout');
+    expect(stdout?.sizeBytes).toBeLessThanOrEqual(1024 * 1024);
+    expect(completed.handoff?.artifacts.some(artifact => artifact.kind === 'workflow-result')).toBe(true);
+  }, 30000);
+
+  it('keeps an inherited output pipe terminal even when a valid result precedes a deferred descendant mutation', async () => {
+    fixture.configure({ tasks: { a: { thinkingTokenEvents: 16000, holdOutputOpen: true, deferredMutation: true } } });
+    await initWorkflow(fixture.cwd, plan(), { ...options, timeoutMs: 2000, maxAttempts: 1, providerPolicy: 'supervised' });
+    await runWorkflow(fixture.cwd, name);
+    const failed = readWorkflow(fixture.cwd, name).tasks[0]!;
+    expect(failed).toMatchObject({ status: 'failed', error: 'workflow_output_incomplete', attempts: 1 });
+    const deferred = join(failed.worktree!, 'deferred-descendant.txt');
+    for (let index = 0; index < 20 && !existsSync(deferred); index++) {
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    expect(readFileSync(deferred, 'utf8')).toBe('late mutation\n');
+  }, 30000);
+
+  it.each([
+    ['a provider terminal failure', { afterPublicationFailure: 'provider' }, 2000, 'workflow_process_failed'],
+    ['a non-zero provider exit', { afterPublicationFailure: 'exit', omitTerminal: true }, 2000, 'workflow_process_failed'],
+    ['a provider timeout', { afterPublicationFailure: 'timeout', omitTerminal: true }, 500, 'workflow_timeout'],
+  ])('does not let a designated result hide %s', async (_case, behavior, timeoutMs, error) => {
+    fixture.configure({ tasks: { a: { thinkingTokenEvents: 16000, stdoutBytes: 1_200_000, ...behavior } } });
+    await initWorkflow(fixture.cwd, plan(), { ...options, timeoutMs, maxAttempts: 1 });
+    await runWorkflow(fixture.cwd, name);
+    expect(readWorkflow(fixture.cwd, name).tasks[0]).toMatchObject({ status: 'failed', error, attempts: 1 });
+  }, 30000);
+
   it('requires inspection of another retained running worker before resuming failed work', async () => {
     fixture.configure({ tasks: { a: { pauseBeforeWork: true } } });
     await initWorkflow(fixture.cwd, plan([task('a'), task('b')]), { ...options, timeoutMs: 2000 });

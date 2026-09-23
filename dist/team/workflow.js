@@ -175,6 +175,14 @@ const NON_RETRYABLE_WORKER_ERRORS = ['workflow_timeout', 'workflow_interrupted',
 function nonRetryableWorkerError(error) {
     return NON_RETRYABLE_WORKER_ERRORS.some(entry => entry === error);
 }
+/** A validated publication can settle missing terminal framing after a clean exit, but never incomplete process settlement. */
+function designatedResultOverridesProcessFailure(result, handoff) {
+    if (!result.stdoutTruncated || !result.parentExitedSuccessfully || handoff.outcome !== 'completed'
+        || handoff.tests.some(test => !test.passed) || result.telemetry?.terminal === 'failure')
+        return false;
+    return result.error === 'process_failed' && result.telemetry?.terminal === undefined
+        && result.telemetry?.diagnostics?.includes('missing_terminal_event') === true;
+}
 /**
  * A controller that died mid-attempt leaves its task running forever. The attempt is settled only when the shared
  * orphan rule proves its provider (or, before any spawn, its controller) dead; anything else requires inspection.
@@ -482,12 +490,24 @@ async function executeTask(state, entry, command, resumeReason, prepared, refAud
                 }
                 entry.session.confirmed = result.telemetry?.sessionId === entry.session.id;
             }
-            if (!result.passed)
+            let handoff;
+            let handoffError = result.outputError;
+            if (!handoffError) {
+                try {
+                    validateResolvedPath(result.outputArtifactPath, root);
+                    handoff = parseWorkflowHandoff(result.output, entry.task.id);
+                }
+                catch (error) {
+                    handoffError = error;
+                }
+            }
+            if (!result.passed && !(handoff && designatedResultOverridesProcessFailure(result, handoff))) {
                 throw new Error(`workflow_${result.error}`);
-            if (result.outputError)
-                throw result.outputError;
-            validateResolvedPath(result.outputArtifactPath, root);
-            const handoff = parseWorkflowHandoff(result.output, entry.task.id);
+            }
+            if (handoffError)
+                throw handoffError;
+            if (!handoff)
+                throw new Error('workflow_invalid_result');
             // Provider result is untrusted text: never persist credentials returned in a handoff.
             const safeHandoff = parseWorkflowHandoff(JSON.parse(redactWorkflowText(JSON.stringify(handoff))), entry.task.id);
             entry.handoff = { ...safeHandoff, artifacts: [...result.artifacts, createArtifactDescriptorFromPath(result.outputArtifactPath, {

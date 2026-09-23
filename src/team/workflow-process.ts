@@ -9,6 +9,7 @@ import { currentProcessStartIdentity } from './team-owner-epoch.js';
 import type { WorkflowProviderProcessIdentity } from './workflow-contracts.js';
 
 const MAX_LOG_BYTES = 1024 * 1024;
+const MAX_STREAM_JSON_LINE_BYTES = 256 * 1024;
 /** Largest delay a Node.js timer accepts; anything above would silently become a 1 ms timer. */
 const MAX_TIMEOUT_MS = 2147483647;
 /** Bounded settlement window shared by the elapsed timer and the post-exit drain. */
@@ -62,6 +63,10 @@ export interface WorkflowProcessResult {
   passed: boolean;
   error?: 'launch_failed' | 'timeout' | 'interrupted' | 'process_failed' | 'throttled' | 'protocol_failed' | 'output_incomplete';
   artifacts: ArtifactDescriptor[];
+  /** Controller evidence used to distinguish a clean provider exit from protocol/transport failures. */
+  parentExitedSuccessfully: boolean;
+  /** True when non-filtered stdout exceeded the bounded artifact capture. */
+  stdoutTruncated: boolean;
   /** Present only for an explicitly unbounded (timeoutMs: null) run. */
   settlement?: WorkflowProcessSettlement;
   telemetry?: WorkflowTelemetry;
@@ -138,8 +143,9 @@ export async function runWorkflowProcess(input: {
   }
   const startedAt = performance.now();
   const usage = input.collectUsage && input.provider ? createWorkflowUsageCollector(input.provider) : undefined;
-  const result = await new Promise<{ code: number | null; error?: WorkflowProcessResult['error']; stdout: Buffer; stderr: Buffer; settlement?: WorkflowProcessSettlement }>(resolve => {
-    const stdout: Buffer[] = []; const stderr: Buffer[] = [];
+  const result = await new Promise<{ code: number | null; error?: WorkflowProcessResult['error']; stdout: Buffer; stderr: Buffer;
+    stdoutTruncated: boolean; settlement?: WorkflowProcessSettlement }>(resolve => {
+    let stdout: Buffer | undefined; const stderr: Buffer[] = [];
     let stdoutBytes = 0; let stderrBytes = 0;
     let stdoutTruncated = false; let stderrTruncated = false;
     let error: WorkflowProcessResult['error'];
@@ -168,6 +174,56 @@ export async function runWorkflowProcess(input: {
       directChild: !started ? 'not-started' : parentExit ? 'exited' : 'unconfirmed',
       descendants: !started ? 'not-started' : 'unverified',
     });
+    const captureStdout = (chunk: Buffer) => {
+      const keptBytes = Math.min(chunk.length, Math.max(0, MAX_LOG_BYTES - stdoutBytes));
+      if (keptBytes) {
+        stdout ??= Buffer.allocUnsafe(MAX_LOG_BYTES);
+        chunk.copy(stdout, stdoutBytes, 0, keptBytes);
+      }
+      stdoutTruncated ||= keptBytes < chunk.length; stdoutBytes += keptBytes;
+    };
+    const filterThinkingProgress = input.collectUsage === true && input.provider !== undefined && input.provider !== 'codex';
+    let streamJsonLine: Buffer | undefined;
+    let streamJsonLineBytes = 0;
+    let streamJsonPassthrough = false;
+    const clearStreamJsonLine = () => { streamJsonLineBytes = 0; };
+    const flushStreamJsonLine = () => {
+      if (streamJsonLine && streamJsonLineBytes) captureStdout(streamJsonLine.subarray(0, streamJsonLineBytes));
+      clearStreamJsonLine();
+    };
+    const thinkingProgressLine = () => {
+      if (!streamJsonLine) return false;
+      let event: unknown;
+      try { event = JSON.parse(streamJsonLine.subarray(0, streamJsonLineBytes).toString('utf8').trim()); }
+      catch { return false; }
+      return event !== null && typeof event === 'object' && !Array.isArray(event)
+        && (event as Record<string, unknown>).type === 'system'
+        && (event as Record<string, unknown>).subtype === 'thinking_tokens';
+    };
+    const captureFilteredStdout = (chunk: Buffer) => {
+      if (!filterThinkingProgress) { captureStdout(chunk); return; }
+      if (stdoutTruncated) return;
+      let offset = 0;
+      while (offset < chunk.length) {
+        const newline = chunk.indexOf(0x0a, offset);
+        const end = newline < 0 ? chunk.length : newline + 1;
+        const part = chunk.subarray(offset, end);
+        if (streamJsonPassthrough) captureStdout(part);
+        else if (streamJsonLineBytes + part.length > MAX_STREAM_JSON_LINE_BYTES) {
+          flushStreamJsonLine(); captureStdout(part); streamJsonPassthrough = newline < 0;
+        } else {
+          streamJsonLine ??= Buffer.allocUnsafe(MAX_STREAM_JSON_LINE_BYTES);
+          part.copy(streamJsonLine, streamJsonLineBytes); streamJsonLineBytes += part.length;
+          if (newline >= 0) {
+            if (thinkingProgressLine()) clearStreamJsonLine();
+            else flushStreamJsonLine();
+          }
+        }
+        if (stdoutTruncated) break;
+        if (newline >= 0) streamJsonPassthrough = false;
+        offset = end;
+      }
+    };
     const finish = (code: number | null) => {
       if (finished) return;
       finished = true;
@@ -175,6 +231,8 @@ export async function runWorkflowProcess(input: {
       if (reapTimer) clearTimeout(reapTimer);
       if (settlementTimer) clearTimeout(settlementTimer);
       process.removeListener('SIGINT', interrupt); process.removeListener('SIGTERM', interrupt);
+      // Partial and oversized records are ordinary provider output, never silently filtered.
+      flushStreamJsonLine();
       // Strip any incomplete sensitive env value at the capture boundary before redacting complete values.
       const captured = (chunks: Buffer[], truncated: boolean) => {
         const buffer = Buffer.concat(chunks);
@@ -192,7 +250,8 @@ export async function runWorkflowProcess(input: {
         }
         return Buffer.from(`${redactWorkflowText(tailSafe, false, redactionEnvironment).slice(0, MAX_LOG_BYTES - 64)}\n[output truncated]\n`);
       };
-      resolve({ code, error, stdout: captured(stdout, stdoutTruncated), stderr: captured(stderr, stderrTruncated),
+      resolve({ code, error, stdout: captured(stdout ? [stdout.subarray(0, stdoutBytes)] : [], stdoutTruncated),
+        stderr: captured(stderr, stderrTruncated), stdoutTruncated,
         ...(noWall ? { settlement: settlement() } : {}) });
     };
     /** Wait out the shared grace before dropping this controller's stream handles. */
@@ -244,9 +303,7 @@ export async function runWorkflowProcess(input: {
         try { input.onStdout?.(chunk); }
         catch { error = 'protocol_failed'; terminate(); }
       }
-      const kept = chunk.subarray(0, Math.max(0, MAX_LOG_BYTES - stdoutBytes));
-      if (kept.length) stdout.push(kept);
-      stdoutTruncated ||= kept.length < chunk.length; stdoutBytes += kept.length;
+      captureFilteredStdout(chunk);
     });
     child.stderr.on('data', (chunk: Buffer) => {
       const kept = chunk.subarray(0, Math.max(0, MAX_LOG_BYTES - stderrBytes));
@@ -269,6 +326,10 @@ export async function runWorkflowProcess(input: {
     } catch { throw new Error('workflow_artifact_write_refused'); }
   });
   const telemetry = usage?.finish({ durationMs: performance.now() - startedAt, passed: result.code === 0 && !result.error });
+  if (telemetry && result.stdoutTruncated) {
+    telemetry.diagnostics = [...new Set([...(telemetry.diagnostics ?? []), 'stdout_truncated'])].sort();
+    if (telemetry.status === 'measured') telemetry.status = 'partial';
+  }
   // UUID shape is not proof that an identity is safe: it can still echo a known credential.
   // Compare without case because the collector canonicalizes UUIDs to lowercase.
   if (telemetry?.sessionId && redactWorkflowText(telemetry.sessionId, true, redactionEnvironment) !== telemetry.sessionId) {
@@ -279,6 +340,10 @@ export async function runWorkflowProcess(input: {
   const failure = result.error ?? (result.code !== 0
     ? /\b429\b|rate[_ -]?limit|too many requests/i.test(`${result.stdout.toString('utf8')}\n${result.stderr.toString('utf8')}`) ? 'throttled' : 'process_failed'
     : telemetry && telemetry.terminal !== 'success' ? 'process_failed' : undefined);
+  const parentExitedSuccessfully = result.settlement
+    ? result.settlement.parentExitCode === 0 && result.settlement.parentExitSignal === null && result.settlement.directChild === 'exited'
+    : result.code === 0;
   return { passed: result.code === 0 && !failure, ...(failure ? { error: failure } : {}), artifacts,
+    parentExitedSuccessfully, stdoutTruncated: result.stdoutTruncated,
     ...(result.settlement ? { settlement: result.settlement } : {}), ...(telemetry ? { telemetry } : {}) };
 }

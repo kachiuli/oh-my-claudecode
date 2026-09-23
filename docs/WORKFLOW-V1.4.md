@@ -101,6 +101,11 @@ omc team workflow reject <name> <task-id> --reason <inspection-summary>
 
 The attempt is recorded as `workflow_invocation_interrupted`, its unused publication capability is revoked, and it is never re-dispatched automatically; remaining tasks continue or the workflow is abandoned. Attempts whose provider or controller is still alive, or whose identities cannot be verified, remain blocked for inspection.
 
+## Failed packets and shared files
+
+When a worker's declared check fails or its edits exceed `writeScope`, it should publish an `outcome: "failed"` handoff with its available commit, changed-file list, failed checks and summary. A missing designated result means there is no controller-validated handoff; inspect the worker worktree and retained artifacts before proceeding. To reuse a retained commit, verify its parent is the task base, inspect every changed path against the intended scope, and rerun the declared checks. Reject the failed task with a reason, then initialize a small follow-up workflow at the current integration head. Give its replay task the corrected write scope and checks; have the worker reapply the retained work as a new commit and publish it normally. Accept and verify that follow-up workflow. A lead-side cherry-pick alone is not a controller acceptance or verification. If the commit or evidence cannot be validated, leave the failed work unadopted.
+
+For independent packets that each need an entry in one append-only registry, omit the registry from their write scopes. Run the packets in parallel and accept them. Add one integration task whose `dependencies` list contains every packet and whose `writeScope` exclusively owns the registry path. That task appends all entries and runs the cross-check after its dependencies are accepted. Overlapping write scopes between independent tasks remain refused; the controller does not line-merge competing commits.
 ## Provider and model independence
 
 Host selection never infers a provider from a model name. Existing explicit workflow bindings remain authoritative. The Z.AI identifiers supported by this release are preserved exactly:

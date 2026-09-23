@@ -15,7 +15,7 @@ import { applyGlmProfile, getGlmConfig, resolveGlmExecutable } from './glm-confi
 import { ABSOLUTE_MAX_WORKERS } from './types.js';
 import { resolveRoleAssignment } from './stage-router.js';
 import { buildLaunchArgs, resolveValidatedCliInvocation, validateCliCommandRef } from './model-contract.js';
-import { runWorkflowProcess, redactWorkflowText } from './workflow-process.js';
+import { runWorkflowProcess, redactWorkflowText, type WorkflowProcessResult } from './workflow-process.js';
 import { createClaudeWorkflowResultDecoder, prepareWorkflowBinding, workflowWorkerArguments, workflowReviewerArguments, workflowReviewProvenance,
   type PreparedWorkflowBinding, type WorkflowRuntime } from './workflow-adapters.js';
 import { buildWorkflowPrompt, workflowContextFingerprint, workflowPromptFingerprint, workflowSessionFingerprint } from './workflow-prompt.js';
@@ -28,7 +28,7 @@ import { boundedText, safeWorkflowId, parseWorkflowPlan, parseWorkflowTask, matc
   validateWorkflowStateTransition,
   type WorkflowState as LegacyWorkflowState, type VersionedWorkflowState as WorkflowState, type WorkflowStateV2,
   parseWorkflowSubstitution, assertWorkflowResumeBinding, type WorkflowRole, type WorkflowRoleBinding, type WorkflowOptions, type WorkflowTaskState,
-  type WorkflowFinding, type WorkflowInvocation, type WorkflowReviewAttempt, type WorkflowReviewAttemptV2 } from './workflow-contracts.js';
+  type WorkflowFinding, type WorkflowHandoff, type WorkflowInvocation, type WorkflowReviewAttempt, type WorkflowReviewAttemptV2 } from './workflow-contracts.js';
 
 export type { WorkflowState, WorkflowOptions, WorkflowPlan, WorkflowTask, WorkflowHandoff, WorkflowFinding } from './workflow-contracts.js';
 
@@ -156,6 +156,13 @@ const NON_RETRYABLE_WORKER_ERRORS = ['workflow_timeout', 'workflow_interrupted',
   'workflow_protected_ref_audit_failed', 'workflow_session_identity_mismatch'] as const;
 function nonRetryableWorkerError(error: string | undefined): boolean {
   return NON_RETRYABLE_WORKER_ERRORS.some(entry => entry === error);
+}
+/** A validated publication can settle missing terminal framing after a clean exit, but never incomplete process settlement. */
+function designatedResultOverridesProcessFailure(result: WorkflowProcessResult, handoff: WorkflowHandoff): boolean {
+  if (!result.stdoutTruncated || !result.parentExitedSuccessfully || handoff.outcome !== 'completed'
+    || handoff.tests.some(test => !test.passed) || result.telemetry?.terminal === 'failure') return false;
+  return result.error === 'process_failed' && result.telemetry?.terminal === undefined
+    && result.telemetry?.diagnostics?.includes('missing_terminal_event') === true;
 }
 /**
  * A controller that died mid-attempt leaves its task running forever. The attempt is settled only when the shared
@@ -410,10 +417,19 @@ async function executeTask(state: WorkflowState, entry: WorkflowTaskState, comma
         }
         entry.session!.confirmed = result.telemetry?.sessionId === entry.session!.id;
       }
-      if (!result.passed) throw new Error(`workflow_${result.error}`);
-      if (result.outputError) throw result.outputError;
-      validateResolvedPath(result.outputArtifactPath, root);
-      const handoff = parseWorkflowHandoff(result.output, entry.task.id);
+      let handoff: WorkflowHandoff | undefined;
+      let handoffError = result.outputError;
+      if (!handoffError) {
+        try {
+          validateResolvedPath(result.outputArtifactPath, root);
+          handoff = parseWorkflowHandoff(result.output, entry.task.id);
+        } catch (error) { handoffError = error; }
+      }
+      if (!result.passed && !(handoff && designatedResultOverridesProcessFailure(result, handoff))) {
+        throw new Error(`workflow_${result.error}`);
+      }
+      if (handoffError) throw handoffError;
+      if (!handoff) throw new Error('workflow_invalid_result');
       // Provider result is untrusted text: never persist credentials returned in a handoff.
       const safeHandoff = parseWorkflowHandoff(JSON.parse(redactWorkflowText(JSON.stringify(handoff))), entry.task.id);
       entry.handoff = { ...safeHandoff, artifacts: [...result.artifacts, createArtifactDescriptorFromPath(result.outputArtifactPath, {
