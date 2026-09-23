@@ -218,6 +218,88 @@ describe('bounded one-shot workflow process', () => {
     expect(result.artifacts[0]!.sizeBytes).toBeLessThanOrEqual(1024 * 1024);
   });
 
+  it('retains the terminal event after high-volume ordinary stream-json output', async () => {
+    const result = await runMeasured(`
+      const progress = JSON.stringify({type:'system',subtype:'compaction',preserved_messages:'x'.repeat(2000)})+'\\n';
+      process.stdout.write(progress.repeat(600));
+      process.stdout.write(JSON.stringify({type:'result',subtype:'success',
+        session_id:'12345678-1234-4123-8123-123456789abc',
+        modelUsage:{glm:{inputTokens:100,outputTokens:30,cacheReadInputTokens:80,cacheCreationInputTokens:20}}})+'\\n');
+    `);
+    expect(result.passed).toBe(true);
+    expect(result.stdoutTruncated).toBe(true);
+    expect(result.telemetry).toMatchObject({ terminal: 'success' });
+    expect(result.telemetry?.diagnostics ?? []).not.toContain('process_failed');
+    const output = readFileSync(result.artifacts[0]!.path, 'utf8');
+    expect(output.includes('"type":"result"')).toBe(true);
+    expect(result.artifacts[0]!.sizeBytes).toBeLessThanOrEqual(1024 * 1024);
+  });
+
+  it('keeps only complete records when a credential crosses the retained stdout boundary', async () => {
+    vi.stubEnv('OMC_FIXTURE_API_TOKEN', 'splice-sensitive-credential-1234567890');
+    const result = await runMeasured(`
+      const secret = process.env.OMC_FIXTURE_API_TOKEN;
+      const split = 12;
+      const terminal = JSON.stringify({type:'result',subtype:'success'})+'\\n';
+      const fillerBytes = 1024*1024-Buffer.byteLength(secret.slice(split))-2-Buffer.byteLength(terminal);
+      process.stdout.write('{}\\n'.repeat(1000));
+      process.stdout.write(secret+'\\n');
+      process.stdout.write('x'.repeat(fillerBytes)+'\\n');
+      process.stdout.write(terminal);
+    `);
+    expect(result.passed).toBe(true);
+    expect(result.stdoutTruncated).toBe(true);
+    const output = readFileSync(result.artifacts[0]!.path, 'utf8');
+    expect(output.includes('splice-sensitive')).toBe(false);
+    expect(output.includes('credential-1234567890')).toBe(false);
+    expect(output.includes('"type":"result"')).toBe(true);
+    expect(result.artifacts[0]!.sizeBytes).toBeLessThanOrEqual(1024 * 1024);
+  });
+
+  it('drops a partial private JSON record at the retained stdout end', async () => {
+    const secret = 'tail-partial-sensitive-credential-1234567890';
+    const result = await runWorkflowProcess({ command: process.execPath, args: ['-e', `
+      const progress = JSON.stringify({type:'system',subtype:'compaction',preserved_messages:'x'.repeat(2000)})+'\\n';
+      process.stdout.write(progress.repeat(600));
+      process.stdout.write(JSON.stringify({type:'result',subtype:'success'})+'\\n');
+      process.stdout.write('{"type":"PARTIAL_PRIVATE_RECORD","message":"'+${JSON.stringify(secret)}.slice(0,18));
+    `], cwd, provider: 'glm', collectUsage: true, timeoutMs: 5000, artifactPrefix: join(cwd, 'partial-tail'),
+    environment: {}, redactionEnvironment: { OMC_FIXTURE_API_TOKEN: secret } });
+    expect(result.passed).toBe(true);
+    const output = readFileSync(result.artifacts[0]!.path, 'utf8');
+    expect(output.includes('PARTIAL_PRIVATE_RECORD')).toBe(false);
+    expect(output.includes('tail-partial')).toBe(false);
+    expect(output.includes('"type":"result"')).toBe(true);
+    expect(result.artifacts[0]!.sizeBytes).toBeLessThanOrEqual(1024 * 1024);
+  });
+
+  it('drops incomplete trailing JSON containing a prefix of an inherited secret', async () => {
+    vi.stubEnv('OMC_FIXTURE_API_TOKEN', 'splice-sensitive-credential-1234567890');
+    const result = await runMeasured(`
+      const progress = JSON.stringify({type:'system',subtype:'compaction',preserved_messages:'x'.repeat(2000)})+'\\n';
+      process.stdout.write(progress.repeat(600));
+      process.stdout.write(JSON.stringify({type:'result',subtype:'success'})+'\\n');
+      process.stdout.write('{"type":"error","message":"'+process.env.OMC_FIXTURE_API_TOKEN.slice(0,16)+'","unfinished":"x');
+    `);
+    expect(result.passed).toBe(true);
+    const output = readFileSync(result.artifacts[0]!.path, 'utf8');
+    expect(output.includes('splice-sensitive')).toBe(false);
+    expect(output.includes('"unfinished":"x')).toBe(false);
+    expect(output.includes('"type":"result"')).toBe(true);
+  });
+
+  it('retains a valid terminal JSON record without a trailing newline', async () => {
+    const result = await runMeasured(`
+      const progress = JSON.stringify({type:'system',subtype:'compaction',preserved_messages:'x'.repeat(2000)})+'\\n';
+      process.stdout.write(progress.repeat(600));
+      process.stdout.write(JSON.stringify({type:'result',subtype:'success'}));
+    `);
+    expect(result.passed).toBe(true);
+    expect(result.stdoutTruncated).toBe(true);
+    const output = readFileSync(result.artifacts[0]!.path, 'utf8');
+    expect(output.includes('"type":"result"')).toBe(true);
+  });
+
   it('fails structured provider failures even when the executable exits successfully', async () => {
     const result = await runMeasured(`process.stdout.write(JSON.stringify({type:'result',subtype:'error_during_execution'})+'\\n')`);
     expect(result.passed).toBe(false);
@@ -348,6 +430,23 @@ describe('explicit no-wall process execution', () => {
       termination: 'not-requested', directChild: 'exited', descendants: 'unverified' });
     expect(result.artifacts).toHaveLength(2);
     expect(Date.now() - startedAt).toBeLessThan(30_000);
+  });
+
+  it('does not label a clean provider exit as process_failed when inherited output remains open', async () => {
+    const result = await runWorkflowProcess({ command: process.execPath, args: ['-e', `
+      const { spawn } = require('node:child_process');
+      process.stdout.write(JSON.stringify({type:'result',subtype:'success',
+        session_id:'12345678-1234-4123-8123-123456789abc',
+        modelUsage:{glm:{inputTokens:100,outputTokens:30,cacheReadInputTokens:80,cacheCreationInputTokens:20}}})+'\\n');
+      spawn(process.execPath, ['-e', 'setTimeout(() => {}, 3000)'],
+        { stdio: ['ignore', 'inherit', 'inherit'], detached: true, windowsHide: true, cwd: require('node:os').tmpdir() });
+      setTimeout(() => process.exit(0), 50);
+    `], cwd, provider: 'glm', collectUsage: true, timeoutMs: null, artifactPrefix: join(cwd, 'measured-incomplete') });
+    expect(result).toMatchObject({ passed: false, error: 'output_incomplete',
+      settlement: { parentExitCode: 0, parentExitSignal: null, outputComplete: false },
+      telemetry: { status: 'partial', terminal: 'success' } });
+    expect(result.telemetry?.diagnostics).toContain('output_incomplete');
+    expect(result.telemetry?.diagnostics ?? []).not.toContain('process_failed');
   });
 
   it.skipIf(process.platform === 'win32')('retains finite timeout termination of the inherited group after parent exit', async () => {

@@ -145,8 +145,9 @@ export async function runWorkflowProcess(input: {
   const usage = input.collectUsage && input.provider ? createWorkflowUsageCollector(input.provider) : undefined;
   const result = await new Promise<{ code: number | null; error?: WorkflowProcessResult['error']; stdout: Buffer; stderr: Buffer;
     stdoutTruncated: boolean; settlement?: WorkflowProcessSettlement }>(resolve => {
+    const retainStdoutTail = usage !== undefined;
     let stdout: Buffer | undefined; const stderr: Buffer[] = [];
-    let stdoutBytes = 0; let stderrBytes = 0;
+    let stdoutBytes = 0; let stdoutOffset = 0; let stdoutObservedBytes = 0; let stderrBytes = 0;
     let stdoutTruncated = false; let stderrTruncated = false;
     let error: WorkflowProcessResult['error'];
     let finished = false;
@@ -175,12 +176,29 @@ export async function runWorkflowProcess(input: {
       descendants: !started ? 'not-started' : 'unverified',
     });
     const captureStdout = (chunk: Buffer) => {
-      const keptBytes = Math.min(chunk.length, Math.max(0, MAX_LOG_BYTES - stdoutBytes));
-      if (keptBytes) {
-        stdout ??= Buffer.allocUnsafe(MAX_LOG_BYTES);
-        chunk.copy(stdout, stdoutBytes, 0, keptBytes);
+      stdoutObservedBytes = Math.min(MAX_LOG_BYTES + 1, stdoutObservedBytes + chunk.length);
+      stdout ??= Buffer.allocUnsafe(MAX_LOG_BYTES);
+      if (!retainStdoutTail) {
+        const keptBytes = Math.min(chunk.length, Math.max(0, MAX_LOG_BYTES - stdoutBytes));
+        if (keptBytes) chunk.copy(stdout, stdoutBytes, 0, keptBytes);
+        stdoutTruncated ||= keptBytes < chunk.length; stdoutBytes += keptBytes; return;
       }
-      stdoutTruncated ||= keptBytes < chunk.length; stdoutBytes += keptBytes;
+      if (chunk.length >= MAX_LOG_BYTES) {
+        chunk.copy(stdout, 0, chunk.length - MAX_LOG_BYTES);
+        stdoutBytes = MAX_LOG_BYTES; stdoutOffset = 0;
+      } else if (stdoutBytes < MAX_LOG_BYTES) {
+        const beforeWrap = Math.min(chunk.length, MAX_LOG_BYTES - stdoutBytes);
+        chunk.copy(stdout, stdoutBytes, 0, beforeWrap); stdoutBytes += beforeWrap;
+        if (beforeWrap < chunk.length) {
+          chunk.copy(stdout, 0, beforeWrap); stdoutBytes = MAX_LOG_BYTES; stdoutOffset = chunk.length - beforeWrap;
+        }
+      } else {
+        const beforeWrap = Math.min(chunk.length, MAX_LOG_BYTES - stdoutOffset);
+        chunk.copy(stdout, stdoutOffset, 0, beforeWrap);
+        if (beforeWrap < chunk.length) chunk.copy(stdout, 0, beforeWrap);
+        stdoutOffset = (stdoutOffset + chunk.length) % MAX_LOG_BYTES;
+      }
+      stdoutTruncated ||= stdoutObservedBytes > MAX_LOG_BYTES;
     };
     const filterThinkingProgress = input.collectUsage === true && input.provider !== undefined && input.provider !== 'codex';
     let streamJsonLine: Buffer | undefined;
@@ -202,7 +220,7 @@ export async function runWorkflowProcess(input: {
     };
     const captureFilteredStdout = (chunk: Buffer) => {
       if (!filterThinkingProgress) { captureStdout(chunk); return; }
-      if (stdoutTruncated) return;
+      if (stdoutTruncated && !retainStdoutTail) return;
       let offset = 0;
       while (offset < chunk.length) {
         const newline = chunk.indexOf(0x0a, offset);
@@ -219,7 +237,7 @@ export async function runWorkflowProcess(input: {
             else flushStreamJsonLine();
           }
         }
-        if (stdoutTruncated) break;
+        if (stdoutTruncated && !retainStdoutTail) break;
         if (newline >= 0) streamJsonPassthrough = false;
         offset = end;
       }
@@ -250,7 +268,36 @@ export async function runWorkflowProcess(input: {
         }
         return Buffer.from(`${redactWorkflowText(tailSafe, false, redactionEnvironment).slice(0, MAX_LOG_BYTES - 64)}\n[output truncated]\n`);
       };
-      resolve({ code, error, stdout: captured(stdout ? [stdout.subarray(0, stdoutBytes)] : [], stdoutTruncated),
+      const capturedStdout = () => {
+        if (!stdout) return Buffer.alloc(0);
+        const ordered = stdoutBytes < MAX_LOG_BYTES || stdoutOffset === 0 ? stdout.subarray(0, stdoutBytes)
+          : Buffer.concat([stdout.subarray(stdoutOffset), stdout.subarray(0, stdoutOffset)]);
+        if (!retainStdoutTail || !stdoutTruncated) return captured([ordered], stdoutTruncated);
+        const marker = Buffer.from('[output truncated]\n');
+        const firstRecordEnd = ordered.indexOf(0x0a);
+        let tailSafe = firstRecordEnd < 0 ? '' : ordered.subarray(firstRecordEnd + 1).toString('utf8');
+        if (!tailSafe.endsWith('\n')) {
+          const lastLine = tailSafe.lastIndexOf('\n') + 1;
+          const trailingRecord = tailSafe.slice(lastLine);
+          if (/^\s*[\[{]/.test(trailingRecord)) {
+            try { JSON.parse(trailingRecord); }
+            catch { tailSafe = tailSafe.slice(0, lastLine); }
+          }
+        }
+        for (const [key, value] of [...Object.entries(process.env), ...Object.entries(redactionEnvironment)]) {
+          if (!/(?:key|token|secret|password|credential|authorization)/i.test(key) || !value || value.length < 4) continue;
+          for (let length = Math.min(value.length - 1, tailSafe.length); length > 0; length--) {
+            if (tailSafe.endsWith(value.slice(0, length))) { tailSafe = tailSafe.slice(0, -length); break; }
+          }
+        }
+        let safeTail = Buffer.from(redactWorkflowText(tailSafe, false, redactionEnvironment));
+        while (safeTail.length > MAX_LOG_BYTES - marker.length) {
+          const newline = safeTail.indexOf(0x0a);
+          safeTail = newline < 0 ? Buffer.alloc(0) : safeTail.subarray(newline + 1);
+        }
+        return Buffer.concat([marker, safeTail]);
+      };
+      resolve({ code, error, stdout: capturedStdout(),
         stderr: captured(stderr, stderrTruncated), stdoutTruncated,
         ...(noWall ? { settlement: settlement() } : {}) });
     };
@@ -325,9 +372,18 @@ export async function runWorkflowProcess(input: {
         kind: `workflow-${stream}`, producer: { system: 'omc', component: 'team-workflow', worker: input.worker }, retention: 'until-completion' });
     } catch { throw new Error('workflow_artifact_write_refused'); }
   });
-  const telemetry = usage?.finish({ durationMs: performance.now() - startedAt, passed: result.code === 0 && !result.error });
+  const parentExitedSuccessfully = result.settlement
+    ? result.settlement.parentExitCode === 0 && result.settlement.parentExitSignal === null && result.settlement.directChild === 'exited'
+    : result.code === 0;
+  // A capture/settlement failure can make the workflow result unsafe without turning a clean
+  // provider exit into a process_failed telemetry diagnosis.
+  const telemetry = usage?.finish({ durationMs: performance.now() - startedAt, passed: parentExitedSuccessfully });
   if (telemetry && result.stdoutTruncated) {
     telemetry.diagnostics = [...new Set([...(telemetry.diagnostics ?? []), 'stdout_truncated'])].sort();
+    if (telemetry.status === 'measured') telemetry.status = 'partial';
+  }
+  if (telemetry && result.settlement?.outputComplete === false) {
+    telemetry.diagnostics = [...new Set([...(telemetry.diagnostics ?? []), 'output_incomplete'])].sort();
     if (telemetry.status === 'measured') telemetry.status = 'partial';
   }
   // UUID shape is not proof that an identity is safe: it can still echo a known credential.
@@ -340,9 +396,6 @@ export async function runWorkflowProcess(input: {
   const failure = result.error ?? (result.code !== 0
     ? /\b429\b|rate[_ -]?limit|too many requests/i.test(`${result.stdout.toString('utf8')}\n${result.stderr.toString('utf8')}`) ? 'throttled' : 'process_failed'
     : telemetry && telemetry.terminal !== 'success' ? 'process_failed' : undefined);
-  const parentExitedSuccessfully = result.settlement
-    ? result.settlement.parentExitCode === 0 && result.settlement.parentExitSignal === null && result.settlement.directChild === 'exited'
-    : result.code === 0;
   return { passed: result.code === 0 && !failure, ...(failure ? { error: failure } : {}), artifacts,
     parentExitedSuccessfully, stdoutTruncated: result.stdoutTruncated,
     ...(result.settlement ? { settlement: result.settlement } : {}), ...(telemetry ? { telemetry } : {}) };
