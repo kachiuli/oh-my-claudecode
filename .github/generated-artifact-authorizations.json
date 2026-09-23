@@ -3040,6 +3040,140 @@
           "previousFilename": null
         }
       ]
+    },
+    {
+      "pullNumber": 23,
+      "targetRef": "main",
+      "mergeBaseSha": "439f29b851abf2a2a9fed64c1f13f8d85964e5e6",
+      "headSha": "cdce2f1631ad9844caeb733e9374cba0d0d76018",
+      "owner": "kachiuli",
+      "expiresAt": "2026-10-01T00:00:00.000Z",
+      "generatedDelta": {
+        "count": 20,
+        "sha256": "cfc8a27144d14eb955187d75dc12d259f456465ad8cc9b974ff3ac3430ecf0c5"
+      },
+      "generatedFiles": [
+        {
+          "status": "modified",
+          "filename": "bridge/cli.cjs",
+          "sha": "10a363e78821e1b3022341bdebbf29b77e55309b",
+          "previousFilename": null
+        },
+        {
+          "status": "modified",
+          "filename": "bridge/runtime-cli.cjs",
+          "sha": "92a1780cfb07e9d11ccab8ab8f9824ac78d49a30",
+          "previousFilename": null
+        },
+        {
+          "status": "modified",
+          "filename": "bridge/team-bridge.cjs",
+          "sha": "e5f2024c5a636607a3e4fe230695f29d2fa43cdf",
+          "previousFilename": null
+        },
+        {
+          "status": "modified",
+          "filename": "bridge/team-mcp.cjs",
+          "sha": "9f9d775db08e7c388889ec8d486b26a6c1520a7f",
+          "previousFilename": null
+        },
+        {
+          "status": "modified",
+          "filename": "bridge/team.js",
+          "sha": "509012f9735df89241af9255ea2dc17f8bfa7b57",
+          "previousFilename": null
+        },
+        {
+          "status": "modified",
+          "filename": "dist/cli/commands/team-workflow.js",
+          "sha": "27819ce16c9641e6706ace314e3bd824770b7dee",
+          "previousFilename": null
+        },
+        {
+          "status": "modified",
+          "filename": "dist/cli/index.js",
+          "sha": "532fb4125efa72bfc857bd965d6d992c68fac2af",
+          "previousFilename": null
+        },
+        {
+          "status": "modified",
+          "filename": "dist/cli/tmux-utils.js",
+          "sha": "ace488fce9531533e7b365455bb0622cda287ae5",
+          "previousFilename": null
+        },
+        {
+          "status": "modified",
+          "filename": "dist/cli/win32-warning.d.ts",
+          "sha": "c0f06153d2cb55f80264b74bcd6b26288b883363",
+          "previousFilename": null
+        },
+        {
+          "status": "modified",
+          "filename": "dist/cli/win32-warning.js",
+          "sha": "e300cc94ccb215352b4ddb038481ff442316dfd4",
+          "previousFilename": null
+        },
+        {
+          "status": "added",
+          "filename": "dist/lib/windows-command.d.ts",
+          "sha": "050526c131f597f92b7086532164d16f5ea3e372",
+          "previousFilename": null
+        },
+        {
+          "status": "added",
+          "filename": "dist/lib/windows-command.js",
+          "sha": "35f6c087618b67f817e63ba3efc78778ba27826b",
+          "previousFilename": null
+        },
+        {
+          "status": "modified",
+          "filename": "dist/team/cli-detection.d.ts",
+          "sha": "104c76da6ec184abcda66be8aa49092ca4314ad3",
+          "previousFilename": null
+        },
+        {
+          "status": "modified",
+          "filename": "dist/team/cli-detection.js",
+          "sha": "9e85b772e499c81db66202550fd3d37ecc0f4a71",
+          "previousFilename": null
+        },
+        {
+          "status": "modified",
+          "filename": "dist/team/model-contract.d.ts",
+          "sha": "09215ee6c705b48a3d6473426b909ce50abf65d3",
+          "previousFilename": null
+        },
+        {
+          "status": "modified",
+          "filename": "dist/team/model-contract.js",
+          "sha": "785b9ea6a036e4558dcf71b70bcce46338fd5794",
+          "previousFilename": null
+        },
+        {
+          "status": "modified",
+          "filename": "dist/team/workflow-process.js",
+          "sha": "26f7fc17a3c442a595ec3cdc577e2dbc2004dd23",
+          "previousFilename": null
+        },
+        {
+          "status": "modified",
+          "filename": "dist/team/workflow-prompt.js",
+          "sha": "b1b73c73716f13056cd7ce7d31b1330c991cbdea",
+          "previousFilename": null
+        },
+        {
+          "status": "modified",
+          "filename": "dist/team/workflow-publication.js",
+          "sha": "3a1654c3b4fc8819985259f122b4e6bda84ecce2",
+          "previousFilename": null
+        },
+        {
+          "status": "modified",
+          "filename": "dist/team/workflow.js",
+          "sha": "d8f72a539dc11038a6160c25d65dde0486abb55f",
+          "previousFilename": null
+        }
+      ]
     }
   ]
 }
