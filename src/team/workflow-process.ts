@@ -6,6 +6,7 @@ import { isExternalLLMDisabled } from '../lib/security-config.js';
 import { ensureDirWithMode, validateResolvedPath } from './fs-utils.js';
 import { createWorkflowUsageCollector, type WorkflowTelemetry } from './workflow-usage.js';
 import { currentProcessStartIdentity } from './team-owner-epoch.js';
+import { superviseWindowsWorkflowInvocation } from './workflow-process-supervisor.js';
 import type { WorkflowProviderProcessIdentity } from './workflow-contracts.js';
 
 const MAX_LOG_BYTES = 1024 * 1024;
@@ -56,7 +57,7 @@ export interface WorkflowProcessSettlement {
   outputComplete: boolean;
   termination: 'not-requested' | 'attempted' | 'failed';
   directChild: 'not-started' | 'exited' | 'unconfirmed';
-  descendants: 'not-started' | 'unverified';
+  descendants: 'not-started' | 'unverified' | 'cleaned';
 }
 
 export interface WorkflowProcessResult {
@@ -86,8 +87,10 @@ export async function runWorkflowProcess(input: {
   redactionEnvironment?: NodeJS.ProcessEnv;
   /** Operation decoder receives raw bounded-protocol chunks only inside the controller. */
   onStdout?: (chunk: Buffer) => void;
-  /** Receives the spawned provider's process identity so an interrupted attempt can later be proven dead. */
+  /** Receives the launch owner's identity so an interrupted attempt can later be proven dead. */
   onSpawn?: (identity: WorkflowProviderProcessIdentity) => void;
+  /** On Windows, keep an owned Job boundary alive until provider descendants have been cleaned up. */
+  superviseProcessTree?: boolean;
 }): Promise<WorkflowProcessResult> {
   if (input.provider && input.provider !== 'claude' && isExternalLLMDisabled()) throw new Error('workflow_external_llm_disabled');
   if (input.provider === 'claude' && !input.environment) throw new Error('workflow_explicit_environment_required');
@@ -141,6 +144,10 @@ export async function runWorkflowProcess(input: {
     environment.OMC_TEAM_WORKER_NAME = 'workflow-process';
     environment.OMC_TEAM_WORKTREE_PATH = input.cwd;
   }
+  const invocation = input.superviseProcessTree && process.platform === 'win32'
+    ? superviseWindowsWorkflowInvocation({ command, args, cwd: input.cwd, environment,
+      windowsVerbatimArguments: input.windowsVerbatimArguments })
+    : { command, args, environment };
   const startedAt = performance.now();
   const usage = input.collectUsage && input.provider ? createWorkflowUsageCollector(input.provider) : undefined;
   const result = await new Promise<{ code: number | null; error?: WorkflowProcessResult['error']; stdout: Buffer; stderr: Buffer;
@@ -159,10 +166,13 @@ export async function runWorkflowProcess(input: {
     let parentExit: { code: number | null; signal: NodeJS.Signals | null } | undefined;
     let termination: WorkflowProcessSettlement['termination'] = 'not-requested';
     let streamClose = false;
-    const child = spawn(command, args, { cwd: input.cwd, env: environment, stdio: ['pipe', 'pipe', 'pipe'], shell: false,
-      windowsHide: true, ...(input.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}), detached: process.platform !== 'win32' });
+    let supervisedCleanupVerified = false;
+    const child = spawn(invocation.command, invocation.args, { cwd: input.cwd, env: invocation.environment,
+      stdio: ['pipe', 'pipe', 'pipe'], shell: false, windowsHide: true,
+      ...(!input.superviseProcessTree && input.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
+      detached: process.platform !== 'win32' });
     if (child.pid && input.onSpawn) {
-      // Bookkeeping never interrupts the provider. The bare PID is recorded before the start-identity probe so a
+      // Bookkeeping never interrupts the owned process. The bare PID is recorded before the start-identity probe so a
       // controller crash during the probe still leaves a verifiable record; a missing identity keeps recovery conservative.
       try { input.onSpawn({ pid: child.pid, processStartedAt: null }); } catch { /* recorded as unverifiable */ }
       try { input.onSpawn({ pid: child.pid, processStartedAt: currentProcessStartIdentity(child.pid) }); } catch { /* keeps the bare PID record */ }
@@ -173,7 +183,7 @@ export async function runWorkflowProcess(input: {
       outputComplete: streamClose,
       termination,
       directChild: !started ? 'not-started' : parentExit ? 'exited' : 'unconfirmed',
-      descendants: !started ? 'not-started' : 'unverified',
+      descendants: !started ? 'not-started' : supervisedCleanupVerified && streamClose ? 'cleaned' : 'unverified',
     });
     const captureStdout = (chunk: Buffer) => {
       stdoutObservedBytes = Math.min(MAX_LOG_BYTES + 1, stdoutObservedBytes + chunk.length);
@@ -359,7 +369,13 @@ export async function runWorkflowProcess(input: {
     });
     child.on('error', () => { error = 'launch_failed'; });
     child.stdin.on('error', () => { /* EPIPE is reflected in the exit status. */ });
-    child.on('close', (code: number | null) => { streamClose = true; finish(code); });
+    child.on('close', (code: number | null) => {
+      streamClose = true;
+      // The Windows supervisor returns zero only after the direct provider
+      // returned zero and its Job Object reached an empty, verified state.
+      if (input.superviseProcessTree && process.platform === 'win32' && code === 0) supervisedCleanupVerified = true;
+      finish(code);
+    });
     child.stdin.end(input.stdin ?? '');
   });
   // Aggregate before redaction so secrets split across process chunks cannot escape.

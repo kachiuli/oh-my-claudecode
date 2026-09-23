@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { runWorkflowProcess } from '../workflow-process.js';
+import { superviseWindowsWorkflowInvocation } from '../workflow-process-supervisor.js';
 import { resolveValidatedCliInvocation } from '../model-contract.js';
 
 describe('bounded one-shot workflow process', () => {
@@ -31,7 +32,7 @@ describe('bounded one-shot workflow process', () => {
     const expected = ['exec', '--model', 'space and & literal', 'bang!literal', 'caret^literal', 'quote"literal'];
     const invocation = resolveValidatedCliInvocation('codex', expected, shim);
     const result = await runWorkflowProcess({ ...invocation, cwd, timeoutMs: 5000,
-      artifactPrefix: join(cwd, 'windows-batch') });
+      artifactPrefix: join(cwd, 'windows-batch'), superviseProcessTree: true });
     expect(result.passed).toBe(true);
     expect(JSON.parse(readFileSync(result.artifacts[0]!.path, 'utf8'))).toEqual(expected);
   });
@@ -378,6 +379,132 @@ describe('explicit no-wall process execution', () => {
     return runWorkflowProcess({ command: process.execPath, args: ['-e', code], cwd, timeoutMs: null,
       artifactPrefix: join(cwd, prefix) });
   }
+
+  it.runIf(process.platform === 'win32')('supervises a provider without consuming its stdin or stdout', async () => {
+    const result = await runWorkflowProcess({ command: process.execPath, args: ['-e', `
+      const fs = require('node:fs');
+      const emptyKey = Object.keys(process.env).find(key => key.toUpperCase() === 'OMC_FIXTURE_EMPTY');
+      process.stdout.write(JSON.stringify({ prompt: fs.readFileSync(0, 'utf8'),
+        intended: process.env.OMC_FIXTURE_ENV,
+        emptyPresent: emptyKey !== undefined, emptyValue: emptyKey === undefined ? null : process.env[emptyKey],
+        injectedPathExt: Object.keys(process.env).some(key => key.toUpperCase() === 'PATHEXT'),
+        injectedModulePath: Object.keys(process.env).some(key => key.toUpperCase() === 'PSMODULEPATH'),
+        internalConfig: Object.keys(process.env).some(key => key.toUpperCase() === 'OMC_WORKFLOW_PROCESS_SUPERVISOR') }));
+    `], cwd, stdin: 'controller prompt', timeoutMs: null, superviseProcessTree: true,
+    environment: { SystemRoot: process.env.SystemRoot, PATH: process.env.PATH, TEMP: process.env.TEMP, TMP: process.env.TMP,
+      OMC_FIXTURE_ENV: 'preserved', OMC_FIXTURE_EMPTY: '', omc_workflow_process_supervisor: 'caller-value' },
+    artifactPrefix: join(cwd, 'supervised-stdio') });
+    expect(result).toMatchObject({ passed: true, settlement: { outputComplete: true, descendants: 'cleaned' } });
+    expect(JSON.parse(readFileSync(result.artifacts[0]!.path, 'utf8')))
+      .toEqual({ prompt: 'controller prompt', intended: 'preserved', emptyPresent: true, emptyValue: '', injectedPathExt: false,
+        injectedModulePath: false, internalConfig: false });
+  });
+
+  it.runIf(process.platform === 'win32')('restores an explicitly intended provider module path after supervisor startup', async () => {
+    const result = await runWorkflowProcess({ command: process.execPath,
+      args: ['-e', 'process.stdout.write(process.env.PSModulePath ?? "missing")'], cwd,
+      timeoutMs: null, superviseProcessTree: true,
+      environment: { SystemRoot: process.env.SystemRoot, PATH: process.env.PATH, TEMP: process.env.TEMP, TMP: process.env.TMP,
+        PSModulePath: 'C:\\fixture\\modules' },
+      artifactPrefix: join(cwd, 'supervised-module-path') });
+    expect(result.passed).toBe(true);
+    expect(readFileSync(result.artifacts[0]!.path, 'utf8')).toBe('C:\\fixture\\modules');
+  });
+
+  it.runIf(process.platform === 'win32')('preserves an explicitly empty provider module path', async () => {
+    const result = await runWorkflowProcess({ command: process.execPath, args: ['-e', `
+      const key = Object.keys(process.env).find(name => name.toUpperCase() === 'PSMODULEPATH');
+      process.stdout.write(JSON.stringify({ present: key !== undefined, value: key === undefined ? null : process.env[key] }));
+    `], cwd, timeoutMs: null, superviseProcessTree: true,
+    environment: { SystemRoot: process.env.SystemRoot, PATH: process.env.PATH, TEMP: process.env.TEMP, TMP: process.env.TMP,
+      PSModulePath: '' }, artifactPrefix: join(cwd, 'supervised-empty-module-path') });
+    expect(result.passed).toBe(true);
+    expect(JSON.parse(readFileSync(result.artifacts[0]!.path, 'utf8'))).toEqual({ present: true, value: '' });
+  });
+
+  it.runIf(process.platform === 'win32')('fails closed when an intended provider environment value changes', async () => {
+    const supervised = superviseWindowsWorkflowInvocation({ command: process.execPath,
+      args: ['-e', 'process.stdout.write("must-not-run")'], cwd,
+      environment: { SystemRoot: process.env.SystemRoot, PATH: process.env.PATH, TEMP: process.env.TEMP, TMP: process.env.TMP,
+        OMC_FIXTURE_ENV: 'intended-value' } });
+    const configKey = Object.keys(supervised.environment)
+      .find(key => key.toUpperCase() === 'OMC_WORKFLOW_PROCESS_SUPERVISOR')!;
+    expect(Buffer.from(supervised.environment[configKey]!, 'base64').toString('utf8')).not.toContain('intended-value');
+    supervised.environment.OMC_FIXTURE_ENV = 'changed-after-digest';
+    const result = await runWorkflowProcess({ ...supervised, cwd, timeoutMs: 5000,
+      artifactPrefix: join(cwd, 'supervised-environment-mismatch') });
+    expect(result).toMatchObject({ passed: false, error: 'process_failed' });
+    expect(readFileSync(result.artifacts[0]!.path, 'utf8')).toBe('');
+    expect(readFileSync(result.artifacts[1]!.path, 'utf8')).toContain('workflow_supervisor_environment_mismatch');
+  });
+
+  it.runIf(process.platform === 'win32')('refuses a NUL-bearing provider argument before launch', async () => {
+    const marker = join(cwd, 'nul-argument-provider-ran');
+    const provider = `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'ran')`;
+    await expect(runWorkflowProcess({ command: process.execPath,
+      args: ['-e', provider, 'before\0after'], cwd, timeoutMs: null, superviseProcessTree: true,
+      artifactPrefix: join(cwd, 'nul-argument') })).rejects.toThrow('workflow_invalid_process_arguments');
+    expect(existsSync(marker)).toBe(false);
+  });
+
+  it.runIf(process.platform === 'win32')('refuses a NUL-bearing provider environment before launch', async () => {
+    const marker = join(cwd, 'nul-environment-provider-ran');
+    const provider = `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'ran')`;
+    await expect(runWorkflowProcess({ command: process.execPath, args: ['-e', provider], cwd,
+      timeoutMs: null, superviseProcessTree: true,
+      environment: { SystemRoot: process.env.SystemRoot, PATH: process.env.PATH,
+        PSModulePath: 'foo\0OMC_INJECTED=yes' }, artifactPrefix: join(cwd, 'nul-environment') }))
+      .rejects.toThrow('workflow_supervisor_environment_invalid');
+    expect(existsSync(marker)).toBe(false);
+  });
+
+  it.runIf(process.platform === 'win32')('refuses invalid or aliased Windows environment keys', () => {
+    const base = { command: process.execPath, args: ['-e', ''], cwd };
+    expect(() => superviseWindowsWorkflowInvocation({ ...base,
+      environment: { SystemRoot: process.env.SystemRoot, 'BAD=KEY': 'value' } }))
+      .toThrow('workflow_supervisor_environment_invalid');
+    expect(() => superviseWindowsWorkflowInvocation({ ...base,
+      environment: { SystemRoot: process.env.SystemRoot, PATH: 'first', Path: 'second' } }))
+      .toThrow('workflow_supervisor_environment_invalid');
+    expect(() => superviseWindowsWorkflowInvocation({ ...base, args: ['before\0after'], environment: process.env }))
+      .toThrow('workflow_supervisor_process_arguments_invalid');
+    expect(() => superviseWindowsWorkflowInvocation({ ...base, cwd: `${cwd}\0other`, environment: process.env }))
+      .toThrow('workflow_supervisor_process_arguments_invalid');
+  });
+
+  it.runIf(process.platform === 'win32')('kills inherited detached descendants before accepting provider success', async () => {
+    const marker = join(cwd, 'late-descendant-marker');
+    const descendant = `setTimeout(() => require('node:fs').writeFileSync(process.argv[1], 'late'), 700); setTimeout(() => {}, 1200)`;
+    const result = await runWorkflowProcess({ command: process.execPath, args: ['-e', `
+      const { spawn } = require('node:child_process');
+      spawn(process.execPath, ['-e', ${JSON.stringify(descendant)}, ${JSON.stringify(marker)}],
+        { stdio: ['ignore', 'inherit', 'inherit'], detached: true, windowsHide: true }).unref();
+      process.stdout.write('provider-complete');
+    `], cwd, timeoutMs: null, superviseProcessTree: true,
+    artifactPrefix: join(cwd, 'supervised-descendant') });
+    expect(result).toMatchObject({ passed: true, settlement: { outputComplete: true, descendants: 'cleaned' } });
+    expect(readFileSync(result.artifacts[0]!.path, 'utf8')).toBe('provider-complete');
+    await new Promise(resolve => setTimeout(resolve, 900));
+    expect(existsSync(marker)).toBe(false);
+  });
+
+  it.runIf(process.platform === 'win32')('preserves a supervised provider failure exit', async () => {
+    const result = await runWorkflowProcess({ command: process.execPath,
+      args: ['-e', 'process.stdout.write("failed-provider"); process.exitCode=17'], cwd,
+      timeoutMs: null, superviseProcessTree: true, artifactPrefix: join(cwd, 'supervised-failure') });
+    expect(result).toMatchObject({ passed: false, error: 'process_failed', parentExitedSuccessfully: false,
+      settlement: { parentExitCode: 17, outputComplete: true } });
+    expect(readFileSync(result.artifacts[0]!.path, 'utf8')).toBe('failed-provider');
+  });
+
+  it.runIf(process.platform === 'win32')('preserves a supervised Windows crash exit code', async () => {
+    const crashCode = 0xc0000005;
+    const result = await runWorkflowProcess({ command: process.execPath,
+      args: ['-e', `process.exit(${crashCode})`], cwd,
+      timeoutMs: null, superviseProcessTree: true, artifactPrefix: join(cwd, 'supervised-crash') });
+    expect(result).toMatchObject({ passed: false, error: 'process_failed',
+      settlement: { parentExitCode: crashCode, outputComplete: true } });
+  });
 
   it('leaves an explicitly unbounded process running past the finite deadline that still ends a bounded one', async () => {
     const bounded = await runWorkflowProcess({ command: process.execPath, args: ['-e', 'setInterval(()=>{},1000)'], cwd,

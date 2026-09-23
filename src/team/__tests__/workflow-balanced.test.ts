@@ -334,7 +334,7 @@ describe('balanced workflow with real repositories and provider processes', () =
     });
 
   it('keeps a worker-declared check finite under supervised policy instead of removing its bound', async () => {
-    const slow = { command: process.execPath, args: ['-e', 'setTimeout(() => {}, 6000)'] };
+    const slow = { command: process.execPath, args: ['-e', 'setTimeout(() => {}, 15000)'] };
     await initWorkflow(fixture.cwd, plan([task('a', { tests: [slow] })]),
       { ...options, timeoutMs: 900, maxAttempts: 1, providerPolicy: 'supervised' });
     const started = Date.now();
@@ -344,8 +344,8 @@ describe('balanced workflow with real repositories and provider processes', () =
     expect(failed).toMatchObject({ status: 'failed', error: 'workflow_worker_test_failed', attempts: 1 });
     // The provider claimed the checks passed; only the controller's own finite run can fail them.
     expect(failed.handoff?.tests.every(test => test.passed)).toBe(true);
-    // The declared check sleeps for six seconds, so only a bounded local run can finish this quickly.
-    expect(elapsed).toBeLessThan(5000);
+    // The declared check sleeps for fifteen seconds, so only a bounded local run can finish this quickly.
+    expect(elapsed).toBeLessThan(10000);
   }, 30000);
 
   it('keeps integrated verification finite under supervised policy instead of removing its bound', async () => {
@@ -360,7 +360,7 @@ describe('balanced workflow with real repositories and provider processes', () =
     expect(readWorkflow(fixture.cwd, name).verification?.passed).toBe(false);
   }, 30000);
 
-  it('does not dispatch a second provider attempt for output_incomplete while an attempt remains', async () => {
+  it.skipIf(process.platform === 'win32')('does not dispatch a second provider attempt for output_incomplete while an escaped descendant remains', async () => {
     fixture.configure({ tasks: { a: { outputIncomplete: true } } });
     await initWorkflow(fixture.cwd, plan(), { ...options, timeoutMs: 2000, maxAttempts: 3, providerPolicy: 'supervised' });
     await runWorkflow(fixture.cwd, name);
@@ -390,17 +390,25 @@ describe('balanced workflow with real repositories and provider processes', () =
     expect(completed.handoff?.artifacts.some(artifact => artifact.kind === 'workflow-result')).toBe(true);
   }, 30000);
 
-  it('keeps an inherited output pipe terminal even when a valid result precedes a deferred descendant mutation', async () => {
+  it('cleans an inherited output pipe before accepting a valid result', async () => {
     fixture.configure({ tasks: { a: { thinkingTokenEvents: 16000, holdOutputOpen: true, deferredMutation: true } } });
     await initWorkflow(fixture.cwd, plan(), { ...options, timeoutMs: 2000, maxAttempts: 1, providerPolicy: 'supervised' });
     await runWorkflow(fixture.cwd, name);
-    const failed = readWorkflow(fixture.cwd, name).tasks[0]!;
-    expect(failed).toMatchObject({ status: 'failed', error: 'workflow_output_incomplete', attempts: 1 });
-    const deferred = join(failed.worktree!, 'deferred-descendant.txt');
-    for (let index = 0; index < 20 && !existsSync(deferred); index++) {
-      await new Promise(resolve => setTimeout(resolve, 100));
+    const task = readWorkflow(fixture.cwd, name).tasks[0]!;
+    const deferred = join(task.worktree!, 'deferred-descendant.txt');
+    if (process.platform === 'win32') {
+      expect(task).toMatchObject({ status: 'completed', attempts: 1 });
+      await new Promise(resolve => setTimeout(resolve, 2700));
+      expect(existsSync(deferred)).toBe(false);
+    } else {
+      // A descendant that creates another POSIX session is outside the owned
+      // provider group, so its inherited pipe remains a fail-closed result.
+      expect(task).toMatchObject({ status: 'failed', error: 'workflow_output_incomplete', attempts: 1 });
+      for (let index = 0; index < 20 && !existsSync(deferred); index++) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+      expect(readFileSync(deferred, 'utf8')).toBe('late mutation\n');
     }
-    expect(readFileSync(deferred, 'utf8')).toBe('late mutation\n');
   }, 30000);
 
   it.each([

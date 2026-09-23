@@ -6,14 +6,14 @@
     "base": "05c800f40d1ad53b42a78609d2667ef4f726808b",
     "planningHead": "0a91273e61dbbd47eb0af4c02844409251e08398",
     "head": "2f9d2bb9443925f123ebae69d8c56ee181ca0130",
-    "sourceSha256": "b1b2510bb621d932673e292207201aa900cdcec50c76d3e9b90a6b45743dcaed",
+    "sourceSha256": "023103d661089c672c65724e32c22aa12f8ab9ec1822f17845b15cf29c7fa9ac",
     "generatedAt": null,
     "generator": "scripts/generate-inventory-graph.mjs"
   },
   "base": "05c800f40d1ad53b42a78609d2667ef4f726808b",
   "planningHead": "0a91273e61dbbd47eb0af4c02844409251e08398",
   "head": "2f9d2bb9443925f123ebae69d8c56ee181ca0130",
-  "sourceSha256": "b1b2510bb621d932673e292207201aa900cdcec50c76d3e9b90a6b45743dcaed",
+  "sourceSha256": "023103d661089c672c65724e32c22aa12f8ab9ec1822f17845b15cf29c7fa9ac",
   "counts": {
     "public": {
       "skills": 43,
@@ -28,8 +28,8 @@
       "toolFiles": 61,
       "libFiles": 44,
       "templateHooks": 22,
-      "srcFiles": 1440,
-      "total": 1462
+      "srcFiles": 1441,
+      "total": 1463
     },
     "generated": {
       "distFiles": 5094,
@@ -41547,6 +41547,11 @@
         "path": "src/team/workflow-orphan.ts"
       },
       {
+        "id": "src/team/workflow-process-supervisor.ts",
+        "kind": "src",
+        "path": "src/team/workflow-process-supervisor.ts"
+      },
+      {
         "id": "src/team/workflow-process.ts",
         "kind": "src",
         "path": "src/team/workflow-process.ts"
@@ -76455,6 +76460,11 @@
       },
       {
         "from": "src/team/__tests__/workflow-process.test.ts",
+        "to": "src/team/workflow-process-supervisor.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-process.test.ts",
         "to": "src/team/workflow-process.ts",
         "kind": "imports"
       },
@@ -79964,6 +79974,21 @@
         "kind": "imports"
       },
       {
+        "from": "src/team/workflow-process-supervisor.ts",
+        "to": "external:node:crypto",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow-process-supervisor.ts",
+        "to": "external:node:fs",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow-process-supervisor.ts",
+        "to": "external:node:path",
+        "kind": "imports"
+      },
+      {
         "from": "src/team/workflow-process.ts",
         "to": "external:node:child_process",
         "kind": "imports"
@@ -80007,6 +80032,11 @@
         "from": "src/team/workflow-process.ts",
         "to": "src/team/workflow-contracts.ts",
         "kind": "type-imports"
+      },
+      {
+        "from": "src/team/workflow-process.ts",
+        "to": "src/team/workflow-process-supervisor.ts",
+        "kind": "imports"
       },
       {
         "from": "src/team/workflow-process.ts",
@@ -83525,12 +83555,12 @@
       }
     ],
     "stats": {
-      "nodeCount": 7175,
-      "edgeCount": 8224,
-      "importEdgeCount": 6783,
+      "nodeCount": 7176,
+      "edgeCount": 8229,
+      "importEdgeCount": 6788,
       "registerEdgeCount": 64
     }
   },
-  "inventorySha256": "741ab228fc00b8a2d022b53c7c963fbb3adf020cc08acff214e0d6e542e59b58",
-  "manifestSha256": "ff899c66a769c06d330e3788455591d10e2c410bbb9bea95d5505c08174536ab"
+  "inventorySha256": "70bfc7341cd9fa8247911b69dc9b72a3d1a3dc2eb06e82dd23b815d09a6db9a8",
+  "manifestSha256": "f27ad2d9a38b21b4d6eb2c9c8318ab7feb5889085ba9a60cfe7a835f8ec54417"
 }
