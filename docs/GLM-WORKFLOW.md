@@ -254,7 +254,9 @@ After completion, explicit `cleanup` removes only clean, accepted worktrees thro
 OMC's existing safety checks. Rejected, dirty or changed worker worktrees remain
 available for inspection. The workflow ledger and artifacts are retained.
 Normal status is capped at 16 KiB; previews identify omitted tasks and reference
-the complete state and result artifacts.
+the complete state and result artifacts. A pending task with unmet dependencies
+also reports `readiness: "blocked"`, the `blockedBy` task IDs, and whether it is
+waiting for dependency completion, acceptance, or an unavailable dependency.
 
 ## Local verification and CI
 

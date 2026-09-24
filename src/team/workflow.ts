@@ -863,10 +863,19 @@ export function workflowStatus(cwd: string, name: string): Record<string, unknow
     omittedTasks: 0, omittedFindings: 0, stateFile: statePath(cwd, name),
     tasks: state.tasks.map(entry => {
       const actual = versioned?.tasks.find(task => task.task.id === entry.task.id)?.invocations?.at(-1)?.binding;
+      const blockedDependencies = entry.status === 'pending'
+        ? entry.task.dependencies.map(id => getTask(state, id)).filter(dependency => dependency.status !== 'accepted')
+        : [];
+      const blockedReason = blockedDependencies.some(dependency => ['failed', 'rejected'].includes(dependency.status))
+        ? 'dependency_unavailable'
+        : blockedDependencies.some(dependency => ['pending', 'running'].includes(dependency.status))
+          ? 'awaiting_dependency_completion'
+          : blockedDependencies.length ? 'awaiting_dependency_acceptance' : undefined;
       return { id: entry.task.id, worker: entry.worker, provider: versioned ? actual?.providerRoute ?? null : 'glm', model: versioned ? actual?.model ?? null : state.options.glmModel,
       ...(versioned ? { bindingId: actual?.id ?? null, selectedBinding: { id: versioned.bindings.implementer.id,
         provider: versioned.bindings.implementer.providerRoute, model: versioned.bindings.implementer.model } } : {}),
       status: entry.status, attempts: entry.attempts, backoffUntil: entry.backoffUntil, worktree: entry.worktree, branch: entry.branch, updatedAt: entry.updatedAt,
+      ...(blockedReason ? { readiness: 'blocked', blockedBy: blockedDependencies.map(dependency => dependency.task.id), blockedReason } : {}),
       ...(entry.session ? { session: { confirmed: entry.session.confirmed,
         resumeCandidate: entry.status === 'failed' && entry.session.confirmed && (versioned
           ? 'binding' in entry.session && JSON.stringify(entry.session.binding) === JSON.stringify(versioned.bindings.implementer)
