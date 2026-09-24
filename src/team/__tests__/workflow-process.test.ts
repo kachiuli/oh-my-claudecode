@@ -31,11 +31,13 @@ describe('bounded one-shot workflow process', () => {
     writeFileSync(shim, `@echo off\r\n"${process.execPath}" -e "${script}" %*\r\n`);
     const expected = ['exec', '--model', 'space and & literal', 'bang!literal', 'caret^literal', 'quote"literal'];
     const invocation = resolveValidatedCliInvocation('codex', expected, shim);
-    const result = await runWorkflowProcess({ ...invocation, cwd, timeoutMs: 5000,
+    // This checks argv quoting, not timeout behavior; cold PowerShell startup can exceed 5s on CI.
+    const result = await runWorkflowProcess({ ...invocation, cwd, timeoutMs: 30_000,
       artifactPrefix: join(cwd, 'windows-batch'), superviseProcessTree: true });
+    expect(result.error).toBeUndefined();
     expect(result.passed).toBe(true);
     expect(JSON.parse(readFileSync(result.artifacts[0]!.path, 'utf8'))).toEqual(expected);
-  });
+  }, 40_000);
 
   it.each([undefined, 'claude', 'codex', 'glm'] as const)('removes lead lease credentials from a %s child', async provider => {
     vi.stubEnv('OMC_ORCHESTRATOR_LEASE_TOKEN', 'fixture-lease-token');
