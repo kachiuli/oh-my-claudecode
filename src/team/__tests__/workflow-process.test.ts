@@ -31,11 +31,13 @@ describe('bounded one-shot workflow process', () => {
     writeFileSync(shim, `@echo off\r\n"${process.execPath}" -e "${script}" %*\r\n`);
     const expected = ['exec', '--model', 'space and & literal', 'bang!literal', 'caret^literal', 'quote"literal'];
     const invocation = resolveValidatedCliInvocation('codex', expected, shim);
-    const result = await runWorkflowProcess({ ...invocation, cwd, timeoutMs: 5000,
+    // This checks argv quoting, not timeout behavior; cold PowerShell startup can exceed 5s on CI.
+    const result = await runWorkflowProcess({ ...invocation, cwd, timeoutMs: 60_000,
       artifactPrefix: join(cwd, 'windows-batch'), superviseProcessTree: true });
+    expect(result.error).toBeUndefined();
     expect(result.passed).toBe(true);
     expect(JSON.parse(readFileSync(result.artifacts[0]!.path, 'utf8'))).toEqual(expected);
-  });
+  }, 90_000);
 
   it.each([undefined, 'claude', 'codex', 'glm'] as const)('removes lead lease credentials from a %s child', async provider => {
     vi.stubEnv('OMC_ORCHESTRATOR_LEASE_TOKEN', 'fixture-lease-token');
@@ -400,15 +402,44 @@ describe('explicit no-wall process execution', () => {
         injectedModulePath: false, internalConfig: false });
   }, 90000);
 
-  it.runIf(process.platform === 'win32')('restores an explicitly intended provider module path after supervisor startup', async () => {
-    const result = await runWorkflowProcess({ command: process.execPath,
-      args: ['-e', 'process.stdout.write(process.env.PSModulePath ?? "missing")'], cwd,
-      timeoutMs: null, superviseProcessTree: true,
+  it.runIf(process.platform === 'win32')('carries only known PowerShell startup mutations as exact environment repairs', () => {
+    const supervised = superviseWindowsWorkflowInvocation({ command: process.execPath, args: ['-e', ''], cwd,
+      environment: { SystemRoot: process.env.SystemRoot, PATH: process.env.PATH,
+        pSmOdUlEpAtH: 'C:\\fixture\\modules', PathExt: '.FIXTURE;.EXE', __compat_layer: '' } });
+    const commandLineLength = supervised.command.length + 2
+      + supervised.args.reduce((length, argument) => length + argument.length, 0) + supervised.args.length;
+    expect(commandLineLength).toBeLessThanOrEqual(32_000);
+    expect(Object.keys(supervised.environment)
+      .filter(key => ['PSMODULEPATH', 'PATHEXT', '__COMPAT_LAYER'].includes(key.toUpperCase())))
+      .toEqual([]);
+    const configKey = Object.keys(supervised.environment)
+      .find(key => key.toUpperCase() === 'OMC_WORKFLOW_PROCESS_SUPERVISOR')!;
+    const configuration = JSON.parse(Buffer.from(supervised.environment[configKey]!, 'base64').toString('utf8'));
+    expect(configuration.environment_repairs).toEqual([
+      { name: 'PathExt', value: '.FIXTURE;.EXE' },
+      { name: 'pSmOdUlEpAtH', value: 'C:\\fixture\\modules' },
+      { name: '__compat_layer', value: '' },
+    ]);
+  });
+
+  it.runIf(process.platform === 'win32')('restores exact repairable provider environment values after supervisor startup', async () => {
+    const result = await runWorkflowProcess({ command: process.execPath, args: ['-e', `
+      const entry = name => {
+        const key = Object.keys(process.env).find(key => key.toUpperCase() === name);
+        return { key, value: key === undefined ? null : process.env[key] };
+      };
+      process.stdout.write(JSON.stringify({ modulePath: entry('PSMODULEPATH'), pathExt: entry('PATHEXT'),
+        compatLayer: entry('__COMPAT_LAYER') }));
+    `], cwd, timeoutMs: null, superviseProcessTree: true,
       environment: { SystemRoot: process.env.SystemRoot, PATH: process.env.PATH, TEMP: process.env.TEMP, TMP: process.env.TMP,
-        PSModulePath: 'C:\\fixture\\modules' },
-      artifactPrefix: join(cwd, 'supervised-module-path') });
+        pSmOdUlEpAtH: 'C:\\fixture\\modules', PathExt: '.FIXTURE;.EXE', __compat_layer: 'RunAsInvoker' },
+      artifactPrefix: join(cwd, 'supervised-repaired-environment') });
     expect(result.passed).toBe(true);
-    expect(readFileSync(result.artifacts[0]!.path, 'utf8')).toBe('C:\\fixture\\modules');
+    expect(JSON.parse(readFileSync(result.artifacts[0]!.path, 'utf8'))).toEqual({
+      modulePath: { key: 'pSmOdUlEpAtH', value: 'C:\\fixture\\modules' },
+      pathExt: { key: 'PathExt', value: '.FIXTURE;.EXE' },
+      compatLayer: { key: '__compat_layer', value: 'RunAsInvoker' },
+    });
   }, 90000);
 
   it.runIf(process.platform === 'win32')('preserves an explicitly empty provider module path', async () => {
@@ -436,6 +467,24 @@ describe('explicit no-wall process execution', () => {
     expect(result).toMatchObject({ passed: false, error: 'process_failed' });
     expect(readFileSync(result.artifacts[0]!.path, 'utf8')).toBe('');
     expect(readFileSync(result.artifacts[1]!.path, 'utf8')).toContain('workflow_supervisor_environment_mismatch');
+  }, 90000);
+
+  it.runIf(process.platform === 'win32')('rejects an arbitrary provider environment repair', async () => {
+    const supervised = superviseWindowsWorkflowInvocation({ command: process.execPath,
+      args: ['-e', 'process.stdout.write("must-not-run")'], cwd,
+      environment: { SystemRoot: process.env.SystemRoot, PATH: process.env.PATH, TEMP: process.env.TEMP, TMP: process.env.TMP,
+        OMC_FIXTURE_ENV: 'intended-value' } });
+    const configKey = Object.keys(supervised.environment)
+      .find(key => key.toUpperCase() === 'OMC_WORKFLOW_PROCESS_SUPERVISOR')!;
+    const configuration = JSON.parse(Buffer.from(supervised.environment[configKey]!, 'base64').toString('utf8'));
+    configuration.environment_repairs.push({ name: 'OMC_FIXTURE_ENV', value: 'intended-value' });
+    supervised.environment[configKey] = Buffer.from(JSON.stringify(configuration), 'utf8').toString('base64');
+    delete supervised.environment.OMC_FIXTURE_ENV;
+    const result = await runWorkflowProcess({ ...supervised, cwd, timeoutMs: 60000,
+      artifactPrefix: join(cwd, 'supervised-environment-repair-invalid') });
+    expect(result).toMatchObject({ passed: false, error: 'process_failed' });
+    expect(readFileSync(result.artifacts[0]!.path, 'utf8')).toBe('');
+    expect(readFileSync(result.artifacts[1]!.path, 'utf8')).toContain('workflow_supervisor_environment_repair_invalid');
   }, 90000);
 
   it.runIf(process.platform === 'win32')('refuses a NUL-bearing provider argument before launch', async () => {
