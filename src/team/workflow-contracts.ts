@@ -4,7 +4,7 @@ import { isDeepStrictEqual } from 'node:util';
 import type { OrchestratorHost } from '../orchestration/selection.js';
 
 export type WorkflowRole = 'lead' | 'implementer' | 'reviewer';
-export type WorkflowProviderRoute = 'claude' | 'glm' | 'codex';
+export type WorkflowProviderRoute = 'claude' | 'glm' | 'mimo' | 'codex';
 /** The single optional supervised policy; omission keeps the legacy finite provider timeout. */
 export type WorkflowProviderPolicy = 'supervised';
 export type WorkflowCapability = 'external-lead' | 'structured-handoff' | 'structured-findings' | 'read-only' | 'session-resume' | 'review-permission-transition';
@@ -135,7 +135,7 @@ export interface WorkflowFinding {
 }
 export interface WorkflowState {
   schemaVersion: 1;
-  profile: 'claude-glm-codex';
+  profile: 'claude-glm-codex' | 'claude-mimo-codex';
   plan: WorkflowPlan;
   cwd: string;
   integrationHead: string;
@@ -231,8 +231,8 @@ export function parseWorkflowBinding(value: unknown): WorkflowRoleBinding {
   const raw = exactObject(value, ['id', 'role', 'providerRoute', 'cliFamily', 'model', 'effort', 'authProfileRef', 'authFingerprint', 'executableIdentity', 'capabilities', 'capabilityEvidenceSha256']);
   const role = raw.role as WorkflowRole;
   const providerRoute = raw.providerRoute as WorkflowProviderRoute;
-  if (!['lead', 'implementer', 'reviewer'].includes(role) || !['claude', 'glm', 'codex'].includes(providerRoute)
-    || (role === 'implementer' && providerRoute === 'codex') || (role !== 'implementer' && providerRoute === 'glm')) throw new Error('workflow_unsupported_role_route');
+  if (!['lead', 'implementer', 'reviewer'].includes(role) || !['claude', 'glm', 'mimo', 'codex'].includes(providerRoute)
+    || (role === 'implementer' && providerRoute === 'codex') || (role !== 'implementer' && (providerRoute === 'glm' || providerRoute === 'mimo'))) throw new Error('workflow_unsupported_role_route');
   const cliFamily = role === 'lead' ? 'external' : providerRoute === 'codex' ? 'codex-exec' : 'claude-code';
   if (raw.cliFamily !== cliFamily) throw new Error('workflow_invalid_cli_family');
   const capabilities = texts(raw.capabilities, 6) as WorkflowCapability[];
@@ -314,7 +314,7 @@ export function parseWorkflowSubstitution(value: unknown): WorkflowSubstitution 
 /** Pure contract loading only: caller still checks cwd, head, lock and persisted-file identity. */
 export function parseWorkflowState(value: unknown): VersionedWorkflowState {
   const raw = object(value);
-  if (!((raw.schemaVersion === 1 && raw.profile === 'claude-glm-codex') || (raw.schemaVersion === 2 && raw.profile === 'role-substitution'))
+  if (!((raw.schemaVersion === 1 && (raw.profile === 'claude-glm-codex' || raw.profile === 'claude-mimo-codex')) || (raw.schemaVersion === 2 && raw.profile === 'role-substitution'))
     || !Array.isArray(raw.tasks) || !Array.isArray(raw.reviews)) throw new Error('workflow_invalid_state');
   const options = object(raw.options);
   if (options.mode !== undefined && !['v1', 'balanced'].includes(String(options.mode))) throw new Error('workflow_invalid_mode');

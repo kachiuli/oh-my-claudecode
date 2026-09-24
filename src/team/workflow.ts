@@ -11,7 +11,7 @@ import { withOrchestratorOperation, type ActiveOrchestratorSnapshot, type Orches
 import { TeamPaths, absPath, teamStateRoot } from './state-paths.js';
 import { atomicWriteJson, ensureDirWithMode, validateResolvedPath } from './fs-utils.js';
 import { ensureWorkerWorktree, getBranchName, getWorktreePath, removeWorkerWorktree } from './git-worktree.js';
-import { applyGlmProfile, getGlmConfig, resolveGlmExecutable } from './glm-config.js';
+import { applyGlmProfile, getGlmConfig, getMimoConfig, resolveGlmExecutable, resolveMimoExecutable } from './glm-config.js';
 import { ABSOLUTE_MAX_WORKERS } from './types.js';
 import { resolveRoleAssignment } from './stage-router.js';
 import { buildLaunchArgs, resolveValidatedCliInvocation, validateCliCommandRef } from './model-contract.js';
@@ -33,6 +33,9 @@ import { boundedText, safeWorkflowId, parseWorkflowPlan, parseWorkflowTask, matc
 export type { WorkflowState, WorkflowOptions, WorkflowPlan, WorkflowTask, WorkflowHandoff, WorkflowFinding } from './workflow-contracts.js';
 
 const now = () => new Date().toISOString();
+const legacyProvider = (state: WorkflowState): 'glm' | 'mimo' => state.schemaVersion === 1 && state.profile === 'claude-mimo-codex' ? 'mimo' : 'glm';
+const resolveLegacyExecutable = (state: WorkflowState): string => legacyProvider(state) === 'mimo'
+  ? resolveMimoExecutable(state.options.glmCommand) : resolveGlmExecutable(state.options.glmCommand);
 const savedSnapshots = new WeakMap<WorkflowState, unknown>();
 function git(cwd: string, args: string[]): string {
   try { return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: 'pipe', timeout: 30_000, windowsHide: true }).trim(); }
@@ -121,7 +124,7 @@ function save(state: WorkflowState): void {
 export function readWorkflow(cwd: string, name: string): WorkflowState {
   let state = boundedJson(statePath(cwd, name), 16 * 1024 * 1024) as WorkflowState;
   if (state?.schemaVersion === 1 || state?.schemaVersion === 2) state = parseWorkflowState(state);
-  if (!state || !((state.schemaVersion === 1 && state.profile === 'claude-glm-codex') || (state.schemaVersion === 2 && state.profile === 'role-substitution')) || state.plan?.name !== name
+  if (!state || !((state.schemaVersion === 1 && (state.profile === 'claude-glm-codex' || state.profile === 'claude-mimo-codex')) || (state.schemaVersion === 2 && state.profile === 'role-substitution')) || state.plan?.name !== name
     || realpathSync(state.cwd) !== realpathSync(cwd)) throw new Error('workflow_invalid_state');
   if (!Array.isArray(state.tasks) || !Array.isArray(state.reviews)) throw new Error('workflow_invalid_state');
   if (state.options.mode !== undefined && !['v1', 'balanced'].includes(state.options.mode)) throw new Error('workflow_invalid_mode');
@@ -188,8 +191,8 @@ function revokeOrphanedPublication(state: WorkflowState, entry: WorkflowTaskStat
     } catch { /* an unreadable record is left for inspection */ }
   }
 }
-export async function initWorkflow(cwd: string, rawPlan: unknown, options: WorkflowOptions = {}): Promise<LegacyWorkflowState> {
-  const state = await initializeWorkflow(cwd, rawPlan, options);
+export async function initWorkflow(cwd: string, rawPlan: unknown, options: WorkflowOptions = {}, profile?: LegacyWorkflowState['profile']): Promise<LegacyWorkflowState> {
+  const state = await initializeWorkflow(cwd, rawPlan, options, undefined, profile);
   if (state.schemaVersion !== 1) throw new Error('workflow_invalid_state');
   return state;
 }
@@ -201,7 +204,7 @@ export async function initWorkflowV2(cwd: string, rawPlan: unknown, bindings: Re
   if (state.schemaVersion !== 2) throw new Error('workflow_invalid_state');
   return state;
 }
-async function initializeWorkflow(cwd: string, rawPlan: unknown, options: WorkflowOptions, bindings?: Readonly<Record<WorkflowRole, WorkflowRoleBinding>>): Promise<WorkflowState> {
+async function initializeWorkflow(cwd: string, rawPlan: unknown, options: WorkflowOptions, bindings?: Readonly<Record<WorkflowRole, WorkflowRoleBinding>>, profile?: LegacyWorkflowState['profile']): Promise<WorkflowState> {
   assertLeadCaller();
   return withOrchestratorOperation(cwd, async () => {
     if (redactWorkflowText(JSON.stringify({ rawPlan, options })) !== JSON.stringify({ rawPlan, options })) throw new Error('workflow_sensitive_input_rejected');
@@ -219,12 +222,16 @@ async function initializeWorkflow(cwd: string, rawPlan: unknown, options: Workfl
   for (const task of plan.tasks) if (task.baseCommit !== plan.baseCommit) throw new Error('workflow_task_base_mismatch');
   for (const task of plan.tasks) if (task.dependencies.length && task.tests.some(test =>
     test.args.some(arg => arg.toLowerCase().includes(plan.baseCommit)))) throw new Error('workflow_dependent_test_uses_plan_base');
-  const loaded = loadConfig();
-  const routing = applyGlmProfile({ ...loaded, team: { ...loaded.team, profile: 'claude-glm-codex' } });
+  // Select the requested worker profile before expanding it; a global GLM preset
+  // must not turn into an explicit role override when this run chooses MiMo.
+  const loaded = loadConfig(cwd, { applyTeamProfile: false });
+  const selectedProfile = profile ?? (!bindings ? loaded.team?.profile : undefined) ?? 'claude-glm-codex';
+  const provider = selectedProfile === 'claude-mimo-codex' ? 'mimo' : 'glm';
+  const routing = applyGlmProfile({ ...loaded, team: { ...loaded.team, profile: selectedProfile } });
   const executor = resolveRoleAssignment('executor', routing);
   const reviewer = resolveRoleAssignment('code-reviewer', routing);
-  if (!bindings && (executor.provider !== 'glm' || reviewer.provider !== 'codex')) throw new Error('workflow_role_routing_requires_glm_executor_and_codex_reviewer');
-  const config = getGlmConfig(routing);
+  if (!bindings && (executor.provider !== provider || reviewer.provider !== 'codex')) throw new Error(`workflow_role_routing_requires_${provider}_executor_and_codex_reviewer`);
+  const config = provider === 'mimo' ? getMimoConfig(routing) : getGlmConfig(routing);
   const maxWorkers = count(options.maxWorkers, config.maxWorkers, ABSOLUTE_MAX_WORKERS);
   const codexCommand = options.codexCommand ?? process.env.OMC_CODEX_COMMAND ?? 'codex';
   validateCliCommandRef(codexCommand);
@@ -247,7 +254,7 @@ async function initializeWorkflow(cwd: string, rawPlan: unknown, options: Workfl
     git(cwd, ['switch', '-c', plan.integrationBranch, plan.baseCommit]);
   } else if (git(cwd, ['rev-parse', 'HEAD']) !== plan.baseCommit) throw new Error('workflow_initial_head_mismatch');
   const legacy: LegacyWorkflowState = {
-    schemaVersion: 1, profile: 'claude-glm-codex', plan, cwd, integrationHead: plan.baseCommit, options: resolvedOptions, stage: 'implementation',
+    schemaVersion: 1, profile: selectedProfile, plan, cwd, integrationHead: plan.baseCommit, options: resolvedOptions, stage: 'implementation',
     tasks: plan.tasks.map((task, index) => ({ task, canonicalId: String(index + 1), status: 'pending', attempts: 0,
       worker: `task-${task.id}`, updatedAt: now() })), reviewPasses: 0, reviews: [], createdAt: now(), updatedAt: now(),
   };
@@ -334,7 +341,7 @@ function validateCommit(state: WorkflowState, entry: WorkflowTaskState): string[
 function sessionFingerprint(state: WorkflowState, entry: WorkflowTaskState, command: string, worktree: string): string {
   const executable = realpathSync(command);
   const info = statSync(executable);
-  const environment = Object.entries(process.env).filter(([key]) => /^(?:ANTHROPIC_|CLAUDE_|CLAUDE_CONFIG_DIR$|OMC_GLM_|OMC_EXTERNAL_MODELS_DEFAULT_GLM_MODEL$)/.test(key)
+  const environment = Object.entries(process.env).filter(([key]) => /^(?:ANTHROPIC_|CLAUDE_|CLAUDE_CONFIG_DIR$|OMC_(?:GLM|MIMO)_|OMC_EXTERNAL_MODELS_DEFAULT_(?:GLM|MIMO)_MODEL$)/.test(key)
     && !['CLAUDE_CODE_ENTRYPOINT', 'CLAUDE_CODE_SESSION_ID'].includes(key)).sort(([a], [b]) => a.localeCompare(b));
   // Keep secrets out of state; bind their launch configuration together in one opaque digest.
   const launchIdentity = { executable, size: info.size, modified: info.mtimeMs, environment,
@@ -358,7 +365,7 @@ async function executeTask(state: WorkflowState, entry: WorkflowTaskState, comma
         : state.options.glmModel ? { model: state.options.glmModel } : {}), startedAt: now(), outcome: 'failed',
       controller: { pid: process.pid, processStartedAt: cachedCurrentProcessStartIdentity() },
       error: 'workflow_invocation_incomplete', ...(resumeReason === undefined ? {} : { reason: resumeReason }), artifacts: [],
-      telemetry: { provider: prepared?.binding.providerRoute ?? 'glm', durationMs: 0, status: 'unknown', scope: 'unknown' } };
+      telemetry: { provider: prepared?.binding.providerRoute ?? legacyProvider(state), durationMs: 0, status: 'unknown', scope: 'unknown' } };
     (entry.invocations ??= []).push(invocation);
     save(state);
     try {
@@ -397,12 +404,12 @@ async function executeTask(state: WorkflowState, entry: WorkflowTaskState, comma
       refAudit?.providerStarted(entry.worker);
       try {
         result = await runWorkflowProvider({ command, args: prepared ? workflowWorkerArguments(prepared,
-          sessionEnabled ? { id: entry.session!.id, resume: resuming } : undefined) : [...buildLaunchArgs('glm', {
+          sessionEnabled ? { id: entry.session!.id, resume: resuming } : undefined) : [...buildLaunchArgs(legacyProvider(state), {
           teamName: state.plan.name, workerName: entry.worker, cwd: entry.worktree, model: state.options.glmModel,
         }), '-p', ...(balanced ? [resuming ? '--resume' : '--session-id', entry.session!.id, '--output-format', 'stream-json', '--verbose'] : [])],
         cwd: entry.worktree, stdin: prompt, ...(balanced ? { collectUsage: true } : {}),
         onSpawn: identity => { invocation.process = identity; save(state); },
-        timeoutMs: providerTimeoutMs(state), artifactPrefix: prefix, provider: prepared?.binding.providerRoute ?? 'glm', worker: entry.worker,
+        timeoutMs: providerTimeoutMs(state), artifactPrefix: prefix, provider: prepared?.binding.providerRoute ?? legacyProvider(state), worker: entry.worker,
         publicationEnvironment: publication.environment,
         ...(prepared ? { environment: prepared.environment, redactionEnvironment: prepared.redactionEnvironment } : {}) }, resultFile,
         { kind: 'worker-designated-result', taskId: entry.task.id });
@@ -410,7 +417,7 @@ async function executeTask(state: WorkflowState, entry: WorkflowTaskState, comma
         try { publication.revoke(); }
         finally { refAudit?.providerCompleted(entry.worker); }
       }
-      invocation.telemetry = result.telemetry ?? { provider: prepared?.binding.providerRoute ?? 'glm', durationMs: Date.now() - started, status: 'unknown', scope: 'unknown' };
+      invocation.telemetry = result.telemetry ?? { provider: prepared?.binding.providerRoute ?? legacyProvider(state), durationMs: Date.now() - started, status: 'unknown', scope: 'unknown' };
       invocation.artifacts = result.artifacts;
       entry.handoff = { taskId: entry.task.id, outcome: 'failed', changedFiles: [], tests: [], interfaceChanges: [], assumptions: [], risks: [], summary: result.error ?? 'Worker result pending validation', artifacts: result.artifacts };
       if (sessionEnabled) {
@@ -522,7 +529,7 @@ export async function runWorkflow(cwd: string, name: string, runtime?: WorkflowR
     }
     let command = '';
     if (state.schemaVersion === 1) {
-      try { command = resolveGlmExecutable(state.options.glmCommand); } catch { throw new Error('workflow_glm_unavailable_fallback_disabled'); }
+      try { command = resolveLegacyExecutable(state); } catch { throw new Error(`workflow_${legacyProvider(state)}_unavailable_fallback_disabled`); }
     }
     let cursor = 0;
     const pools = await Promise.allSettled(Array.from({ length: Math.min(state.options.workers, candidates.length) }, async () => {
@@ -584,7 +591,7 @@ export async function resumeWorkflowTask(cwd: string, name: string, taskId: stri
       assertWorkflowResumeBinding(session.binding, prepared.binding);
       command = prepared.command;
     } else {
-      try { command = resolveGlmExecutable(state.options.glmCommand); } catch { throw new Error('workflow_glm_unavailable_fallback_disabled'); }
+      try { command = resolveLegacyExecutable(state); } catch { throw new Error(`workflow_${legacyProvider(state)}_unavailable_fallback_disabled`); }
     }
     const fingerprint = prepared ? workflowPromptFingerprint(JSON.stringify({ binding: prepared.binding, worktree, branch: entry.branch,
       context: workflowSessionFingerprint(state, entry, command, worktree) })) : sessionFingerprint(state, entry, command, worktree);
@@ -873,7 +880,7 @@ export function workflowStatus(cwd: string, name: string): Record<string, unknow
         : blockedDependencies.some(dependency => ['pending', 'running'].includes(dependency.status))
           ? 'awaiting_dependency_completion'
           : blockedDependencies.length ? 'awaiting_dependency_acceptance' : undefined;
-      return { id: entry.task.id, worker: entry.worker, provider: versioned ? actual?.providerRoute ?? null : 'glm', model: versioned ? actual?.model ?? null : state.options.glmModel,
+      return { id: entry.task.id, worker: entry.worker, provider: versioned ? actual?.providerRoute ?? null : legacyProvider(state), model: versioned ? actual?.model ?? null : state.options.glmModel,
       ...(versioned ? { bindingId: actual?.id ?? null, selectedBinding: { id: versioned.bindings.implementer.id,
         provider: versioned.bindings.implementer.providerRoute, model: versioned.bindings.implementer.model } } : {}),
       status: entry.status, attempts: entry.attempts, backoffUntil: entry.backoffUntil, worktree: entry.worktree, branch: entry.branch, updatedAt: entry.updatedAt,

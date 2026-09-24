@@ -23,6 +23,10 @@ The archive keeps package version 5.5.0 and records the tagged source commit in 
 
 This release repairs direct-CLI worker publication (#15), the Windows Codex reviewer command and override (#16), and workflow CLI startup warnings (#17). It also corrects orphaned-attempt recovery instructions (#18) and preserves completion evidence when verbose Claude stream-json output fills the stdout log cap (#20). The npm package version remains 5.5.0. Install it with the commands above, replacing `workflow-v1.5` with `workflow-v1.5.2` in the archive URL.
 
+## workflow-v1.5.6 MiMo workers
+
+This fork release adds separate `mimo-v2.6-pro` and `mimo-v2.6-flash` worker selection through Claude Code's Anthropic-compatible transport. `omc ask mimo`, `omc team N:mimo`, and the opt-in `claude-mimo-codex` workflow profile use a private `claude-mimo` profile. Existing Claude and GLM routes stay available. The package version remains 5.5.0. See the [MiMo setup guide](MIMO-WORKFLOW.md) for Windows and Bash launchers, API key placement, and model selection. Automated checks verify routing without a MiMo account; authenticated MiMo execution requires the operator's own key.
+
 Worker dispatch now includes structured `publication.publishInvocation` arguments. Custom workers should execute those arguments directly; `publication.publishCommand` is a safe shell fallback only for recognized Node entrypoints and is `null` for unknown launchers. Windows batch shims require the canonical `C:\Windows\System32\cmd.exe` path in this release.
 
 Projects can set editable routing defaults without a controller-specific profile schema: put a short prompt in `.omc/routing.md`. OMC setup projects the instruction to read it into both Claude and Codex lead guidance. For example, a project can adapt this prompt:

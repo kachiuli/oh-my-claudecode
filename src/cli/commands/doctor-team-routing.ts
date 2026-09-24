@@ -8,8 +8,8 @@
 
 import { colors } from '../utils/formatting.js';
 import { loadConfig } from '../../config/loader.js';
-import { probeCli, probeGlmCli } from '../../team/cli-detection.js';
-import { getGlmConfig } from '../../team/glm-config.js';
+import { probeCli, probeGlmCli, probeMimoCli } from '../../team/cli-detection.js';
+import { getGlmConfig, getMimoConfig } from '../../team/glm-config.js';
 import type { TeamRoleProvider } from '../../shared/types.js';
 
 interface ProviderProbe {
@@ -32,12 +32,17 @@ const PROVIDER_BINARY: Record<TeamRoleProvider, string> = {
   cursor: 'cursor-agent',
   antigravity: 'agy',
   glm: 'claude-glm',
+  mimo: 'claude-mimo',
 };
 
 function probeProvider(provider: TeamRoleProvider): ProviderProbe {
   if (provider === 'glm') {
     const config = getGlmConfig(loadConfig());
     return { provider, binary: config.command, ...probeGlmCli(config) };
+  }
+  if (provider === 'mimo') {
+    const config = getMimoConfig(loadConfig());
+    return { provider, binary: config.command, ...probeMimoCli(config) };
   }
   const binary = PROVIDER_BINARY[provider];
   return {
@@ -53,11 +58,12 @@ function collectConfiguredProviders(): Set<TeamRoleProvider> {
   // Always include claude so orchestrator presence is reported.
   providers.add('claude');
   if (cfg.team?.glm || cfg.team?.ops?.defaultAgentType === 'glm') providers.add('glm');
+  if (cfg.team?.mimo || cfg.team?.ops?.defaultAgentType === 'mimo') providers.add('mimo');
 
   const roleRouting = cfg.team?.roleRouting ?? {};
   for (const spec of Object.values(roleRouting)) {
     const provider = spec?.provider as TeamRoleProvider | undefined;
-    if (provider === 'claude' || provider === 'codex' || provider === 'gemini' || provider === 'grok' || provider === 'cursor' || provider === 'antigravity' || provider === 'glm') {
+    if (provider === 'claude' || provider === 'codex' || provider === 'gemini' || provider === 'grok' || provider === 'cursor' || provider === 'antigravity' || provider === 'glm' || provider === 'mimo') {
       providers.add(provider);
     }
   }
@@ -74,7 +80,7 @@ export async function doctorTeamRoutingCommand(options: { json?: boolean }): Pro
   }
 
   const probes = [...providers].map(probeProvider);
-  const missing = probes.filter((p) => !p.found || (p.provider === 'glm' && !p.launchable));
+  const missing = probes.filter((p) => !p.found || ((p.provider === 'glm' || p.provider === 'mimo') && !p.launchable));
 
   if (options.json) {
     console.log(
@@ -91,8 +97,8 @@ export async function doctorTeamRoutingCommand(options: { json?: boolean }): Pro
     const claudeFound = probes.some((probe) => probe.provider === 'claude' && probe.found);
     console.log(colors.bold('Team role routing — provider CLI probe'));
     for (const p of probes) {
-      if (p.provider === 'glm') {
-        console.log(`  ${p.launchable ? colors.green('✓') : colors.yellow('⚠')} glm: ${p.launchable ? 'launchable' : p.error}; model override ${p.modelOverride ? 'configured' : 'unset'}; fallback disabled`);
+      if (p.provider === 'glm' || p.provider === 'mimo') {
+        console.log(`  ${p.launchable ? colors.green('✓') : colors.yellow('⚠')} ${p.provider}: ${p.launchable ? 'launchable' : p.error}; model override ${p.modelOverride ? 'configured' : 'unset'}; fallback disabled`);
         continue;
       }
       if (p.found) {
@@ -110,8 +116,9 @@ export async function doctorTeamRoutingCommand(options: { json?: boolean }): Pro
     }
     if (missing.length === 0) {
       console.log(colors.green('\nAll configured providers are available.'));
-    } else if (missing.some(probe => probe.provider === 'glm')) {
-      console.log(colors.yellow(`\n${missing.length} provider${missing.length === 1 ? '' : 's'} unavailable. GLM tasks fail closed; Claude fallback is disabled for GLM.`));
+    } else if (missing.some(probe => probe.provider === 'glm' || probe.provider === 'mimo')) {
+      const external = missing.filter(probe => probe.provider === 'glm' || probe.provider === 'mimo').map(probe => probe.provider.toUpperCase()).join('/');
+      console.log(colors.yellow(`\n${missing.length} provider${missing.length === 1 ? '' : 's'} unavailable. ${external} tasks fail closed; Claude fallback is disabled.`));
     } else if (!claudeFound) {
       console.log(
         colors.yellow(

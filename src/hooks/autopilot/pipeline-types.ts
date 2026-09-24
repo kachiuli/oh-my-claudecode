@@ -116,7 +116,8 @@ export type AutopilotTeamAgentType =
   | "grok"
   | "cursor"
   | "antigravity"
-  | "glm";
+  | "glm"
+  | "mimo";
 
 /** Team execution options for autopilot execution=team. */
 export interface AutopilotTeamConfig {

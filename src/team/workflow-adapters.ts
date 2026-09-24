@@ -95,9 +95,9 @@ function childEnvironment(profile: WorkflowAuthProfile): NodeJS.ProcessEnv {
     if (keys.has(identity)) throw new Error('workflow_duplicate_profile_environment');
     keys.add(identity);
     if (/^(?:CLAUDECODE|CLAUDE_CODE_ENTRYPOINT|CLAUDE_CODE_SESSION_ID|OMC_TEAM_|NODE_OPTIONS|NODE_PATH)/i.test(key)) throw new Error('workflow_unsafe_profile_environment');
-    const foreign = profile.providerRoute === 'codex' ? /^(?:ANTHROPIC_|CLAUDE_|OMC_GLM_)/i
+    const foreign = profile.providerRoute === 'codex' ? /^(?:ANTHROPIC_|CLAUDE_|GLM_|MIMO_|ZAI_|Z_AI_|OMC_GLM_|OMC_MIMO_)/i
       : /^(?:OPENAI_|CODEX_)/i;
-    if (foreign.test(key) || profile.providerRoute === 'claude' && /^OMC_GLM_/i.test(key)) throw new Error('workflow_auth_route_mismatch');
+    if (foreign.test(key) || profile.providerRoute === 'claude' && /^OMC_(?:GLM|MIMO)_/i.test(key)) throw new Error('workflow_auth_route_mismatch');
     if (profile.providerRoute === 'claude' && /^ANTHROPIC_BASE_URL$/i.test(key) && value
       && value.replace(/\/$/, '') !== 'https://api.anthropic.com') throw new Error('workflow_auth_route_mismatch');
     if (profile.providerRoute === 'claude' && /^(?:CLAUDE_CODE_USE_(?:BEDROCK|VERTEX|FOUNDRY)|OMC_EXTERNAL_MODELS_)/i.test(key) && value && !['0', 'false'].includes(value)) throw new Error('workflow_auth_route_mismatch');

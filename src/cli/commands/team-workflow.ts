@@ -15,7 +15,7 @@ import type { WorkflowAuthProfile, WorkflowRuntime } from '../../team/workflow-a
 export const WORKFLOW_HELP = `Usage: omc team workflow <operation>
 
   init --file <plan.json> [--mode v1|balanced] [--workers N] [--max-review-passes N] [--max-attempts N]
-       [--timeout-ms N] [--provider-policy supervised] [--profile claude-glm-codex|role-substitution] [--bindings <roles.json>]
+       [--timeout-ms N] [--provider-policy supervised] [--profile claude-glm-codex|claude-mimo-codex|role-substitution] [--bindings <roles.json>]
        [--codex-command <executable>]
   run <name> [--runtime <absolute-private-config.json>]
   status <name>
@@ -44,7 +44,7 @@ Legacy reviewer command selection uses --codex-command, then OMC_CODEX_COMMAND,
 then codex on PATH. The command must be an executable name or absolute path.
 Local worker checks and integrated verification always keep the finite saved timeout.
 Substitution records intent without dispatch or budget reset. Self-review is allowed.
-See docs/GLM-WORKFLOW.md, docs/GLM-WORKFLOW-V1.2.md and docs/GLM-WORKFLOW-V1.3.md for
+See docs/MIMO-WORKFLOW.md, docs/GLM-WORKFLOW.md, docs/GLM-WORKFLOW-V1.2.md and docs/GLM-WORKFLOW-V1.3.md for
 schemas and setup.`;
 
 function readInputFile(path: string | undefined): unknown {
@@ -111,7 +111,7 @@ function readRuntime(path: string, cwd: string): WorkflowRuntime {
       safeWorkflowId(ref);
       const profile = inputObject(value, ['providerRoute', 'environment', 'files', 'redactionValues']);
       const providerRoute = profile.providerRoute;
-      if (providerRoute !== 'claude' && providerRoute !== 'glm' && providerRoute !== 'codex') throw new Error('workflow_invalid_runtime_config');
+      if (providerRoute !== 'claude' && providerRoute !== 'glm' && providerRoute !== 'mimo' && providerRoute !== 'codex') throw new Error('workflow_invalid_runtime_config');
       const environment = Object.fromEntries(Object.entries(inputObject(profile.environment)).map(([key, value]) => {
         if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) throw new Error('workflow_invalid_runtime_config');
         return [key, runtimeText(value, 32 * 1024)];
@@ -193,8 +193,8 @@ export async function workflowCommand(args: string[], cwd = process.cwd()): Prom
   if (operation === 'init') {
     const options: WorkflowOptions = {};
     const profile = flags.get('--profile') ?? 'claude-glm-codex';
-    if (profile !== 'claude-glm-codex' && profile !== 'role-substitution') throw new Error('workflow_invalid_profile');
-    if (profile === 'claude-glm-codex' && flags.has('--bindings')) throw new Error('workflow_role_substitution_profile_required');
+    if (profile !== 'claude-glm-codex' && profile !== 'claude-mimo-codex' && profile !== 'role-substitution') throw new Error('workflow_invalid_profile');
+    if (profile !== 'role-substitution' && flags.has('--bindings')) throw new Error('workflow_role_substitution_profile_required');
     if (profile === 'role-substitution' && !flags.has('--bindings')) throw new Error('workflow_bindings_required');
     if (profile === 'role-substitution' && flags.has('--codex-command')) throw new Error('workflow_role_substitution_profile_required');
     const codexCommand = flags.get('--codex-command');
@@ -241,7 +241,8 @@ export async function workflowCommand(args: string[], cwd = process.cwd()): Prom
       const roles = inputObject(readInputFile(flags.get('--bindings')), ['lead', 'implementer', 'reviewer'], 'workflow_invalid_bindings');
       for (const role of ['lead', 'implementer', 'reviewer']) inputObject(roles[role], undefined, 'workflow_invalid_bindings');
       name = (await initWorkflowV2(cwd, plan, { lead: roles.lead, implementer: roles.implementer, reviewer: roles.reviewer }, options)).plan.name;
-    } else name = (await initWorkflow(cwd, plan, options)).plan.name;
+    } else name = (await (profile === 'claude-mimo-codex'
+      ? initWorkflow(cwd, plan, options, profile) : initWorkflow(cwd, plan, options))).plan.name;
   } else if (operation === 'run') {
     const selected = runtime();
     if (selected) await runWorkflow(cwd, name, selected); else await runWorkflow(cwd, name);

@@ -5,7 +5,8 @@ const hash = 'a'.repeat(64);
 function binding(role = 'implementer', providerRoute = 'claude') {
   return { id: `${role}-${providerRoute}`, role, providerRoute,
     cliFamily: role === 'lead' ? 'external' : providerRoute === 'codex' ? 'codex-exec' : 'claude-code',
-    model: providerRoute === 'codex' ? 'gpt-6-astra' : providerRoute === 'glm' ? 'glm-5.3' : 'claude-fable-5',
+    model: providerRoute === 'codex' ? 'gpt-6-astra' : providerRoute === 'glm' ? 'glm-5.3'
+      : providerRoute === 'mimo' ? 'mimo-v2.6-flash' : 'claude-fable-5',
     authProfileRef: `profile-${providerRoute}`, authFingerprint: hash,
     ...(role === 'lead' ? {} : { executableIdentity: { path: 'C:/tools/provider.exe', sha256: hash, version: '1.0' } }),
     capabilities: role === 'lead' ? ['external-lead'] : role === 'reviewer' ? ['structured-findings', 'read-only'] : ['structured-handoff', 'session-resume'],
@@ -49,17 +50,17 @@ function substitutedState() {
 }
 
 describe('versioned workflow contracts', () => {
-  it.each(['claude-fable-5-1[1m]', 'opus[1m]', 'glm-5.3', 'glm-5.3-flash', 'glm-5.3-flash[1m]', 'gpt-6-astra'])('preserves the selected model %s without rewriting its context alias', model => {
+  it.each(['claude-fable-5-1[1m]', 'opus[1m]', 'glm-5.3', 'glm-5.3-flash', 'glm-5.3-flash[1m]', 'mimo-v2.6-pro', 'mimo-v2.6-flash', 'gpt-6-astra'])('preserves the selected model %s without rewriting its context alias', model => {
     expect(parseWorkflowBinding({ ...binding(), model }).model).toBe(model);
   });
   it.each(['opus[1m]\n', 'opus[[1m]]', 'opus[]', 'opus[1m];run', 'opus token=example'])('rejects a malformed model literal %s', model => {
     expect(() => parseWorkflowBinding({ ...binding(), model })).toThrow(/workflow_/);
   });
   it('separates supported roles, provider routes and CLI families without changing model identity', () => {
-    for (const [role, provider] of [['lead', 'claude'], ['lead', 'codex'], ['implementer', 'claude'], ['implementer', 'glm'], ['reviewer', 'claude'], ['reviewer', 'codex']]) {
+    for (const [role, provider] of [['lead', 'claude'], ['lead', 'codex'], ['implementer', 'claude'], ['implementer', 'glm'], ['implementer', 'mimo'], ['reviewer', 'claude'], ['reviewer', 'codex']]) {
       expect(parseWorkflowBinding(binding(role, provider))).toEqual(binding(role, provider));
     }
-    for (const value of [binding('implementer', 'codex'), binding('reviewer', 'glm'),
+    for (const value of [binding('implementer', 'codex'), binding('reviewer', 'glm'), binding('reviewer', 'mimo'),
       { ...binding(), cliFamily: 'codex-exec' }, { ...binding(), capabilities: [] },
       { ...binding(), password: 'synthetic-only' }]) {
       expect(() => parseWorkflowBinding(value)).toThrow(/workflow_/);
@@ -72,6 +73,8 @@ describe('versioned workflow contracts', () => {
       expect(parseWorkflowState(legacy)).toBe(legacy);
       expect(JSON.stringify(legacy)).toBe(bytes);
     }
+    const mimo = { ...legacyState(), profile: 'claude-mimo-codex' };
+    expect(parseWorkflowState(mimo)).toBe(mimo);
     expect(parseWorkflowState(state())).toMatchObject({ schemaVersion: 2, profile: 'role-substitution', reviewPasses: 0 });
     for (const value of [{ ...state(), schemaVersion: 3 }, { ...state(), profile: 'claude-glm-codex' },
       { ...legacyState(), profile: 'role-substitution' }, { ...state(), reviewPasses: 3 },

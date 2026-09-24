@@ -115,11 +115,11 @@ export async function runWorkflowProcess(input: {
   for (const key of Object.keys(environment)) {
     if (/^OMC_ORCHESTRATOR_/i.test(key)) delete environment[key];
     if (/^OMC_WORKFLOW_PUBLICATION_/i.test(key)) delete environment[key];
-    if (input.provider === 'codex' && /^(?:ANTHROPIC_|CLAUDE_|CLAUDECODE$|OMC_GLM_|GLM_|ZAI_|Z_AI_)/i.test(key)) delete environment[key];
-    if ((input.provider === 'glm' || input.provider === 'claude') && /^(?:OPENAI_|CODEX_)/i.test(key)) delete environment[key];
-    if (input.provider === 'claude' && /^(?:OMC_GLM_|GLM_|ZAI_|Z_AI_)/i.test(key)) delete environment[key];
-    // Legacy GLM wrappers load their own private profile; the lead's Anthropic login is unrelated.
-    if (input.provider === 'glm' && !input.environment && /^(?:ANTHROPIC_|CLAUDE_|CLAUDECODE$)/i.test(key)) delete environment[key];
+    if (input.provider === 'codex' && /^(?:ANTHROPIC_|CLAUDE_|CLAUDECODE$|OMC_GLM_|OMC_MIMO_|GLM_|MIMO_|ZAI_|Z_AI_)/i.test(key)) delete environment[key];
+    if ((input.provider === 'glm' || input.provider === 'mimo' || input.provider === 'claude') && /^(?:OPENAI_|CODEX_)/i.test(key)) delete environment[key];
+    if (input.provider === 'claude' && /^(?:OMC_GLM_|OMC_MIMO_|GLM_|MIMO_|ZAI_|Z_AI_)/i.test(key)) delete environment[key];
+    // Legacy wrappers load their own private profile; the lead's Anthropic login is unrelated.
+    if ((input.provider === 'glm' || input.provider === 'mimo') && !input.environment && /^(?:ANTHROPIC_|CLAUDE_|CLAUDECODE$)/i.test(key)) delete environment[key];
   }
   if (input.publicationEnvironment) {
     const expected = Object.values(WORKFLOW_PUBLICATION_ENV);

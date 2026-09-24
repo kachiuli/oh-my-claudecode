@@ -2,9 +2,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { applyGlmProfile, getGlmConfig, resolveGlmExecutable } from '../glm-config.js';
+import { applyGlmProfile, getGlmConfig, getMimoConfig, resolveGlmExecutable, resolveMimoExecutable } from '../glm-config.js';
 import { buildLaunchArgs, getContract, getPromptModeArgs, isPromptModeAgent, resolveDefaultWorkerModel, normalizeExternalModelsDefaults } from '../model-contract.js';
-import { probeGlmCli } from '../cli-detection.js';
+import { probeGlmCli, probeMimoCli } from '../cli-detection.js';
 import { parseAskArgs } from '../../cli/ask.js';
 import { parseTeamArgs } from '../../cli/commands/team.js';
 import { loadConfig, validateTeamConfig, generateConfigSchema } from '../../config/loader.js';
@@ -134,5 +134,38 @@ describe('GLM CLI provider', () => {
     expect(applyGlmProfile(config)).toBe(config);
     expect(resolveRoleAssignment('executor', config).provider).toBe('claude');
     expect(JSON.stringify(generateConfigSchema())).toContain('glmModel');
+  });
+});
+
+describe('MiMo Claude Code worker', () => {
+  it.each(['mimo-v2.6-pro', 'mimo-v2.6-flash'])('keeps the exact %s model ID', model => {
+    expect(parseAskArgs(['mimo', 'inspect subsystem']).provider).toBe('mimo');
+    expect(parseTeamArgs(['2:mimo', 'implement scoped tasks']).agentTypes).toEqual(['mimo', 'mimo']);
+    expect(isPromptModeAgent('mimo')).toBe(true);
+    expect(buildLaunchArgs('mimo', { teamName: 'mimo-test', workerName: 'worker-1', cwd: process.cwd(), model }))
+      .toEqual(['--dangerously-skip-permissions', '--model', model]);
+  });
+
+  it('keeps separate MiMo and GLM commands, models, and fail-closed checks', () => {
+    expect(getMimoConfig({}, {})).toEqual({ command: 'claude-mimo', fallback: false, defaultWorkers: 4, maxWorkers: 6 });
+    const config = { team: { glm: { command: 'claude-glm' }, mimo: { command: process.execPath } },
+      externalModels: { defaults: { glmModel: 'glm-5.3', mimoModel: 'mimo-v2.6-flash' } } };
+    expect(getGlmConfig(config, {}).model).toBe('glm-5.3');
+    expect(getMimoConfig(config, {}).model).toBe('mimo-v2.6-flash');
+    expect(resolveMimoExecutable(process.execPath)).toBe(process.execPath);
+    expect(probeMimoCli(getMimoConfig(config, {}))).toMatchObject({ found: true, launchable: true, modelOverride: true });
+    expect(() => getMimoConfig({ team: { mimo: { command: 'claude-mimo; echo unsafe' } } }, {})).toThrow('command');
+    expect(() => getMimoConfig({ team: { mimo: { fallback: true } } }, {})).toThrow('fallback');
+  });
+
+  it('routes the MiMo preset without changing the GLM preset', () => {
+    const mimo = applyGlmProfile({ team: { profile: 'claude-mimo-codex' },
+      externalModels: { defaults: { mimoModel: 'mimo-v2.6-pro' } } });
+    expect(resolveRoleAssignment('executor', mimo)).toMatchObject({ provider: 'mimo', model: 'mimo-v2.6-pro' });
+    expect(resolveRoleAssignment('code-reviewer', mimo).provider).toBe('codex');
+    expect(mimo.team?.ops?.defaultAgentType).toBe('mimo');
+    expect(resolveRoleAssignment('executor', applyGlmProfile({ team: { profile: 'claude-glm-codex' } })).provider).toBe('glm');
+    expect(() => validateTeamConfig(mimo)).not.toThrow();
+    expect(JSON.stringify(generateConfigSchema())).toContain('mimoModel');
   });
 });

@@ -43,7 +43,7 @@ for (const name of Object.keys(environment)) {
   )
     delete environment[name];
   if (
-    /^(?:OPENAI_|ANTHROPIC_|OMC_GLM_|GLM_|ZAI_|Z_AI_|CLAUDE_(?!CONFIG_DIR$)|CODEX_(?!HOME$))/i.test(
+    /^(?:OPENAI_|ANTHROPIC_|OMC_GLM_|OMC_MIMO_|GLM_|MIMO_|ZAI_|Z_AI_|CLAUDE_(?!CONFIG_DIR$)|CODEX_(?!HOME$))/i.test(
       name,
     )
   )

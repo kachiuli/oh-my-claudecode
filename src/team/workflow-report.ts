@@ -29,7 +29,8 @@ export function workflowUsage(input: VersionedWorkflowState) {
   const observations: WorkflowTelemetry[] = [...invocations, ...reviews].map(attempt => attempt.telemetry);
   const bound = state.schemaVersion === 2
     ? [...state.tasks.flatMap(task => task.invocations ?? []), ...(state.reviewAttempts ?? [])] : undefined;
-  const routes = bound ? ['glm', 'codex', 'claude'] as const : ['glm', 'codex'] as const;
+  const workerRoute = state.schemaVersion === 1 && state.profile === 'claude-mimo-codex' ? 'mimo' : 'glm';
+  const routes = bound ? ['glm', 'mimo', 'codex', 'claude'] as const : [workerRoute, 'codex'] as const;
   return {
     name: state.plan.name,
     mode: state.options.mode ?? 'v1',
@@ -37,7 +38,7 @@ export function workflowUsage(input: VersionedWorkflowState) {
     providers: routes.map(provider => {
       const attempts = bound ? bound.filter(attempt => attempt.binding.providerRoute === provider).map(attempt => attempt.telemetry)
         : observations.filter(attempt => attempt.provider === provider);
-      const totalInvocations = bound ? attempts.length : Math.max(attempts.length, provider === 'glm'
+      const totalInvocations = bound ? attempts.length : Math.max(attempts.length, provider === workerRoute
         ? state.tasks.reduce((sum, task) => sum + task.attempts, 0) : state.reviewPasses);
       return { provider, ...summarize(attempts, totalInvocations) };
     }),

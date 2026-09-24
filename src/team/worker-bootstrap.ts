@@ -128,8 +128,9 @@ function agentTypeGuidance(agentType: CliAgentType, reviewerRole = false): strin
   const transitionTaskStatusCommand = formatOmcCliInvocation('team api transition-task-status');
   switch (agentType) {
     case 'glm':
+    case 'mimo':
       return [
-        '### Agent-Type Guidance (glm)',
+        `### Agent-Type Guidance (${agentType})`,
         '- You are an isolated one-shot implementation worker. Implement only the assigned write scope in your assigned worktree.',
         `- Run \`${claimTaskCommand}\` before starting. Run the task tests, commit coherent changes, and include the commit SHA and changed files in a concise result.`,
         '- Do not merge, push, integrate other workers, or approve your own work. The Claude lead owns integration.',

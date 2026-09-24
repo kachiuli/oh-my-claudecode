@@ -1,7 +1,7 @@
 import { StringDecoder } from 'node:string_decoder';
 
 export interface WorkflowTelemetry {
-  provider: 'glm' | 'codex' | 'claude';
+  provider: 'glm' | 'mimo' | 'codex' | 'claude';
   durationMs: number;
   status: 'measured' | 'partial' | 'unknown';
   scope: 'all-models' | 'main-loop' | 'turn' | 'unknown';

@@ -159,7 +159,7 @@ export interface McpWorkerMember {
 export interface HeartbeatData {
   workerName: string;
   teamName: string;
-  provider: 'codex' | 'gemini' | 'claude' | 'cursor' | 'grok' | 'antigravity' | 'glm';
+  provider: 'codex' | 'gemini' | 'claude' | 'cursor' | 'grok' | 'antigravity' | 'glm' | 'mimo';
   pid: number;
   lastPollAt: string;       // ISO timestamp of last poll cycle
   currentTaskId?: string;   // task being executed, if any
@@ -194,7 +194,7 @@ export interface TaskFailureSidecar {
 }
 
 /** Worker backend type */
-export type WorkerBackend = 'claude-native' | 'mcp-codex' | 'mcp-gemini' | 'tmux-claude' | 'tmux-codex' | 'tmux-gemini' | 'tmux-cursor' | 'tmux-grok' | 'tmux-antigravity' | 'tmux-glm';
+export type WorkerBackend = 'claude-native' | 'mcp-codex' | 'mcp-gemini' | 'tmux-claude' | 'tmux-codex' | 'tmux-gemini' | 'tmux-cursor' | 'tmux-grok' | 'tmux-antigravity' | 'tmux-glm' | 'tmux-mimo';
 
 /** Worker capability tag */
 export type WorkerCapability =
@@ -437,7 +437,7 @@ export interface TeamRecoveryAttempt {
 
 export interface WorkerLaunchDescriptor {
   schema_version: 1;
-  provider: 'claude' | 'codex' | 'gemini' | 'cursor' | 'grok' | 'antigravity' | 'glm';
+  provider: 'claude' | 'codex' | 'gemini' | 'cursor' | 'grok' | 'antigravity' | 'glm' | 'mimo';
   model: string | null;
   binary: string;
   args: string[];
@@ -530,7 +530,7 @@ export interface WorkerInfo {
   name: string;
   index: number;
   role: string;
-  worker_cli?: 'codex' | 'claude' | 'gemini' | 'cursor' | 'grok' | 'antigravity' | 'glm';
+  worker_cli?: 'codex' | 'claude' | 'gemini' | 'cursor' | 'grok' | 'antigravity' | 'glm' | 'mimo';
   assigned_tasks: string[];
   pid?: number;
   pane_id?: string;
@@ -603,6 +603,8 @@ export interface TeamConfig {
   max_workers: number;
   /** OMC-side GLM pool limit, captured when the team is created. */
   glm_max_workers?: number;
+  /** OMC-side MiMo pool limit, captured when the team is created. */
+  mimo_max_workers?: number;
   workers: WorkerInfo[];
   created_at: string;
   tmux_session: string;

@@ -27,7 +27,7 @@ import { workflowCommand } from './team-workflow.js';
 const HELP_TOKENS = new Set(['--help', '-h', 'help']);
 const MIN_WORKER_COUNT = 1;
 const MAX_WORKER_COUNT = 20;
-const VALID_TEAM_CLI_AGENT_TYPES = new Set(['claude', 'codex', 'gemini', 'grok', 'cursor', 'antigravity', 'glm']);
+const VALID_TEAM_CLI_AGENT_TYPES = new Set(['claude', 'codex', 'gemini', 'grok', 'cursor', 'antigravity', 'glm', 'mimo']);
 const DEFAULT_TEAM_CLI_AGENT_TYPE: CliAgentType = 'claude';
 
 const TEAM_HELP = `
@@ -45,6 +45,7 @@ Examples:
   omc team 1:codex,1:gemini "compare approaches"
   omc team 1:cursor:executor "apply the implementation"
   omc team 1:antigravity:executor "apply the implementation"
+  omc team 2:mimo "implement scoped tasks with MiMo"
   omc team 2:codex "review auth flow" --new-window
   omc team status fix-failing-tests
   omc team shutdown fix-failing-tests
@@ -1000,8 +1001,10 @@ export async function teamCommand(args: string[]): Promise<void> {
     // Honor team.ops.defaultAgentType when user hasn't supplied N:agent-type.
     const cfg = loadConfig();
     const defaultAgentType = cfg.team?.ops?.defaultAgentType ?? DEFAULT_TEAM_CLI_AGENT_TYPE;
-    const { getGlmConfig } = await import('../../team/glm-config.js');
-    const parsed = parseTeamArgs(args, defaultAgentType, defaultAgentType === 'glm' ? getGlmConfig(cfg).defaultWorkers : 3);
+    const { getGlmConfig, getMimoConfig } = await import('../../team/glm-config.js');
+    const defaultWorkers = defaultAgentType === 'glm' ? getGlmConfig(cfg).defaultWorkers
+      : defaultAgentType === 'mimo' ? getMimoConfig(cfg).defaultWorkers : 3;
+    const parsed = parseTeamArgs(args, defaultAgentType, defaultWorkers);
     await handleTeamStart(parsed, cwd);
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));

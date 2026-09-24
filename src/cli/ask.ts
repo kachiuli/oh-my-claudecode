@@ -6,18 +6,18 @@ import { basename, dirname, isAbsolute, join } from 'path';
 import { fileURLToPath } from 'url';
 import { isExternalLLMDisabled } from '../lib/security-config.js';
 import { loadConfig } from '../config/loader.js';
-import { getGlmConfig } from '../team/glm-config.js';
+import { getGlmConfig, getMimoConfig } from '../team/glm-config.js';
 
 export const ASK_USAGE = [
-  'Usage: omc ask <claude|codex|gemini|antigravity|grok|cursor|glm> <question or task>',
-  '   or: omc ask <claude|codex|gemini|antigravity|grok|cursor|glm> -p "<prompt>"',
-  '   or: omc ask <claude|codex|gemini|antigravity|grok|cursor|glm> --print "<prompt>"',
-  '   or: omc ask <claude|codex|gemini|antigravity|grok|cursor|glm> --prompt "<prompt>"',
-  '   or: omc ask <claude|codex|gemini|antigravity|grok|cursor|glm> --agent-prompt <role> "<prompt>"',
-  '   or: omc ask <claude|codex|gemini|antigravity|grok|cursor|glm> --agent-prompt=<role> --prompt "<prompt>"',
+  'Usage: omc ask <claude|codex|gemini|antigravity|grok|cursor|glm|mimo> <question or task>',
+  '   or: omc ask <claude|codex|gemini|antigravity|grok|cursor|glm|mimo> -p "<prompt>"',
+  '   or: omc ask <claude|codex|gemini|antigravity|grok|cursor|glm|mimo> --print "<prompt>"',
+  '   or: omc ask <claude|codex|gemini|antigravity|grok|cursor|glm|mimo> --prompt "<prompt>"',
+  '   or: omc ask <claude|codex|gemini|antigravity|grok|cursor|glm|mimo> --agent-prompt <role> "<prompt>"',
+  '   or: omc ask <claude|codex|gemini|antigravity|grok|cursor|glm|mimo> --agent-prompt=<role> --prompt "<prompt>"',
 ].join('\n');
 
-const ASK_PROVIDERS = ['claude', 'codex', 'gemini', 'antigravity', 'grok', 'cursor', 'glm'] as const;
+const ASK_PROVIDERS = ['claude', 'codex', 'gemini', 'antigravity', 'grok', 'cursor', 'glm', 'mimo'] as const;
 export type AskProvider = (typeof ASK_PROVIDERS)[number];
 const ASK_PROVIDER_SET = new Set<string>(ASK_PROVIDERS);
 
@@ -246,6 +246,10 @@ export async function askCommand(args: string[]): Promise<void> {
         ...(parsed.provider === 'glm' ? (() => {
           const glm = getGlmConfig(loadConfig());
           return { OMC_GLM_COMMAND: glm.command, OMC_GLM_DEFAULT_MODEL: glm.model ?? '' };
+        })() : {}),
+        ...(parsed.provider === 'mimo' ? (() => {
+          const mimo = getMimoConfig(loadConfig());
+          return { OMC_MIMO_COMMAND: mimo.command, OMC_MIMO_DEFAULT_MODEL: mimo.model ?? '' };
         })() : {}),
       },
       stdio: ['ignore', 'pipe', 'pipe'],
