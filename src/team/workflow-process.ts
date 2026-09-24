@@ -46,7 +46,7 @@ export function redactWorkflowText(text: string, caseInsensitive = false, privat
     }
   }
   return redacted.replace(/\b(?:Bearer\s+)[A-Za-z0-9._~+\/-]+/gi, 'Bearer [REDACTED]')
-    .replace(/\b(?:sk-[A-Za-z0-9_-]{8,})\b/g, '[REDACTED]')
+    .replace(/\b(?:sk|tp|ttp)-[A-Za-z0-9_-]{8,}\b/g, '[REDACTED]')
     .replace(/((?:api[_-]?key|access[_-]?token|password|secret)\s*[=:]\s*)[^\s,;]+/gi, '$1[REDACTED]');
 }
 

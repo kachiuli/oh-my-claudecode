@@ -18,7 +18,7 @@ const PROVIDER_BINARIES = {
 const SHOULD_USE_WINDOWS_SHELL = process.platform === 'win32';
 const isCompatibleWorker = provider => provider === 'glm' || provider === 'mimo';
 
-function redactGlmText(text) {
+function redactCompatibleWorkerText(text) {
   let safe = String(text);
   for (const [key, value] of Object.entries(process.env)) {
     if (/(?:key|token|secret|password|credential|authorization)/i.test(key) && value && value.length >= 4) {
@@ -26,7 +26,7 @@ function redactGlmText(text) {
     }
   }
   return safe.replace(/\bBearer\s+[A-Za-z0-9._~+\/-]+/gi, 'Bearer [REDACTED]')
-    .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, '[REDACTED]')
+    .replace(/\b(?:sk|tp|ttp)-[A-Za-z0-9_-]{8,}\b/g, '[REDACTED]')
     .replace(/((?:api[_-]?key|access[_-]?token|password|secret)\s*[=:]\s*)[^\s,;]+/gi, '$1[REDACTED]');
 }
 
@@ -391,9 +391,9 @@ async function main() {
 
   const artifactPath = await writeArtifact({
     provider,
-    originalTask: isCompatibleWorker(provider) ? redactGlmText(resolveOriginalTask(prompt)) : resolveOriginalTask(prompt),
-    finalPrompt: isCompatibleWorker(provider) ? redactGlmText(prompt) : prompt,
-    rawOutput: isCompatibleWorker(provider) ? redactGlmText(rawOutput) : rawOutput,
+    originalTask: isCompatibleWorker(provider) ? redactCompatibleWorkerText(resolveOriginalTask(prompt)) : resolveOriginalTask(prompt),
+    finalPrompt: isCompatibleWorker(provider) ? redactCompatibleWorkerText(prompt) : prompt,
+    rawOutput: isCompatibleWorker(provider) ? redactCompatibleWorkerText(rawOutput) : rawOutput,
     exitCode,
   });
 
