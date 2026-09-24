@@ -50,7 +50,7 @@ describe('workflow plan boundaries', () => {
     expect(() => parseWorkflowTask({ ...task, writeScope: [file] })).toThrow('workflow_invalid_scope');
   });
 
-  it.each(['../outside', '/absolute', 'C:/outside', '.git/config', '.omc/state', 'src/../../outside'])(
+  it.each(['../outside', '/absolute', 'C:/outside', '.git/config', '.omc/state', 'src/../../outside', 'src/a*.ts', 'src/a?.ts'])(
     'rejects unsafe reported file %s', file => {
       expect(() => parseWorkflowHandoff({ taskId: 'a', outcome: 'completed', changedFiles: [file],
         tests: [], interfaceChanges: [], assumptions: [], risks: [], summary: 'Done.' }, 'a'))

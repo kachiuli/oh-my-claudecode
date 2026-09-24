@@ -472,8 +472,7 @@ function repositoryPath(value: unknown, scope: boolean): string {
   const text = boundedText(value, 400).replaceAll('\\', '/');
   const path = scope && text.endsWith('/**') ? text.slice(0, -3) : text;
   if (path.startsWith('/') || path.split('/').some(part => !part || part === '.' || part === '..' || part === '.git' || part === '.omc')
-    || /[:\r\n]/.test(path) || (scope && /[*?\[\]{}]/.test(path))
-    || (process.platform === 'win32' && /[*?]/.test(path))) throw new Error('workflow_invalid_scope');
+    || /[:*?\r\n]/.test(path) || (scope && /[\[\]{}]/.test(path))) throw new Error('workflow_invalid_scope');
   if (process.platform === 'win32' && path.split('/').some(part => /[. ]$/.test(part) || /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(part))) throw new Error('workflow_invalid_scope');
   return path;
 }
