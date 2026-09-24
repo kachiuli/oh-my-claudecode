@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseWorkflowPlan, parseWorkflowTask } from '../workflow-contracts.js';
+import { parseWorkflowFindings, parseWorkflowHandoff, parseWorkflowPlan, parseWorkflowTask } from '../workflow-contracts.js';
 
 const task = {
   id: 'a', objective: 'Implement a', baseCommit: 'a'.repeat(40),
@@ -38,6 +38,23 @@ describe('workflow plan boundaries', () => {
   it.each(['../outside', '/absolute', 'C:/outside', '.git/config', '.omc/state', 'src/**/foo', 'src/../../outside'])(
     'rejects unsafe ownership scope %s', writeScope => {
     expect(() => parseWorkflowTask({ ...task, writeScope: [writeScope] })).toThrow(/scope/);
+    },
+  );
+
+  it('keeps bracketed file names literal in handoffs and review findings', () => {
+    const file = 'apps/web/app/v1/[...path]/route.ts';
+    const handoff = parseWorkflowHandoff({ taskId: 'a', outcome: 'completed', changedFiles: [file],
+      tests: [], interfaceChanges: [], assumptions: [], risks: [], summary: 'Done.' }, 'a');
+    expect(handoff.changedFiles).toEqual([file]);
+    expect(parseWorkflowFindings({ findings: [{ severity: 'P2', message: 'Check route.', file }] }, 1)[0]?.file).toBe(file);
+    expect(() => parseWorkflowTask({ ...task, writeScope: [file] })).toThrow('workflow_invalid_scope');
+  });
+
+  it.each(['../outside', '/absolute', 'C:/outside', '.git/config', '.omc/state', 'src/../../outside', 'src/a*.ts', 'src/a?.ts'])(
+    'rejects unsafe reported file %s', file => {
+      expect(() => parseWorkflowHandoff({ taskId: 'a', outcome: 'completed', changedFiles: [file],
+        tests: [], interfaceChanges: [], assumptions: [], risks: [], summary: 'Done.' }, 'a'))
+        .toThrow('workflow_invalid_scope');
     },
   );
 

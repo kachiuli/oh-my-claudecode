@@ -468,13 +468,19 @@ function texts(value: unknown, limit = 100): string[] {
   if (!Array.isArray(value) || value.length > limit) throw new Error('workflow_invalid_list');
   return value.map(item => boundedText(item));
 }
-export function scopePath(value: unknown): string {
+function repositoryPath(value: unknown, scope: boolean): string {
   const text = boundedText(value, 400).replaceAll('\\', '/');
-  const path = text.endsWith('/**') ? text.slice(0, -3) : text;
+  const path = scope && text.endsWith('/**') ? text.slice(0, -3) : text;
   if (path.startsWith('/') || path.split('/').some(part => !part || part === '.' || part === '..' || part === '.git' || part === '.omc')
-    || /[:*?\[\]{}\r\n]/.test(path)) throw new Error('workflow_invalid_scope');
+    || /[:*?\r\n]/.test(path) || (scope && /[\[\]{}]/.test(path))) throw new Error('workflow_invalid_scope');
   if (process.platform === 'win32' && path.split('/').some(part => /[. ]$/.test(part) || /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(part))) throw new Error('workflow_invalid_scope');
   return path;
+}
+export function scopePath(value: unknown): string {
+  return repositoryPath(value, true);
+}
+function literalFilePath(value: unknown): string {
+  return repositoryPath(value, false);
 }
 export function matchesScope(path: string, scopes: string[]): boolean {
   const normalized = process.platform === 'win32' ? path.toLowerCase() : path;
@@ -557,7 +563,7 @@ export function parseWorkflowHandoff(value: unknown, taskId: string): WorkflowHa
     return { ...parseWorkflowCommand(test), passed: test.passed };
   });
   return { taskId, outcome: raw.outcome as 'completed' | 'failed', ...(raw.commitSha ? { commitSha: workflowSha(raw.commitSha) } : {}),
-    changedFiles: texts(raw.changedFiles).map(scopePath), tests, interfaceChanges: texts(raw.interfaceChanges, 30),
+    changedFiles: texts(raw.changedFiles).map(literalFilePath), tests, interfaceChanges: texts(raw.interfaceChanges, 30),
     assumptions: texts(raw.assumptions, 30), risks: texts(raw.risks, 30), summary: boundedText(raw.summary, 1000), artifacts: [] };
 }
 export function parseWorkflowFindings(value: unknown, pass: number): WorkflowFinding[] {
@@ -568,6 +574,6 @@ export function parseWorkflowFindings(value: unknown, pass: number): WorkflowFin
     if (!['P0', 'P1', 'P2', 'P3'].includes(String(finding.severity))) throw new Error('workflow_invalid_severity');
     if (finding.line !== undefined && finding.line !== null && (!Number.isInteger(finding.line) || Number(finding.line) < 1)) throw new Error('workflow_invalid_line');
     return { id: `review-${pass}-${index + 1}`, severity: finding.severity as WorkflowFinding['severity'], message: boundedText(finding.message),
-      ...(finding.file ? { file: scopePath(finding.file) } : {}), ...(finding.line ? { line: Number(finding.line) } : {}) };
+      ...(finding.file ? { file: literalFilePath(finding.file) } : {}), ...(finding.line ? { line: Number(finding.line) } : {}) };
   });
 }

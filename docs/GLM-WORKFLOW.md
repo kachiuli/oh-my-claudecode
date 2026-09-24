@@ -186,6 +186,12 @@ ambiguous output needs lead inspection rather than destructive retry cleanup.
 Each worker uses OMC's native named worktree and branch. Canonical workflow state
 stays under the leader's OMC team root. Workers must commit their task, stay within
 write ownership, preserve their assigned branch, and return a concise result.
+The leader and all linked worktrees share Git refs. During a live workflow `run` or
+`resume`, allow only assigned task-branch commits. Keep unrelated ref-writing
+Git commands out of every linked worktree;
+use an independent clone for parallel Git work. An unexpected ref change can fail
+all candidate tasks, and the audit cannot identify its writer. See
+[the linked-worktree rule and recovery guidance](WORKFLOW-V1.4.md#git-refs-during-a-live-run).
 GLM workers currently launch with `--dangerously-skip-permissions`, which bypasses
 Claude Code's interactive permission prompts. Worktrees provide Git isolation,
 not an operating-system security sandbox. Use a trusted local wrapper and
