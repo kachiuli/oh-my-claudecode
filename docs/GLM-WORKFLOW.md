@@ -153,6 +153,13 @@ explicit dependency ordering. Commands use executable/argument arrays; no shell
 expansion takes place. On Windows, use directly executable commands, for example
 `node` plus a script path instead of a shell-only npm shim.
 
+When a task has dependencies, its `baseCommit` moves to the latest accepted
+integration commit before dispatch. Write its `tests` without the plan's base SHA;
+`init` rejects dependent checks that contain that SHA in an argument. For a
+single-commit worker, a whitespace check can use
+`{"command":"git","args":["diff","--check","HEAD~1","HEAD"]}`. The worker's
+reported command and arguments must match the declared test exactly.
+
 ```text
 omc team workflow init --file .omc/plans/feature-x.json --workers 4
 omc team workflow run feature-x

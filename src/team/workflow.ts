@@ -217,6 +217,8 @@ async function initializeWorkflow(cwd: string, rawPlan: unknown, options: Workfl
   git(cwd, ['check-ref-format', '--branch', plan.integrationBranch]);
   if (git(cwd, ['rev-parse', `${plan.baseCommit}^{commit}`]) !== plan.baseCommit) throw new Error('workflow_invalid_base');
   for (const task of plan.tasks) if (task.baseCommit !== plan.baseCommit) throw new Error('workflow_task_base_mismatch');
+  for (const task of plan.tasks) if (task.dependencies.length && task.tests.some(test =>
+    test.args.some(arg => arg.toLowerCase().includes(plan.baseCommit)))) throw new Error('workflow_dependent_test_uses_plan_base');
   const loaded = loadConfig();
   const routing = applyGlmProfile({ ...loaded, team: { ...loaded.team, profile: 'claude-glm-codex' } });
   const executor = resolveRoleAssignment('executor', routing);
