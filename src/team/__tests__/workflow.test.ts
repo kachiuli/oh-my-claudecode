@@ -540,6 +540,19 @@ describe('Claude/GLM/Codex workflow with real local fake providers', () => {
     });
   });
 
+  it('accepts a literal bracketed changed path in a completed handoff', async () => {
+    const file = 'apps/web/app/v1/[...path]/route.ts';
+    fixture.configure({ tasks: { a: { file } } });
+    await initWorkflow(fixture.cwd, plan([task('a', { writeScope: ['apps/web/app/v1'] })]),
+      { ...options, maxAttempts: 1 });
+    await runWorkflow(fixture.cwd, name);
+    expect(readWorkflow(fixture.cwd, name).tasks[0]).toMatchObject({
+      status: 'completed', attempts: 1, handoff: { changedFiles: [file] },
+    });
+    await acceptWorkflowTask(fixture.cwd, name, 'a');
+    expect(readFileSync(join(fixture.cwd, file), 'utf8')).toBe('a\n');
+  });
+
   it.each(['branch', 'tag', 'checkpoint'] as const)(
     'fails closed with private phase evidence when a provider changes a protected %s ref', async protectedRef => {
       fixture.configure({ tasks: { a: { protectedRef } } });
