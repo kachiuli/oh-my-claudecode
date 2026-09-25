@@ -275,7 +275,7 @@ function isUuid(value: unknown): value is string {
 
 function isProvider(value: unknown): value is CliAgentType {
   return value === 'claude' || value === 'codex' || value === 'gemini'
-    || value === 'cursor' || value === 'grok' || value === 'antigravity' || value === 'glm';
+    || value === 'cursor' || value === 'grok' || value === 'antigravity' || value === 'glm' || value === 'mimo';
 }
 
 function identityMatches(value: unknown, expected: WorkerLaunchIdentity): boolean {

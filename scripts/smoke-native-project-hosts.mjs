@@ -25,7 +25,7 @@ mkdirSync(repository);
 const binaries = { claude: process.argv[2], codex: process.argv[3] };
 for (const key of Object.keys(process.env)) {
   if (
-    /^(?:OMC_(?:ORCHESTRATOR_|WORKFLOW_|TEAM_|STATE_DIR)|OPENAI_|ANTHROPIC_|ZAI_|Z_AI_|GLM_|OMC_GLM_|CLAUDE_|CLAUDECODE|CODEX_)/i.test(
+    /^(?:OMC_(?:ORCHESTRATOR_|WORKFLOW_|TEAM_|STATE_DIR)|OPENAI_|ANTHROPIC_|ZAI_|Z_AI_|GLM_|MIMO_|OMC_GLM_|OMC_MIMO_|CLAUDE_|CLAUDECODE|CODEX_)/i.test(
       key,
     )
   )

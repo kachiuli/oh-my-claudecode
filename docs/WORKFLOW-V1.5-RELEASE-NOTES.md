@@ -73,3 +73,7 @@ Hosted CI on the merge head and on the release head ran the full suite plus the 
 ## Compatibility
 
 The V1.4 compatibility matrix, setup safety and rollback rules, donor boundary and migration notes in the [V1.4 release notes](WORKFLOW-V1.4-RELEASE-NOTES.md) still apply. The operator guide is [WORKFLOW-V1.4.md](WORKFLOW-V1.4.md).
+
+## workflow-v1.5.6 MiMo workers
+
+This fork release adds separate `mimo-v2.6-pro` and `mimo-v2.6-flash` worker selection through Claude Code's Anthropic-compatible transport. `omc ask mimo`, `omc team N:mimo`, and the opt-in `claude-mimo-codex` workflow profile use a private `claude-mimo` profile. Existing Claude and GLM routes stay available. The package version remains 5.5.0. See the [MiMo setup guide](MIMO-WORKFLOW.md) for Windows and Bash launchers, API key placement, and model selection. Automated checks verify routing without a MiMo account; authenticated MiMo execution requires the operator's own key.

@@ -75,7 +75,7 @@ describe('team workflow CLI', () => {
 
   it('documents explicit V1.2 selection and private runtime without making independence mandatory', async () => {
     await workflowCommand(['--help'], root);
-    expect(console.log).toHaveBeenCalledWith(expect.stringContaining('--profile claude-glm-codex|role-substitution'));
+    expect(console.log).toHaveBeenCalledWith(expect.stringContaining('--profile claude-glm-codex|claude-mimo-codex|role-substitution'));
     expect(console.log).toHaveBeenCalledWith(expect.stringContaining('Self-review is allowed'));
     expect(console.log).toHaveBeenCalledWith(expect.stringContaining('--runtime <absolute-private-config.json>'));
     expect(api.initWorkflow).not.toHaveBeenCalled(); expect(api.initWorkflowV2).not.toHaveBeenCalled();
@@ -168,6 +168,12 @@ describe('team workflow CLI', () => {
     const file = join(root, 'plan.json'); writeFileSync(file, JSON.stringify({ name: 'feature' }));
     await workflowCommand(['init', '--file', file, '--profile', 'claude-glm-codex', '--mode', 'balanced'], root);
     expect(api.initWorkflow).toHaveBeenCalledWith(root, { name: 'feature' }, { mode: 'balanced' });
+    expect(api.initWorkflowV2).not.toHaveBeenCalled();
+  });
+
+  it('selects the MiMo workflow without changing the GLM default', async () => {
+    await workflowCommand(['init', '--file', planFile(), '--profile', 'claude-mimo-codex'], root);
+    expect(api.initWorkflow).toHaveBeenCalledWith(root, { name: 'feature' }, {}, 'claude-mimo-codex');
     expect(api.initWorkflowV2).not.toHaveBeenCalled();
   });
 

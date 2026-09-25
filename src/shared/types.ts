@@ -25,7 +25,8 @@ export type AutopilotTeamAgentType =
   | "grok"
   | "cursor"
   | "antigravity"
-  | "glm";
+  | "glm"
+  | "mimo";
 
 /** Built-in stages admitted by version 1 named autopilot workflows. */
 export type AutopilotWorkflowStage = "ralplan" | "execution" | "ralph" | "qa";
@@ -357,6 +358,7 @@ export interface ExternalModelsDefaults {
   antigravityModel?: string;
   cursorModel?: string;
   glmModel?: string;
+  mimoModel?: string;
 }
 
 /**
@@ -478,7 +480,7 @@ export const CANONICAL_TEAM_ROLES = [
 export type CanonicalTeamRole = typeof CANONICAL_TEAM_ROLES[number];
 
 /** Provider for /team role routing. */
-export type TeamRoleProvider = 'claude' | 'codex' | 'gemini' | 'grok' | 'cursor' | 'antigravity' | 'glm';
+export type TeamRoleProvider = 'claude' | 'codex' | 'gemini' | 'grok' | 'cursor' | 'antigravity' | 'glm' | 'mimo';
 
 /** Tier name accepted in role-assignment `model` field. */
 export type TeamRoleTier = 'HIGH' | 'MEDIUM' | 'LOW';
@@ -536,8 +538,9 @@ export interface TeamOpsConfig {
 
 /** `team` config block in PluginConfig. */
 export interface TeamConfigBlock {
-  profile?: 'claude-glm-codex';
+  profile?: 'claude-glm-codex' | 'claude-mimo-codex';
   glm?: { command?: string; fallback?: boolean; defaultWorkers?: number; maxWorkers?: number };
+  mimo?: { command?: string; fallback?: boolean; defaultWorkers?: number; maxWorkers?: number };
   ops?: TeamOpsConfig;
   roleRouting?: Partial<Record<CanonicalTeamRole, TeamRoleAssignmentSpec>> & {
     orchestrator?: OrchestratorSpec;

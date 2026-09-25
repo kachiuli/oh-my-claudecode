@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import * as loader from '../../config/loader.js';
-import { initWorkflow, readWorkflow } from '../workflow.js';
+import { initWorkflow, readWorkflow, workflowStatus } from '../workflow.js';
+import { workflowUsage } from '../workflow-report.js';
 import type { PluginConfig } from '../../shared/types.js';
 import { createWorkflowFixture } from './helpers/workflow-fixture.js';
 
@@ -33,6 +34,19 @@ describe('workflow snapshots existing role routing', () => {
     const state = await initWorkflow(fixture.cwd, plan());
     expect(state.options.glmModel).toBe('glm-default');
     expect(state.options.codexModel).toBe('codex-default');
+  });
+  it('keeps MiMo identity and selected Flash model in a saved workflow', async () => {
+    vi.spyOn(loader, 'loadConfig').mockReturnValue({ team: { profile: 'claude-mimo-codex',
+      mimo: { command: process.execPath } }, externalModels: { defaults: { mimoModel: 'mimo-v2.6-flash' } } });
+    const state = await initWorkflow(fixture.cwd, plan());
+    expect(state.profile).toBe('claude-mimo-codex');
+    expect(state.options.glmCommand).toBe(process.execPath);
+    expect(state.options.glmModel).toBe('mimo-v2.6-flash');
+    expect(readWorkflow(fixture.cwd, 'routing').profile).toBe('claude-mimo-codex');
+    expect(workflowStatus(fixture.cwd, 'routing')).toMatchObject({
+      tasks: [{ provider: 'mimo', model: 'mimo-v2.6-flash' }],
+    });
+    expect(workflowUsage(state).providers.map(provider => provider.provider)).toEqual(['mimo', 'codex']);
   });
   it.each(['executor', 'code-reviewer'] as const)('fails before creating state or switching branches when %s conflicts with the pipeline', async role => {
     vi.spyOn(loader, 'loadConfig').mockReturnValue({ team: { roleRouting: { [role]: { provider: 'claude' } } } });

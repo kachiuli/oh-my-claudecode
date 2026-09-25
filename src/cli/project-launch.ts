@@ -48,7 +48,7 @@ export function projectHostEnvironment(
         : /^(?:OPENAI_|CODEX_)/i;
     if (
       foreign.test(key) ||
-      /^(?:OMX_|OMC_GLM_|GLM_|ZAI_|Z_AI_)/i.test(key) ||
+      /^(?:OMX_|OMC_GLM_|OMC_MIMO_|GLM_|MIMO_|ZAI_|Z_AI_)/i.test(key) ||
       /^(?:CODEX_THREAD_ID|CLAUDE_CODE_SESSION_ID)$/i.test(key)
     )
       delete result[key];
@@ -59,7 +59,7 @@ export function projectHostEnvironment(
     result.ANTHROPIC_BASE_URL.replace(/\/$/, "") !== "https://api.anthropic.com"
   ) {
     throw new Error(
-      "orchestrator_foreign_claude_endpoint: launch Claude with its own Anthropic configuration; bind GLM as a worker separately.",
+      "orchestrator_foreign_claude_endpoint: launch Claude with its own Anthropic configuration; bind GLM or MiMo as a worker separately.",
     );
   }
   if (host === "claude") {

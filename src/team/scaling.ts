@@ -11,7 +11,7 @@
  */
 
 import { join, resolve } from 'path';
-import { getGlmConfig } from './glm-config.js';
+import { getGlmConfig, getMimoConfig } from './glm-config.js';
 import { loadConfig } from '../config/loader.js';
 import { mkdir, readFile, rm } from 'fs/promises';
 import { existsSync } from 'node:fs';
@@ -90,7 +90,7 @@ import {
 // ── Environment gate ──────────────────────────────────────────────────────────
 
 const OMC_TEAM_SCALING_ENABLED_ENV = 'OMC_TEAM_SCALING_ENABLED';
-const CLI_AGENT_TYPES = new Set<CliAgentType>(['claude', 'codex', 'gemini', 'grok', 'cursor', 'antigravity', 'glm']);
+const CLI_AGENT_TYPES = new Set<CliAgentType>(['claude', 'codex', 'gemini', 'grok', 'cursor', 'antigravity', 'glm', 'mimo']);
 
 export function isScalingEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   const raw = env[OMC_TEAM_SCALING_ENABLED_ENV];
@@ -775,17 +775,18 @@ export async function scaleUpOwned(
       }
 
       let launchBinary: string;
-      if (workerAgentType === 'glm') {
+      if (workerAgentType === 'glm' || workerAgentType === 'mimo') {
         if (config.service_descriptor?.auto_merge_enabled) {
-          return await rollbackScaleUp('GLM workers require explicit lead integration; auto-merge is disabled');
+          return await rollbackScaleUp(`${workerAgentType.toUpperCase()} workers require explicit lead integration; auto-merge is disabled`);
         }
-        // Older teams lack a GLM snapshot. Resolve it from the leader's project
+        // Older teams lack a provider snapshot. Resolve it from the leader's project
         // once, then persist it with the worker reservation like routing limits.
-        const glmLimit = config.glm_max_workers ?? getGlmConfig(loadConfig(leaderCwd), env).maxWorkers;
-        if (config.workers.filter(worker => worker.worker_cli === 'glm').length >= glmLimit) {
-          return await rollbackScaleUp(`GLM worker limit reached (${glmLimit}); queue tasks within the existing pool`);
+        const limitKey = workerAgentType === 'glm' ? 'glm_max_workers' : 'mimo_max_workers';
+        const workerLimit = config[limitKey] ?? (workerAgentType === 'glm' ? getGlmConfig : getMimoConfig)(loadConfig(leaderCwd), env).maxWorkers;
+        if (config.workers.filter(worker => worker.worker_cli === workerAgentType).length >= workerLimit) {
+          return await rollbackScaleUp(`${workerAgentType.toUpperCase()} worker limit reached (${workerLimit}); queue tasks within the existing pool`);
         }
-        config = { ...config, glm_max_workers: glmLimit };
+        config = { ...config, [limitKey]: workerLimit };
       }
       try {
         assertHeadlessSupported(workerAgentType);
@@ -801,7 +802,7 @@ export async function scaleUpOwned(
       const workerDirPath = absPath(leaderCwd, TeamPaths.workerDir(sanitized, workerName));
       await mkdir(workerDirPath, { recursive: true });
       let worktree: ReturnType<typeof ensureWorkerWorktree> = null;
-      const effectiveWorktreeMode = workerAgentType === 'glm' ? 'named' : worktreeMode;
+      const effectiveWorktreeMode = workerAgentType === 'glm' || workerAgentType === 'mimo' ? 'named' : worktreeMode;
       if (effectiveWorktreeMode !== 'disabled') {
         const pending = { workerName, created: true,
           path: join(getOmcRoot(leaderCwd), 'team', sanitized, 'worktrees', workerName) };
@@ -814,7 +815,7 @@ export async function scaleUpOwned(
           pending.created = worktree.created;
           pending.path = worktree.path;
         }
-        if (workerAgentType === 'glm' && !worktree) throw new Error('GLM worker worktree required');
+        if ((workerAgentType === 'glm' || workerAgentType === 'mimo') && !worktree) throw new Error(`${workerAgentType.toUpperCase()} worker worktree required`);
       }
       const workerCwd = worktree?.path ?? leaderCwd;
       let launchArgs: string[];
