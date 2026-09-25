@@ -5,15 +5,15 @@
   "provenance": {
     "base": "05c800f40d1ad53b42a78609d2667ef4f726808b",
     "planningHead": "0a91273e61dbbd47eb0af4c02844409251e08398",
-    "head": "6b7a1be5a657789f483ccf7d075ac18d24ebb55f",
-    "sourceSha256": "67db1c81be98f184b799a39257d36a13a686df2a321e0bc174c69ae7d94c4165",
+    "head": "45a20d346269e09743eac7d051b30319d30d78eb",
+    "sourceSha256": "b24b83b8ee7147af86e491c292eb53d732da39f113e1c75ad940d2d9ad6c0f40",
     "generatedAt": null,
     "generator": "scripts/generate-inventory-graph.mjs"
   },
   "base": "05c800f40d1ad53b42a78609d2667ef4f726808b",
   "planningHead": "0a91273e61dbbd47eb0af4c02844409251e08398",
-  "head": "6b7a1be5a657789f483ccf7d075ac18d24ebb55f",
-  "sourceSha256": "67db1c81be98f184b799a39257d36a13a686df2a321e0bc174c69ae7d94c4165",
+  "head": "45a20d346269e09743eac7d051b30319d30d78eb",
+  "sourceSha256": "b24b83b8ee7147af86e491c292eb53d732da39f113e1c75ad940d2d9ad6c0f40",
   "counts": {
     "public": {
       "skills": 43,
@@ -28,8 +28,8 @@
       "toolFiles": 61,
       "libFiles": 44,
       "templateHooks": 22,
-      "srcFiles": 1444,
-      "total": 1466
+      "srcFiles": 1445,
+      "total": 1467
     },
     "generated": {
       "distFiles": 5094,
@@ -866,6 +866,7 @@
       "scripts/wiki-pre-compact.mjs",
       "scripts/wiki-session-end.mjs",
       "scripts/wiki-session-start.mjs",
+      "scripts/windows/claude-mimo.cs",
       "scripts/workflow-drift-guard.mjs"
     ]
   },
@@ -33002,6 +33003,11 @@
         "path": "docs/MIGRATION.md"
       },
       {
+        "id": "docs/MIMO-WORKFLOW.md",
+        "kind": "other",
+        "path": "docs/MIMO-WORKFLOW.md"
+      },
+      {
         "id": "docs/OPENCLAW-ROUTING.md",
         "kind": "other",
         "path": "docs/OPENCLAW-ROUTING.md"
@@ -34365,6 +34371,11 @@
         "id": "scripts/wiki-session-start.mjs",
         "kind": "script",
         "path": "scripts/wiki-session-start.mjs"
+      },
+      {
+        "id": "scripts/windows/claude-mimo.cs",
+        "kind": "script",
+        "path": "scripts/windows/claude-mimo.cs"
       },
       {
         "id": "scripts/workflow-drift-guard.mjs",
@@ -41125,6 +41136,11 @@
         "id": "src/team/__tests__/workflow-publication-command.test.ts",
         "kind": "src",
         "path": "src/team/__tests__/workflow-publication-command.test.ts"
+      },
+      {
+        "id": "src/team/__tests__/workflow-redaction-mimo.test.ts",
+        "kind": "src",
+        "path": "src/team/__tests__/workflow-redaction-mimo.test.ts"
       },
       {
         "id": "src/team/__tests__/workflow-report.test.ts",
@@ -76594,6 +76610,16 @@
         "kind": "imports"
       },
       {
+        "from": "src/team/__tests__/workflow-redaction-mimo.test.ts",
+        "to": "external:vitest",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-redaction-mimo.test.ts",
+        "to": "src/team/workflow-process.ts",
+        "kind": "imports"
+      },
+      {
         "from": "src/team/__tests__/workflow-report.test.ts",
         "to": "external:vitest",
         "kind": "imports"
@@ -76676,6 +76702,11 @@
       {
         "from": "src/team/__tests__/workflow-routing.test.ts",
         "to": "src/team/__tests__/helpers/workflow-fixture.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-routing.test.ts",
+        "to": "src/team/workflow-report.ts",
         "kind": "imports"
       },
       {
@@ -83650,12 +83681,12 @@
       }
     ],
     "stats": {
-      "nodeCount": 7179,
-      "edgeCount": 8245,
-      "importEdgeCount": 6801,
+      "nodeCount": 7182,
+      "edgeCount": 8248,
+      "importEdgeCount": 6804,
       "registerEdgeCount": 64
     }
   },
-  "inventorySha256": "068d066b2ec635799d9e51504f8350d2402dee8502232b40e4b4066296781483",
-  "manifestSha256": "ea7c82df03db1af0daf3bebe38851c25dae7d0154220cc6b9b1c877dd73af411"
+  "inventorySha256": "4dc5e7288e322dd6d4b1cdf54f5802be0a386187bd446cb247ccf2577c0e94d6",
+  "manifestSha256": "55eaad06997b7b0fe617f6b4bb61e6a380c33b1714af0f427705535ed7f9a1e8"
 }
