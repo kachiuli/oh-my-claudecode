@@ -4,11 +4,13 @@ import type { WorkflowIdentityEvidence, WorkflowTelemetry, WorkflowTelemetryEvid
 import { isDeepStrictEqual } from 'node:util';
 import { createHash } from 'node:crypto';
 import type { OrchestratorHost } from '../orchestration/selection.js';
+import { MAX_WORKFLOW_TASK_RECOVERIES, parseWorkflowTaskRecovery,
+  type WorkflowTaskRecovery } from './workflow-task-recovery.js';
 
 export type WorkflowRole = 'lead' | 'implementer' | 'reviewer';
 export type WorkflowProviderRoute = 'claude' | 'glm' | 'mimo' | 'codex';
-/** The single optional supervised policy; omission keeps the legacy finite provider timeout. */
-export type WorkflowProviderPolicy = 'supervised';
+/** New states use the descriptive name; the old value remains valid only for saved-state compatibility. */
+export type WorkflowProviderPolicy = 'unbounded-provider-timeout' | 'supervised';
 export type WorkflowCapability = 'external-lead' | 'structured-handoff' | 'structured-findings' | 'read-only' | 'session-resume' | 'review-permission-transition';
 /** A declaration and evidence reference, not proof that a CLI has these capabilities. */
 export interface WorkflowRoleBinding {
@@ -160,11 +162,14 @@ export interface WorkflowState {
   tasks: WorkflowTaskState[];
   verification?: { head: string; passed: boolean; checks: Array<{ command: WorkflowCommand; passed: boolean; artifacts: ArtifactDescriptor[] }> };
   reviewPasses: number;
+  /** Omitted states retain the v1.5 accounting rule where every reserved attempt consumes budget. */
+  reviewBudgetBasis?: 'completed-reviews';
   reviews: Array<{ pass: number; head: string; findings: WorkflowFinding[]; artifacts: ArtifactDescriptor[] }>;
   reviewAttempts?: WorkflowReviewAttempt[];
   leadIntegrations?: WorkflowLeadIntegration[];
   dispatchSupplements?: WorkflowDispatchSupplement[];
   reviewBudgetExtensions?: WorkflowReviewBudgetExtension[];
+  taskRecoveries?: readonly WorkflowTaskRecovery[];
   createdAt: string;
   updatedAt: string;
 }
@@ -212,6 +217,18 @@ export interface WorkflowSubstitution {
   readonly taskId?: string;
   readonly afterAttempt?: number;
   readonly afterReviewPass?: number;
+}
+export interface WorkflowBindingRefreshIntent {
+  readonly role: 'implementer' | 'reviewer';
+  readonly sourceBindingId: string;
+  readonly newBindingId: string;
+  readonly model: string;
+  /** Omission preserves the selected effort; null removes it. */
+  readonly effort?: string | null;
+  readonly expectedHead: string;
+  readonly reason: string;
+  readonly authorityRef: string;
+  readonly taskId?: string;
 }
 export interface WorkflowLeadIntegrationActor {
   readonly id: string;
@@ -283,8 +300,8 @@ const MAX_LEAD_INTEGRATION_BYTES = 128 * 1024;
 const MAX_DISPATCH_SUPPLEMENTS = 32;
 const MAX_DISPATCH_SUPPLEMENT_BYTES = 8 * 1024;
 const MAX_DISPATCH_SUPPLEMENT_RECORD_BYTES = 16 * 1024;
-const MAX_REVIEW_PASSES = 10;
-const MAX_REVIEW_BUDGET_EXTENSIONS = MAX_REVIEW_PASSES - 1;
+const MAX_INITIAL_REVIEW_PASSES = 10;
+const MAX_REVIEW_BUDGET_INCREMENT = 10;
 
 function object(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('workflow_expected_object');
@@ -310,10 +327,10 @@ function modelLiteral(value: unknown): string {
   if (!/^[A-Za-z0-9][A-Za-z0-9._:/@+-]*(?:\[[A-Za-z0-9._+-]+\])?$/.test(text)) throw new Error('workflow_invalid_model');
   return text;
 }
-/** The only present value is 'supervised'; omission stays omitted and is never rewritten or migrated. */
+/** Saved states retain either accepted spelling byte-for-byte; omission stays omitted. */
 export function parseWorkflowProviderPolicy(value: unknown): WorkflowProviderPolicy | undefined {
   if (value === undefined) return undefined;
-  if (value !== 'supervised') throw new Error('workflow_invalid_policy');
+  if (value !== 'unbounded-provider-timeout' && value !== 'supervised') throw new Error('workflow_invalid_policy');
   return value;
 }
 export function parseWorkflowBinding(value: unknown): WorkflowRoleBinding {
@@ -682,9 +699,9 @@ export function parseWorkflowDispatchSupplement(value: unknown): WorkflowDispatc
 }
 export function parseWorkflowReviewBudgetExtensionIntent(value: unknown): WorkflowReviewBudgetExtensionIntent {
   const raw = exactObject(value, ['requestId', 'expectedHead', 'expectedCeiling', 'increment', 'actor', 'authorityRef', 'reason']);
-  const expectedCeiling = integer(raw.expectedCeiling, 1, MAX_REVIEW_PASSES);
-  const increment = integer(raw.increment, 1, MAX_REVIEW_PASSES);
-  if (expectedCeiling + increment > MAX_REVIEW_PASSES) throw new Error('workflow_review_budget_limit_exceeded');
+  const expectedCeiling = integer(raw.expectedCeiling, 1, Number.MAX_SAFE_INTEGER);
+  const increment = integer(raw.increment, 1, MAX_REVIEW_BUDGET_INCREMENT);
+  integer(expectedCeiling + increment, 2, Number.MAX_SAFE_INTEGER);
   return Object.freeze({ requestId: literal(raw.requestId, 100), expectedHead: workflowSha(raw.expectedHead),
     expectedCeiling, increment, actor: leadIntegrationActor(raw.actor), authorityRef: boundedText(raw.authorityRef, 1000),
     reason: boundedText(raw.reason, 1000) });
@@ -694,16 +711,22 @@ export function parseWorkflowReviewBudgetExtension(value: unknown): WorkflowRevi
     'actor', 'authorityRef', 'reason', 'at']);
   validateOrchestrationHost(raw.orchestrationHost);
   if (raw.orchestrationHost === undefined) throw new Error('workflow_invalid_orchestration_host');
-  const oldCeiling = integer(raw.oldCeiling, 1, MAX_REVIEW_PASSES);
-  const newCeiling = integer(raw.newCeiling, 2, MAX_REVIEW_PASSES);
+  const oldCeiling = integer(raw.oldCeiling, 1, Number.MAX_SAFE_INTEGER);
+  const newCeiling = integer(raw.newCeiling, 2, Number.MAX_SAFE_INTEGER);
   if (newCeiling <= oldCeiling) throw new Error('workflow_invalid_review_budget_extension');
-  return Object.freeze({ sequence: integer(raw.sequence, 1, MAX_REVIEW_BUDGET_EXTENSIONS),
+  if (newCeiling - oldCeiling > MAX_REVIEW_BUDGET_INCREMENT) throw new Error('workflow_invalid_review_budget_extension');
+  return Object.freeze({ sequence: integer(raw.sequence, 1, Number.MAX_SAFE_INTEGER),
     requestId: literal(raw.requestId, 100), oldCeiling, newCeiling, head: workflowSha(raw.head),
     orchestrationHost: raw.orchestrationHost as OrchestratorHost, actor: leadIntegrationActor(raw.actor),
     authorityRef: boundedText(raw.authorityRef, 1000), reason: boundedText(raw.reason, 1000), at: timestamp(raw.at) });
 }
 export function workflowReviewCeiling(state: Pick<VersionedWorkflowState, 'options' | 'reviewBudgetExtensions'>): number {
   return state.reviewBudgetExtensions?.at(-1)?.newCeiling ?? state.options.maxReviewPasses;
+}
+/** New workflows budget completed reviews; omitted v1.5 states retain attempt-based accounting without migration. */
+export function workflowReviewBudgetUsed(state: Pick<VersionedWorkflowState,
+  'reviewBudgetBasis' | 'reviewPasses' | 'reviews'>): number {
+  return state.reviewBudgetBasis === 'completed-reviews' ? state.reviews.length : state.reviewPasses;
 }
 export function parseWorkflowSubstitution(value: unknown): WorkflowSubstitution {
   const raw = exactObject(value, ['sequence', 'role', 'from', 'to', 'reason', 'authorityRef', 'head', 'at', 'taskId', 'afterAttempt', 'afterReviewPass']);
@@ -716,7 +739,20 @@ export function parseWorkflowSubstitution(value: unknown): WorkflowSubstitution 
     reason: boundedText(raw.reason, 1000), authorityRef: boundedText(raw.authorityRef, 1000), head: workflowSha(raw.head), at: timestamp(raw.at),
     ...(raw.taskId === undefined ? {} : { taskId: safeWorkflowId(raw.taskId) }),
     ...(raw.afterAttempt === undefined ? {} : { afterAttempt: integer(raw.afterAttempt, 0, 5) }),
-    ...(raw.afterReviewPass === undefined ? {} : { afterReviewPass: integer(raw.afterReviewPass, 0, 10) }) });
+    ...(raw.afterReviewPass === undefined ? {} : { afterReviewPass: integer(raw.afterReviewPass, 0, Number.MAX_SAFE_INTEGER) }) });
+}
+export function parseWorkflowBindingRefreshIntent(value: unknown): WorkflowBindingRefreshIntent {
+  const raw = exactObject(value, ['role', 'sourceBindingId', 'newBindingId', 'model', 'effort', 'expectedHead', 'reason', 'authorityRef', 'taskId']);
+  if (raw.role !== 'implementer' && raw.role !== 'reviewer') throw new Error('workflow_invalid_binding_refresh_intent');
+  if (raw.taskId !== undefined && raw.role !== 'implementer') throw new Error('workflow_invalid_binding_refresh_intent');
+  let effort: string | null | undefined;
+  if (raw.effort === null) effort = null;
+  else if (raw.effort !== undefined) effort = literal(raw.effort, 30);
+  return Object.freeze({ role: raw.role, sourceBindingId: safeWorkflowId(raw.sourceBindingId),
+    newBindingId: safeWorkflowId(raw.newBindingId), model: modelLiteral(raw.model),
+    ...(raw.effort === undefined ? {} : { effort }), expectedHead: workflowSha(raw.expectedHead),
+    reason: boundedText(raw.reason, 1000), authorityRef: boundedText(raw.authorityRef, 1000),
+    ...(raw.taskId === undefined ? {} : { taskId: safeWorkflowId(raw.taskId) }) });
 }
 /** Pure contract loading only: caller still checks cwd, head, lock and persisted-file identity. */
 export function parseWorkflowState(value: unknown): VersionedWorkflowState {
@@ -724,6 +760,9 @@ export function parseWorkflowState(value: unknown): VersionedWorkflowState {
   if (!((raw.schemaVersion === 1 && (raw.profile === 'claude-glm-codex' || raw.profile === 'claude-mimo-codex')) || (raw.schemaVersion === 2 && raw.profile === 'role-substitution'))
     || !Array.isArray(raw.tasks) || !Array.isArray(raw.reviews)) throw new Error('workflow_invalid_state');
   const options = object(raw.options);
+  if (raw.reviewBudgetBasis !== undefined && raw.reviewBudgetBasis !== 'completed-reviews') {
+    throw new Error('workflow_invalid_review_budget_basis');
+  }
   if (options.mode !== undefined && !['v1', 'balanced'].includes(String(options.mode))) throw new Error('workflow_invalid_mode');
   // Validate any present policy for both schemas; omission is never rewritten into a saved value.
   parseWorkflowProviderPolicy(options.providerPolicy);
@@ -768,14 +807,46 @@ export function parseWorkflowState(value: unknown): VersionedWorkflowState {
     }) || Array.isArray(raw.reviewAttempts) && raw.reviewAttempts.some(attemptHasEvidence);
     // Preserve the accepted legacy shape byte-for-byte before requiring fields introduced by newer controllers.
     if (!hasSetupHistory && raw.leadIntegrations === undefined && raw.dispatchSupplements === undefined
-      && raw.reviewBudgetExtensions === undefined && !hasTelemetryEvidence) return value as WorkflowState;
+      && raw.reviewBudgetExtensions === undefined && raw.taskRecoveries === undefined
+      && raw.reviewBudgetBasis === undefined && !hasTelemetryEvidence) return value as WorkflowState;
   }
-  if (raw.reviewBudgetExtensions !== undefined && (!Array.isArray(raw.reviewBudgetExtensions)
-    || raw.reviewBudgetExtensions.length > MAX_REVIEW_BUDGET_EXTENSIONS)) throw new Error('workflow_invalid_review_budget_extensions');
+  if (raw.reviewBudgetExtensions !== undefined && !Array.isArray(raw.reviewBudgetExtensions)) {
+    throw new Error('workflow_invalid_review_budget_extensions');
+  }
   const reviewBudgetExtensions = (raw.reviewBudgetExtensions ?? []).map(parseWorkflowReviewBudgetExtension);
+  if (raw.taskRecoveries !== undefined && (!Array.isArray(raw.taskRecoveries)
+    || raw.taskRecoveries.length > MAX_WORKFLOW_TASK_RECOVERIES)) throw new Error('workflow_invalid_task_recoveries');
+  const taskRecoveries = (raw.taskRecoveries ?? []).map(parseWorkflowTaskRecovery);
+  const recoveryRequestIds = new Set<string>(); const recoveredTaskIds = new Set<string>();
+  taskRecoveries.forEach((entry, index) => {
+    if (entry.sequence !== index + 1 || recoveryRequestIds.has(entry.requestId)
+      || recoveredTaskIds.has(entry.taskId) || entry.refsDigestBefore !== entry.refsDigestAfter) {
+      throw new Error('workflow_task_recovery_chain_mismatch');
+    }
+    const contract = plan.tasks.find(task => task.id === entry.taskId);
+    const saved = (raw.tasks as unknown[]).map(object).find(task => object(task.task).id === entry.taskId);
+    const handoff = saved?.handoff === undefined ? undefined : object(saved.handoff);
+    const invocations = saved?.invocations;
+    const lastInvocation = Array.isArray(invocations) && invocations.length ? object(invocations.at(-1)) : undefined;
+    const artifacts = handoff?.artifacts;
+    const auditHashes = Array.isArray(artifacts) ? artifacts.map(object)
+      .filter(artifact => artifact.kind === 'workflow-protected-ref-audit').map(artifact => artifact.contentHash) : [];
+    if (!contract || !saved || !['completed', 'accepted', 'rejected'].includes(String(saved.status))
+      || !Array.isArray(invocations) || saved.attempts !== invocations.length || handoff?.outcome !== 'completed'
+      || handoff.commitSha !== entry.taskCommit || contract.baseCommit !== entry.baseCommit
+      || lastInvocation?.error !== entry.oldError
+      || contract.tests.length !== entry.checks.length
+      || !contract.tests.every((check, checkIndex) => isDeepStrictEqual(check, entry.checks[checkIndex]?.command))
+      || (entry.oldError === 'workflow_protected_refs_changed'
+        && (entry.protectedRefAuditContentHash === undefined || !auditHashes.includes(entry.protectedRefAuditContentHash)))
+      || (entry.oldError !== 'workflow_protected_refs_changed' && entry.protectedRefAuditContentHash !== undefined)) {
+      throw new Error('workflow_task_recovery_evidence_mismatch');
+    }
+    recoveryRequestIds.add(entry.requestId); recoveredTaskIds.add(entry.taskId);
+  });
   const budgetRequired = raw.schemaVersion === 2 || raw.reviewBudgetExtensions !== undefined;
   const initialReviewCeiling = budgetRequired || options.maxReviewPasses !== undefined
-    ? integer(options.maxReviewPasses, 1, MAX_REVIEW_PASSES) : undefined;
+    ? integer(options.maxReviewPasses, 1, MAX_INITIAL_REVIEW_PASSES) : undefined;
   const requestIds = new Set<string>();
   let reviewCeiling = initialReviewCeiling;
   reviewBudgetExtensions.forEach((entry, index) => {
@@ -784,7 +855,25 @@ export function parseWorkflowState(value: unknown): VersionedWorkflowState {
     }
     requestIds.add(entry.requestId); reviewCeiling = entry.newCeiling;
   });
-  if (reviewCeiling !== undefined) integer(raw.reviewPasses, 0, reviewCeiling);
+  integer(raw.reviewPasses, 0, Number.MAX_SAFE_INTEGER);
+  if (raw.reviewBudgetBasis === 'completed-reviews') {
+    const attempts = raw.reviewAttempts ?? [];
+    if (!Array.isArray(attempts) || attempts.length !== raw.reviewPasses) {
+      throw new Error('workflow_review_history_mismatch');
+    }
+    const completedPasses: number[] = [];
+    attempts.forEach((attempt, index) => {
+      const entry = object(attempt);
+      if (entry.pass !== index + 1 || !['completed', 'failed'].includes(String(entry.outcome))) {
+        throw new Error('workflow_review_history_mismatch');
+      }
+      if (entry.outcome === 'completed') completedPasses.push(index + 1);
+    });
+    const savedPasses = raw.reviews.map(review => object(review).pass);
+    if (!isDeepStrictEqual(completedPasses, savedPasses)) throw new Error('workflow_review_history_mismatch');
+  } else if (reviewCeiling !== undefined) {
+    integer(raw.reviewPasses, 0, reviewCeiling);
+  }
   // Preserve legacy shape and optional fields exactly; this is not a migration.
   if (raw.schemaVersion === 1) {
     if (dispatchSupplements.some(entry => entry.actor.id !== 'unknown')) {
@@ -810,7 +899,8 @@ export function parseWorkflowState(value: unknown): VersionedWorkflowState {
         return raw.reviewAttempts.map(attempt => parseLegacyAttempt(attempt, 'codex')); })() } : {}),
     ...(raw.leadIntegrations === undefined ? {} : { leadIntegrations: Object.freeze(leadIntegrations) }),
     ...(raw.dispatchSupplements === undefined ? {} : { dispatchSupplements: Object.freeze(dispatchSupplements) }),
-    ...(raw.reviewBudgetExtensions === undefined ? {} : { reviewBudgetExtensions: Object.freeze(reviewBudgetExtensions) }) } as unknown as WorkflowState;
+    ...(raw.reviewBudgetExtensions === undefined ? {} : { reviewBudgetExtensions: Object.freeze(reviewBudgetExtensions) }),
+    ...(raw.taskRecoveries === undefined ? {} : { taskRecoveries: Object.freeze(taskRecoveries) }) } as unknown as WorkflowState;
   }
   const maxAttempts = integer(options.maxAttempts, 1, 5);
   if (raw.tasks.length !== plan.tasks.length) throw new Error('workflow_saved_tasks_mismatch');
@@ -881,6 +971,8 @@ export function parseWorkflowState(value: unknown): VersionedWorkflowState {
     && !knownLeadActors.has(`${entry.actor.id}\0${entry.actor.model}`)) throw new Error('workflow_dispatch_supplement_actor_mismatch');
   for (const entry of reviewBudgetExtensions) if (entry.actor.id !== 'unknown'
     && !knownLeadActors.has(`${entry.actor.id}\0${entry.actor.model}`)) throw new Error('workflow_review_budget_extension_actor_mismatch');
+  for (const entry of taskRecoveries) if (entry.actor.id !== 'unknown'
+    && !knownLeadActors.has(`${entry.actor.id}\0${entry.actor.model}`)) throw new Error('workflow_task_recovery_actor_mismatch');
   const ids = new Set<string>();
   const checkSnapshot = (entry: Record<string, unknown>) => {
     const binding = entry.binding as WorkflowRoleBinding;
@@ -900,6 +992,7 @@ export function parseWorkflowState(value: unknown): VersionedWorkflowState {
     ...(raw.leadIntegrations === undefined ? {} : { leadIntegrations: Object.freeze(leadIntegrations) }),
     ...(raw.dispatchSupplements === undefined ? {} : { dispatchSupplements: Object.freeze(dispatchSupplements) }),
     ...(raw.reviewBudgetExtensions === undefined ? {} : { reviewBudgetExtensions: Object.freeze(reviewBudgetExtensions) }),
+    ...(raw.taskRecoveries === undefined ? {} : { taskRecoveries: Object.freeze(taskRecoveries) }),
     substitutions: Object.freeze(substitutions), bindings: Object.freeze(parsedBindings) } as unknown as WorkflowStateV2;
 }
 /** Compare saved contracts under the controller's lock; this does not reserve or execute work. */
@@ -911,6 +1004,7 @@ export function validateWorkflowStateTransition(previous: unknown, next: unknown
   if (before.schemaVersion !== after.schemaVersion) throw new Error('workflow_implicit_migration_forbidden');
   // The initialization budget remains immutable in both schemas; extensions live only in their attributed ledger.
   if (before.options.maxReviewPasses !== after.options.maxReviewPasses
+    || before.reviewBudgetBasis !== after.reviewBudgetBasis
     || after.reviewPasses < before.reviewPasses) throw new Error('workflow_budget_reset_forbidden');
   const oldReviewExtensions = before.reviewBudgetExtensions ?? [];
   const newReviewExtensions = after.reviewBudgetExtensions ?? [];
@@ -921,7 +1015,7 @@ export function validateWorkflowStateTransition(previous: unknown, next: unknown
   if (newReviewExtensions.length === oldReviewExtensions.length + 1) {
     const appended = newReviewExtensions.at(-1)!;
     const oldCeiling = workflowReviewCeiling(before);
-    const unavailable = before.reviewPasses !== oldCeiling || appended.oldCeiling !== oldCeiling
+    const unavailable = workflowReviewBudgetUsed(before) !== oldCeiling || appended.oldCeiling !== oldCeiling
       || appended.head !== before.integrationHead
       || before.tasks.some(entry => entry.status === 'running'
         || entry.invocations?.some(invocation => invocation.error === 'workflow_invocation_incomplete'))
@@ -971,6 +1065,43 @@ export function validateWorkflowStateTransition(previous: unknown, next: unknown
     };
     if (!isDeepStrictEqual(withoutSupplement(before), withoutSupplement(after))) {
       throw new Error('workflow_dispatch_supplement_transition_invalid');
+    }
+  }
+  const oldRecoveries = before.taskRecoveries ?? [];
+  const newRecoveries = after.taskRecoveries ?? [];
+  if (newRecoveries.length < oldRecoveries.length || newRecoveries.length > oldRecoveries.length + 1
+    || oldRecoveries.some((entry, index) => !isDeepStrictEqual(entry, newRecoveries[index]))) {
+    throw new Error('workflow_task_recovery_history_rewritten');
+  }
+  if (newRecoveries.length === oldRecoveries.length + 1) {
+    const appended = newRecoveries.at(-1)!;
+    const oldTask = before.tasks.find(entry => entry.task.id === appended.taskId);
+    const newTask = after.tasks.find(entry => entry.task.id === appended.taskId);
+    const unavailable = !oldTask || !newTask || oldTask.status !== 'failed' || oldTask.error !== appended.oldError
+      || oldTask.handoff?.outcome !== 'completed' || oldTask.handoff.commitSha !== appended.taskCommit
+      || oldTask.task.baseCommit !== appended.baseCommit || appended.head !== before.integrationHead
+      || appended.refsDigestBefore !== appended.refsDigestAfter || newTask.status !== 'completed'
+      || newTask.error !== undefined || newTask.updatedAt !== appended.at || after.stage !== 'integration'
+      || before.tasks.some(entry => entry.status === 'running'
+        || entry.invocations?.at(-1)?.error === 'workflow_invocation_incomplete');
+    if (unavailable) throw new Error('workflow_task_recovery_origin_mismatch');
+    if (appended.actor.id !== 'unknown' && (before.schemaVersion !== 2
+      || appended.actor.id !== before.bindings.lead.id || appended.actor.model !== before.bindings.lead.model)) {
+      throw new Error('workflow_task_recovery_actor_mismatch');
+    }
+    const normalized = (state: VersionedWorkflowState, restore?: WorkflowTaskState): Record<string, unknown> => {
+      const copy = JSON.parse(JSON.stringify(state)) as Record<string, unknown>;
+      delete copy.taskRecoveries; delete copy.updatedAt;
+      if (restore) {
+        const tasks = copy.tasks as Array<Record<string, unknown>>;
+        const index = tasks.findIndex(entry => object(entry.task).id === restore.task.id);
+        tasks[index] = JSON.parse(JSON.stringify(restore)) as Record<string, unknown>;
+        copy.stage = before.stage;
+      }
+      return copy;
+    };
+    if (!isDeepStrictEqual(normalized(before), normalized(after, oldTask))) {
+      throw new Error('workflow_task_recovery_transition_invalid');
     }
   }
   // Host provenance is immutable for both legacy and role-substitution workflows.
@@ -1055,6 +1186,7 @@ export function validateWorkflowStateTransition(previous: unknown, next: unknown
   if (before.cwd !== after.cwd || before.plan.name !== after.plan.name || before.plan.baseCommit !== after.plan.baseCommit
     || before.plan.integrationBranch !== after.plan.integrationBranch) throw new Error('workflow_state_identity_changed');
   if (before.options.maxAttempts !== after.options.maxAttempts || before.options.maxReviewPasses !== after.options.maxReviewPasses
+    || before.reviewBudgetBasis !== after.reviewBudgetBasis
     || after.reviewPasses < before.reviewPasses) throw new Error('workflow_budget_reset_forbidden');
   // The selected policy is part of the initialization contract and cannot change afterwards.
   if (before.options.providerPolicy !== after.options.providerPolicy) throw new Error('workflow_policy_change_forbidden');

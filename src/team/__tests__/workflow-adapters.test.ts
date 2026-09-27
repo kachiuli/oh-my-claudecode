@@ -97,7 +97,7 @@ describe('versioned workflow adapters', () => {
     expect(fixture.git('rev-parse', 'HEAD')).toBe(fixture.baseCommit);
   });
 
-  it('retains a failed Codex review and uses the next pass for explicitly selected Claude', async () => {
+  it('retains a failed Codex review without consuming the completed-review allowance', async () => {
     const configured = await init(); await integrate(configured);
     fixture.configure({ tasks: { review: { failBeforeWork: true } } });
     await expect(workflow.reviewWorkflow(fixture.cwd, 'roles', configured.runtime)).rejects.toThrow('workflow_review_process_failed');
@@ -111,8 +111,12 @@ describe('versioned workflow adapters', () => {
     expect(JSON.stringify(next.reviewAttempts?.[0])).toBe(old);
     expect(next.reviews[0].findings).toHaveLength(1);
     await workflow.adjudicateWorkflow(fixture.cwd, 'roles', [{ findingId: 'review-2-1', disposition: 'dismiss', reason: 'Synthetic finding only' }]);
+    fixture.configure({});
+    const finalAllowed = await workflow.reviewWorkflow(fixture.cwd, 'roles', configured.runtime);
+    expect(finalAllowed).toMatchObject({ reviewPasses: 3, reviews: [{ pass: 2 }, { pass: 3 }] });
     await expect(workflow.reviewWorkflow(fixture.cwd, 'roles', configured.runtime)).rejects.toThrow('workflow_review_limit_reached');
-    expect(workflow.readWorkflow(fixture.cwd, 'roles').reviewPasses).toBe(2);
+    expect(workflow.workflowStatus(fixture.cwd, 'roles')).toMatchObject({ reviewPasses: 3, completedReviews: 2,
+      reviewBudgetBasis: 'completed-reviews', reviewBudgetUsed: 2, maxReviewPasses: 2 });
   });
 
   it('records a missing runtime diagnostic without reserving a task or inventing a provider call', async () => {
@@ -297,6 +301,32 @@ describe('versioned workflow adapters', () => {
     expect(fixture.git('rev-parse', 'main')).not.toBe(fixture.baseCommit);
   });
 
+  it('leaves an unreserved pending candidate untouched when a reserved worker changes a protected ref', async () => {
+    const configured = runtimeFixture(fixture); const input = plan();
+    input.tasks.push({ ...input.tasks[0], id: 'b', writeScope: ['feature/b.txt'] });
+    await workflow.initWorkflowV2(fixture.cwd, input, { lead: binding('lead', 'codex'), implementer: configured.selectedBinding('implementer', 'claude'),
+      reviewer: configured.selectedBinding('reviewer', 'codex') }, { workers: 1, maxAttempts: 1 });
+    const originalResolver = configured.runtime.resolveBinding; let calls = 0;
+    configured.runtime.resolveBinding = selected => {
+      if (++calls === 2) throw new Error('Synthetic next-route preflight failure');
+      return originalResolver(selected);
+    };
+    fixture.configure({ tasks: { a: { mutateRef: true } } });
+
+    await expect(workflow.runWorkflow(fixture.cwd, 'roles', configured.runtime))
+      .rejects.toThrow('workflow_protected_refs_changed');
+
+    const state = workflow.readWorkflow(fixture.cwd, 'roles');
+    expect(state.tasks[0]).toMatchObject({ status: 'failed', attempts: 1, error: 'workflow_protected_refs_changed' });
+    expect(state.tasks[0].invocations?.[0]).toMatchObject({ outcome: 'failed', error: 'workflow_protected_refs_changed' });
+    expect(state.tasks[1]).toMatchObject({ status: 'pending', attempts: 0 });
+    expect(state.tasks[1].error).toBeUndefined();
+    expect(state.tasks[1].invocations).toBeUndefined();
+    expect(state.tasks[1].handoff).toBeUndefined();
+    const audit = state.tasks[0].handoff?.artifacts.find(artifact => artifact.kind === 'workflow-protected-ref-audit');
+    expect(audit).toBeDefined();
+  });
+
   it('preserves a previous settled attempt when preflight prevents its next reservation and a peer changes refs', async () => {
     const configured = runtimeFixture(fixture); const input = plan();
     input.tasks.push({ ...input.tasks[0], id: 'b', writeScope: ['feature/b.txt'] });
@@ -431,7 +461,8 @@ describe('versioned workflow adapters', () => {
     const state = await workflow.runWorkflow(fixture.cwd, 'roles', configured.runtime);
     expect(state.tasks[0]).toMatchObject({ status: 'failed', error: 'workflow_timeout', attempts: 1 });
     expect(state.options).not.toHaveProperty('providerPolicy');
-    expect(workflow.workflowStatus(fixture.cwd, 'roles')).toMatchObject({ schemaVersion: 2, providerPolicy: 'legacy' });
+    expect(workflow.workflowStatus(fixture.cwd, 'roles')).toMatchObject({ schemaVersion: 2, providerPolicy: 'legacy',
+      effectiveProviderPolicy: 'finite-provider-timeout' });
   }, 30000);
 
   it('removes only the implementer and reviewer elapsed bound under supervised policy in schema 2', async () => {
@@ -450,8 +481,9 @@ describe('versioned workflow adapters', () => {
     expect(reviewed.reviewAttempts?.[0]).toMatchObject({ outcome: 'completed' });
     expect(Date.now() - reviewStarted).toBeGreaterThanOrEqual(delayed);
     const saved = workflow.readWorkflow(fixture.cwd, 'roles');
-    expect(saved.options).toMatchObject({ providerPolicy: 'supervised', timeoutMs: 1200 });
-    expect(workflow.workflowStatus(fixture.cwd, 'roles')).toMatchObject({ providerPolicy: 'supervised', reviewPasses: 1 });
+    expect(saved.options).toMatchObject({ providerPolicy: 'unbounded-provider-timeout', timeoutMs: 1200 });
+    expect(workflow.workflowStatus(fixture.cwd, 'roles')).toMatchObject({
+      providerPolicy: 'unbounded-provider-timeout', effectiveProviderPolicy: 'unbounded-provider-timeout', reviewPasses: 1 });
   }, process.platform === 'win32' ? 150000 : 60000);
 
   it('keeps the saved policy while an explicit substitution changes only the selected binding', async () => {
@@ -459,10 +491,10 @@ describe('versioned workflow adapters', () => {
     await workflow.substituteWorkflowBinding(fixture.cwd, 'roles', { role: 'implementer', binding: configured.selectedBinding('implementer', 'glm'),
       expectedHead: fixture.baseCommit, reason: 'Select a route for future work', authorityRef: 'fixture-decision' });
     const saved = workflow.readWorkflow(fixture.cwd, 'roles');
-    expect(saved.options.providerPolicy).toBe('supervised');
+    expect(saved.options.providerPolicy).toBe('unbounded-provider-timeout');
     if (saved.schemaVersion !== 2) throw new Error('Expected V2');
     expect(saved.substitutions).toHaveLength(1);
-    expect(workflow.workflowStatus(fixture.cwd, 'roles')).toMatchObject({ providerPolicy: 'supervised', substitutionCount: 1 });
+    expect(workflow.workflowStatus(fixture.cwd, 'roles')).toMatchObject({ providerPolicy: 'unbounded-provider-timeout', substitutionCount: 1 });
   });
 
   it('refuses a malformed saved provider policy in schema 2 before any provider launch', async () => {

@@ -154,6 +154,9 @@ export function createWorkflowUsageCollector(provider: WorkflowTelemetry['provid
   }
 
   function model(value: unknown, source: IdentitySource, primary = false): string | undefined {
+    if (value === undefined || value === null) {
+      identityEvidenceValid = false; diagnostics.add('missing_model_id'); return undefined;
+    }
     if (typeof value !== 'string' || value.length > 160 || !MODEL_ID.test(value)) {
       identityEvidenceValid = false; identityConsistent = false; diagnostics.add('model_identity_invalid'); return undefined;
     }
@@ -281,10 +284,10 @@ export function createWorkflowUsageCollector(provider: WorkflowTelemetry['provid
         session(event.session_id, 'initEvents');
         if (event.model !== undefined) model(event.model, 'initEvents', true);
       } else if (event.type === 'assistant') {
-        if (event.session_id !== undefined) session(event.session_id, 'assistantEvents');
+        session(event.session_id, 'assistantEvents');
         const message = record(event.message);
         const assistantModel = message?.model ?? event.model;
-        if (assistantModel !== undefined) model(assistantModel, 'assistantEvents', true);
+        model(assistantModel, 'assistantEvents', true);
       }
       if (event.type !== 'result') return;
       const usage = claudeUsage(event);

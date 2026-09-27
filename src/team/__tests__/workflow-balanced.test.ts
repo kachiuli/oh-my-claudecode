@@ -165,6 +165,8 @@ describe('balanced workflow with real repositories and provider processes', () =
     expect(state.reviewAttempts?.map(attempt => attempt.outcome)).toEqual(['failed', 'completed']);
     expect(state.reviews).toHaveLength(1);
     expect(state.stage).toBe('complete');
+    expect(workflowStatus(fixture.cwd, name)).toMatchObject({ reviewPasses: 2, completedReviews: 1,
+      reviewBudgetBasis: 'completed-reviews', reviewBudgetUsed: 1 });
     expect(fixture.events().filter(event => event.event === 'start' && event.role === 'codex')
       .every(event => event.args.includes('--json') && event.args.includes('read-only') && event.args.includes('codex-test'))).toBe(true);
     expect(JSON.stringify(workflowStatus(fixture.cwd, name)).length).toBeLessThanOrEqual(16 * 1024);
@@ -308,7 +310,8 @@ describe('balanced workflow with real repositories and provider processes', () =
   it('persists only an explicit supervised policy and refuses a malformed saved value before any launch', async () => {
     await initWorkflow(fixture.cwd, plan(), options);
     expect(readWorkflow(fixture.cwd, name).options).not.toHaveProperty('providerPolicy');
-    expect(workflowStatus(fixture.cwd, name).providerPolicy).toBe('legacy');
+    expect(workflowStatus(fixture.cwd, name)).toMatchObject({ providerPolicy: 'legacy',
+      effectiveProviderPolicy: 'finite-provider-timeout' });
     const path = String(workflowStatus(fixture.cwd, name).stateFile);
     const tampered = JSON.parse(readFileSync(path, 'utf8'));
     tampered.options.providerPolicy = 'unsupervised';
@@ -320,8 +323,9 @@ describe('balanced workflow with real repositories and provider processes', () =
 
   it('persists and reports the supervised policy that initialization selected', async () => {
     await initWorkflow(fixture.cwd, plan(), { ...options, providerPolicy: 'supervised' });
-    expect(readWorkflow(fixture.cwd, name).options).toMatchObject({ providerPolicy: 'supervised', timeoutMs: 15000 });
-    expect(workflowStatus(fixture.cwd, name)).toMatchObject({ providerPolicy: 'supervised', mode: 'balanced', stage: 'implementation' });
+    expect(readWorkflow(fixture.cwd, name).options).toMatchObject({ providerPolicy: 'unbounded-provider-timeout', timeoutMs: 15000 });
+    expect(workflowStatus(fixture.cwd, name)).toMatchObject({ providerPolicy: 'unbounded-provider-timeout',
+      effectiveProviderPolicy: 'unbounded-provider-timeout', mode: 'balanced', stage: 'implementation' });
   });
 
   it.each([null, true, 0, [], {}, 'legacy', 'Supervised', ' supervised'])(

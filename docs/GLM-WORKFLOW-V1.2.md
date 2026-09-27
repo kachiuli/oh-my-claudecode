@@ -159,6 +159,7 @@ $runtimeFile = 'C:/private/omc/runtime.json'
 node $omcCli team workflow init --file .omc/plans/feature.json --profile role-substitution --bindings .omc/plans/roles.json --mode balanced
 node $omcCli team workflow run feature --runtime $runtimeFile
 node $omcCli team workflow status feature
+node $omcCli team workflow routing feature
 node $omcCli team workflow usage feature
 ```
 
@@ -182,6 +183,57 @@ Use the actual task IDs and dispositions. Initialization, selection, a provider
 exit of zero or a token count does not satisfy acceptance, verification or review.
 Successful workflow completion is separate from project adoption, publication,
 deployment or main-branch acceptance.
+
+## Preview and refresh a receipt-covered route
+
+`routing` reads only saved public workflow state. It reports each role's provider,
+model, effort, CLI family, credential-profile reference and whether the current
+selection came from initialization or a numbered substitution. It does not load
+the private runtime, call a provider, or expose executable paths, authentication
+fingerprints, receipt digests, environment values or credentials. A schema-1
+workflow is labelled `legacy-snapshot` because its exact original selection source
+cannot be reconstructed.
+
+For schema 2, a lead can derive a new implementer or reviewer binding ID when the
+current binding's existing receipt already covers the requested model and effort.
+Prepare a refresh intent such as:
+
+```json
+{
+  "role": "implementer",
+  "sourceBindingId": "claude-worker",
+  "newBindingId": "claude-worker-covered-model",
+  "model": "claude-covered-model",
+  "effort": "high",
+  "expectedHead": "0123456789abcdef0123456789abcdef01234567",
+  "reason": "Use the covered model for the next task",
+  "authorityRef": "approved-routing-change",
+  "taskId": "backend"
+}
+```
+
+`effort` may be omitted to preserve the source value or set to `null` to remove it.
+`taskId` is optional audit context for an implementer refresh and does not create a
+per-task override. Use the exact current integration SHA and a new binding ID.
+
+```powershell
+node $omcCli team workflow probe-binding feature --file .omc/plans/refresh.json --runtime $runtimeFile
+node $omcCli team workflow refresh-binding feature --file .omc/plans/refresh.json --runtime $runtimeFile
+node $omcCli team workflow routing feature
+```
+
+`probe-binding` is read-only: it validates the current private profile, executable,
+receipt bytes, model and effort without launching a provider or changing workflow
+state. `refresh-binding` repeats those checks while holding the mutation lock, then
+uses the existing append-only substitution ledger. Only future invocations use the
+new selection; earlier attempts and their bindings remain unchanged.
+
+This convenience cannot authenticate a new model, change provider, executable,
+profile, capability set or receipt, or add a model/effort pair the receipt does not
+cover. Such a request fails with `workflow_authenticated_receipt_refresh_required`.
+A trusted bounded runner must establish new authenticated evidence before the lead
+uses the existing full `substitute` operation. Neither command performs automatic
+fallback or prints private receipt contents.
 
 ## Record a substitution without hidden retries
 

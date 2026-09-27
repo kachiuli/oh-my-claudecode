@@ -61,7 +61,8 @@ describe('workflow terminal usage accounting', () => {
   it('prefers all-model totals, includes cache in total input, and never adds assistant usage', () => {
     const telemetry = collect([
       { type: 'system', subtype: 'init', session_id: sessionId },
-      { type: 'assistant', message: { usage: { input_tokens: 9000, output_tokens: 9000 } } },
+      { type: 'assistant', session_id: sessionId,
+        message: { model: 'glm', usage: { input_tokens: 9000, output_tokens: 9000 } } },
       { ...result, usage: { input_tokens: 9000, output_tokens: 9000 }, modelUsage: {
         ...modelUsage, subagent: { inputTokens: 50, outputTokens: 10, cacheReadInputTokens: 20, cacheCreationInputTokens: 0 },
       } },
@@ -168,6 +169,44 @@ describe('workflow terminal usage accounting', () => {
     expect(JSON.stringify(telemetry.evidence)).not.toContain('private transcript');
   });
 
+  it.each([
+    { name: 'missing session', assistants: [
+      { type: 'assistant', message: { model: 'glm-5.3', content: 'private transcript' } },
+    ], diagnostics: ['missing_session_id'] },
+    { name: 'missing model', assistants: [
+      { type: 'assistant', session_id: sessionId, message: { content: 'private transcript' } },
+    ], diagnostics: ['missing_model_id'] },
+    { name: 'missing session and model', assistants: [
+      { type: 'assistant', message: { content: 'private transcript' } },
+    ], diagnostics: ['missing_model_id', 'missing_session_id'] },
+    { name: 'complementary omissions', assistants: [
+      { type: 'assistant', message: { model: 'glm-5.3', content: 'private transcript one' } },
+      { type: 'assistant', session_id: sessionId, message: { content: 'private transcript two' } },
+    ], diagnostics: ['missing_model_id', 'missing_session_id'] },
+  ])('marks assistant identity evidence incomplete for $name', ({ assistants, diagnostics }) => {
+    const telemetry = collect([
+      { type: 'system', subtype: 'init', session_id: sessionId, model: 'glm-5.3' },
+      ...assistants,
+      { ...result, modelUsage: { 'glm-5.3': modelUsage.glm } },
+    ]);
+    expect(telemetry.evidence).toMatchObject({ identityEvidenceComplete: false,
+      identityConsistent: true, accountingEvidenceComplete: true });
+    expect(telemetry.diagnostics).toEqual(diagnostics);
+    expect(JSON.stringify(telemetry)).not.toContain('private transcript');
+  });
+
+  it('keeps identity evidence complete when every assistant supplies its session and model', () => {
+    const telemetry = collect([
+      { type: 'system', subtype: 'init', session_id: sessionId, model: 'glm-5.3' },
+      { type: 'assistant', session_id: sessionId, message: { model: 'glm-5.3' } },
+      { ...result, modelUsage: { 'glm-5.3': modelUsage.glm } },
+    ]);
+    expect(telemetry.diagnostics).toBeUndefined();
+    expect(telemetry.evidence).toMatchObject({ identityEvidenceComplete: true,
+      sessions: [{ value: sessionId, initEvents: 1, assistantEvents: 1, terminalEvents: 1 }],
+      models: [{ value: 'glm-5.3', initEvents: 1, assistantEvents: 1, terminalUsageBuckets: 1 }] });
+  });
+
   it.each(['init', 'terminal'] as const)('marks identity evidence incomplete when the %s session endpoint is absent', endpoint => {
     const init = { type: 'system', subtype: 'init', model: 'glm-5.3',
       ...(endpoint === 'init' ? {} : { session_id: sessionId }) };
@@ -244,7 +283,7 @@ describe('workflow terminal usage accounting', () => {
     expect(telemetry.diagnostics).toContain('invalid_model_usage');
   });
 
-  it('keeps maximum bounded evidence below the workflow state read limit across all provider attempts', () => {
+  it('keeps per-attempt bounded evidence small relative to the workflow state read limit', () => {
     const modelIds = Array.from({ length: 8 }, (_, index) => `glm-${index}-${'x'.repeat(150)}`);
     const events: unknown[] = [{ type: 'system', subtype: 'init', session_id: sessionId, model: modelIds[0] }];
     for (let index = 1; index < 8; index++) events.push({ type: 'assistant',
@@ -257,7 +296,7 @@ describe('workflow terminal usage accounting', () => {
     expect(evidence.models).toHaveLength(8);
     expect(evidence.terminalUsageBuckets).toHaveLength(8);
     expect(Buffer.byteLength(JSON.stringify(evidence))).toBeLessThan(8 * 1024);
-    // 100 tasks x 5 attempts plus the maximum 10 review attempts leaves ample room for all other state fields.
+    // 100 tasks x 5 attempts plus a representative 10 review attempts leaves ample room for other state fields.
     expect(Buffer.byteLength(JSON.stringify(Array.from({ length: 510 }, () => evidence)))).toBeLessThan(8 * 1024 * 1024);
   });
 
