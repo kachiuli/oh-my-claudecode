@@ -161,6 +161,10 @@ describe('review finding path collection', () => {
       expect(() => parseWorkflowReviewFindings(finding(file), 1, fixture.cwd)).toThrow('workflow_invalid_scope');
     }
     expect(validate(finding('src/example.ts'))).toBe(true);
+    for (const file of ['apps/admin/app/flows/[goal]/page.tsx', 'apps/admin/app/docs/[...slug]/page.tsx',
+      'apps/admin/app/docs/[[...slug]]/page.tsx', 'apps/admin/app/docs/{locale}/page.tsx']) {
+      expect(validate(finding(file)), `Schema must allow literal route path ${file}`).toBe(true);
+    }
     expect(validate(finding(null))).toBe(true);
     expect(request.instructions).toContain('src/example.ts');
     const adjudicated = await adjudicateWorkflow(fixture.cwd, 'review-paths', reviewed.reviews[0].findings.map(finding => ({

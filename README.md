@@ -11,7 +11,7 @@ English | [한국어](README.ko.md) | [中文](README.zh.md) | [日本語](READM
 [![Sponsor](https://img.shields.io/badge/Sponsor-❤️-red?style=flat&logo=github)](https://github.com/sponsors/Yeachan-Heo)
 [![Discord](https://img.shields.io/discord/1452487457085063218?color=5865F2&logo=discord&logoColor=white&label=Discord)](https://discord.gg/wSyUQYfhAw)
 
-> **workflow-v1.5:** This fork can use Claude Code or Codex as the repository's OMC lead, with independent Claude, Codex, GLM, and GLM Flash worker/reviewer bindings. `workflow-v1.5` carries the upstream 5.5.0 merge, settles attempts orphaned by a dead lead, and defaults the Claude lead's Bash timeout to the provider timeout. Workflow v1.5.6 adds opt-in MiMo v2.6 Pro and Flash workers; v1.5.7 adds worktree setup recovery, attributed lead integration, bounded worker telemetry evidence, and pending-task dispatch supplements. See the [MiMo setup guide](docs/MIMO-WORKFLOW.md), [v1.5 release notes](docs/WORKFLOW-V1.5-RELEASE-NOTES.md), the [project setup and switching guide](docs/WORKFLOW-V1.4.md), the [v1.4 release notes](docs/WORKFLOW-V1.4-RELEASE-NOTES.md), and the live [Claude lead](docs/WORKFLOW-V1.4-CLAUDE-LEAD-VERIFICATION.md) and [lead/worker/reviewer matrix](docs/WORKFLOW-V1.5-ROLE-MATRIX-VERIFICATION.md) verification records. Codex integration adapts selected capabilities from [oh-my-codex](https://github.com/kachiuli/oh-my-codex).
+> **workflow-v1.5:** This fork can use Claude Code or Codex as the repository's OMC lead, with independent Claude, Codex, GLM, and GLM Flash worker/reviewer bindings. `workflow-v1.5` carries the upstream 5.5.0 merge, settles attempts orphaned by a dead lead, and defaults the Claude lead's Bash timeout to the provider timeout. Workflow v1.5.6 adds opt-in MiMo v2.6 Pro and Flash workers; v1.5.7 adds worktree setup recovery, attributed lead integration, bounded worker telemetry evidence, and pending-task dispatch supplements; v1.5.8 accepts literal bracket route scopes and attributed review-budget extensions. See the [MiMo setup guide](docs/MIMO-WORKFLOW.md), [v1.5 release notes](docs/WORKFLOW-V1.5-RELEASE-NOTES.md), the [project setup and switching guide](docs/WORKFLOW-V1.4.md), the [v1.4 release notes](docs/WORKFLOW-V1.4-RELEASE-NOTES.md), and the live [Claude lead](docs/WORKFLOW-V1.4-CLAUDE-LEAD-VERIFICATION.md) and [lead/worker/reviewer matrix](docs/WORKFLOW-V1.5-ROLE-MATRIX-VERIFICATION.md) verification records. Codex integration adapts selected capabilities from [oh-my-codex](https://github.com/kachiuli/oh-my-codex).
 
 > **Liked OmC but found it a bit overkill? Try [gajae-code](https://github.com/Yeachan-Heo/gajae-code).**
 > Keeps Claude OAuth as-is while being faster, cheaper, simpler, and more powerful — with an SDK-based integration path built for OpenClaw, Hermes, Grokbot, and similar agent runtimes.
@@ -446,7 +446,11 @@ omc team workflow review feature-x
 
 Replace `fix-backend` with the fix task's ID. Dismissed findings need recorded reasons but no fix task; a clean review needs no remediation.
 
-The default budget is **2 review passes total**: the initial review and at most one re-review. Failed review attempts also consume a pass. Unresolved accepted findings or an exhausted budget do not automatically become success. After the gates pass:
+The default budget is **2 review passes total**: the initial review and at most one re-review. Failed review attempts also consume a pass. Unresolved accepted findings or an exhausted budget do not automatically become success.
+
+If a review uncovers further work after the budget is exhausted, an authorized lead can record a bounded, append-only extension with `omc team workflow extend-review-budget <name> --file <intent.json>`. This preserves consumed passes and all findings; see the [workflow operator guide](docs/WORKFLOW-V1.4.md) for its guards and pinned-version limitations.
+
+After the gates pass:
 
 ```text
 omc team workflow finish feature-x

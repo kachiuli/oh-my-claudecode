@@ -88,3 +88,9 @@ This release addresses #38, #39, #40, and #41 for workflows led by either Claude
 - A balanced workflow lead can append one attributed dispatch supplement to an unstarted dependent task. Its bounded content, authority, hash, and exact input head are recorded separately from the frozen plan and delivered in that task's prompt; scope, checks, and acceptance gates stay intact.
 
 The checkout recovery and telemetry cases were verified with synthetic in-repository fixtures, including a native Windows long-path failure and repair. Authenticated GLM or MiMo execution was not needed for these regression checks.
+
+## workflow-v1.5.8 literal scopes and review budgets
+
+This release addresses #43 and #44. Task scopes accept literal Next.js route paths such as `apps/admin/app/flows/[goal]/page.tsx` and catch-all route names without treating brackets or braces as wildcards. Existing traversal, reserved-path, and `/**` suffix rules still apply.
+
+An authorized lead can append a bounded review-budget extension to an idle workflow after its current budget is exhausted. The initial ceiling, consumed reviews, findings, and provider evidence remain unchanged; the extension records its actor, authority, reason, head, and old/new ceiling, and it does not run a review or relax verification and finish gates. See the [operator guide](WORKFLOW-V1.4.md) for the command and pinned-version limitations. The custom archive is labeled `workflow-v1.5.8`; its package version remains 5.5.0.

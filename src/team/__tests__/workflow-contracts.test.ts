@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { parseWorkflowFindings, parseWorkflowHandoff, parseWorkflowPlan, parseWorkflowTask } from '../workflow-contracts.js';
+import { matchesScope, parseWorkflowFindings, parseWorkflowHandoff, parseWorkflowPlan,
+  parseWorkflowTask } from '../workflow-contracts.js';
 
 const task = {
   id: 'a', objective: 'Implement a', baseCommit: 'a'.repeat(40),
@@ -41,13 +42,35 @@ describe('workflow plan boundaries', () => {
     },
   );
 
-  it('keeps bracketed file names literal in handoffs and review findings', () => {
-    const file = 'apps/web/app/v1/[...path]/route.ts';
+  it('keeps route file names literal in scopes, handoffs, and review findings', () => {
+    const file = 'apps/admin/app/flows/[goal]/page.tsx';
+    const parsed = parseWorkflowPlan({ ...plan, tasks: [{ ...task, writeScope: [file] }] });
     const handoff = parseWorkflowHandoff({ taskId: 'a', outcome: 'completed', changedFiles: [file],
       tests: [], interfaceChanges: [], assumptions: [], risks: [], summary: 'Done.' }, 'a');
     expect(handoff.changedFiles).toEqual([file]);
     expect(parseWorkflowFindings({ findings: [{ severity: 'P2', message: 'Check route.', file }] }, 1)[0]?.file).toBe(file);
-    expect(() => parseWorkflowTask({ ...task, writeScope: [file] })).toThrow('workflow_invalid_scope');
+    expect(parsed.tasks[0]?.writeScope).toEqual([file]);
+    expect(matchesScope(file, [file])).toBe(true);
+    expect(matchesScope('apps/admin/app/flows/growth/page.tsx', [file])).toBe(false);
+    expect(matchesScope('apps/admin/app/flows/[other]/page.tsx', [file])).toBe(false);
+  });
+
+  it.each([
+    'apps/admin/app/docs/[...slug]/page.tsx',
+    'apps/admin/app/docs/[[...slug]]/page.tsx',
+    'apps/admin/app/docs/{locale}/page.tsx',
+  ])('treats route scope syntax as literal text: %s', file => {
+    const scope = parseWorkflowTask({ ...task, writeScope: [file] }).writeScope;
+    expect(scope).toEqual([file]);
+    expect(matchesScope(file, scope)).toBe(true);
+    expect(matchesScope('apps/admin/app/docs/nearby/page.tsx', scope)).toBe(false);
+  });
+
+  it('retains subtree suffix semantics for a bracketed route directory', () => {
+    const scope = parseWorkflowTask({ ...task, writeScope: ['apps/admin/app/flows/[goal]/**'] }).writeScope;
+    expect(scope).toEqual(['apps/admin/app/flows/[goal]']);
+    expect(matchesScope('apps/admin/app/flows/[goal]/page.tsx', scope)).toBe(true);
+    expect(matchesScope('apps/admin/app/flows/[other]/page.tsx', scope)).toBe(false);
   });
 
   it.each(['../outside', '/absolute', 'C:/outside', '.git/config', '.omc/state', 'src/../../outside', 'src/a*.ts', 'src/a?.ts'])(

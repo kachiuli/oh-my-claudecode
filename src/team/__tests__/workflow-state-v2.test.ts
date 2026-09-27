@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
 import { assertWorkflowResumeBinding, parseWorkflowBinding, parseWorkflowDispatchSupplementIntent,
-  parseWorkflowLeadIntegrationIntent, parseWorkflowState, validateWorkflowStateTransition } from '../workflow-contracts.js';
+  parseWorkflowLeadIntegrationIntent, parseWorkflowReviewBudgetExtensionIntent, parseWorkflowState,
+  validateWorkflowStateTransition, workflowReviewCeiling } from '../workflow-contracts.js';
 import type { WorkflowSetupAttempt, WorkflowTask } from '../workflow-contracts.js';
 
 const hash = 'a'.repeat(64);
@@ -61,6 +62,17 @@ function dispatchSupplement(taskId = 'two', expectedInputHead = 'c'.repeat(40), 
   return { sequence, taskId, expectedInputHead, orchestrationHost: 'codex', actor: { id: 'unknown', model: 'unknown' },
     authorityRef: 'issue-41', reason: 'Clarify the accepted dependency contract', content: supplementContent,
     contentSha256: createHash('sha256').update(supplementContent).digest('hex'), at: '2026-09-15T00:00:04.000Z' };
+}
+function reviewBudgetExtension(sequence = 1, oldCeiling = 1, newCeiling = 2, requestId = `review-budget-${sequence}`) {
+  return { sequence, requestId, oldCeiling, newCeiling, head: 'b'.repeat(40), orchestrationHost: 'codex',
+    actor: { id: 'unknown', model: 'unknown' }, authorityRef: 'issue-44', reason: 'Authorize one more correction cycle',
+    at: '2026-09-15T00:00:04.000Z' };
+}
+function exhaustedState(build: typeof legacyState | typeof completedState) {
+  const result = build();
+  result.options.maxReviewPasses = 1;
+  result.reviewPasses = 1;
+  return result;
 }
 function dependentState(build: typeof legacyState | typeof state = legacyState) {
   const result = build();
@@ -133,6 +145,11 @@ describe('versioned workflow contracts', () => {
     }
     const mimo = { ...legacyState(), profile: 'claude-mimo-codex' };
     expect(parseWorkflowState(mimo)).toBe(mimo);
+    const sparseLegacy = legacyState();
+    sparseLegacy.options = { mode: 'v1' } as typeof sparseLegacy.options;
+    expect(parseWorkflowState(sparseLegacy)).toBe(sparseLegacy);
+    expect(() => parseWorkflowState({ ...sparseLegacy, reviewBudgetExtensions: [reviewBudgetExtension()] }))
+      .toThrow('workflow_invalid_counter');
     expect(parseWorkflowState(state())).toMatchObject({ schemaVersion: 2, profile: 'role-substitution', reviewPasses: 0 });
     for (const value of [{ ...state(), schemaVersion: 3 }, { ...state(), profile: 'claude-glm-codex' },
       { ...legacyState(), profile: 'role-substitution' }, { ...state(), reviewPasses: 3 },
@@ -360,6 +377,75 @@ describe('versioned workflow contracts', () => {
     const changedProfile = { ...structuredClone(legacyBefore), profile: 'claude-mimo-codex',
       integrationHead: 'c'.repeat(40), stage: 'integration', leadIntegrations: [leadIntegration()] };
     expect(() => validateWorkflowStateTransition(legacyBefore, changedProfile)).toThrow('workflow_lead_integration_history_rewritten');
+  });
+  it('strictly parses and freezes attributed review-budget extensions in both schemas', () => {
+    const parsedIntent = parseWorkflowReviewBudgetExtensionIntent({ requestId: 'review-budget-1', expectedHead: 'b'.repeat(40),
+      expectedCeiling: 1, increment: 1, actor: { id: 'unknown', model: 'unknown' }, authorityRef: 'issue-44',
+      reason: 'Authorize one more correction cycle' });
+    expect(parsedIntent).toMatchObject({ requestId: 'review-budget-1', expectedCeiling: 1, increment: 1 });
+    expect(Object.isFrozen(parsedIntent)).toBe(true);
+    expect(Object.isFrozen(parsedIntent.actor)).toBe(true);
+    expect(() => parseWorkflowReviewBudgetExtensionIntent({ ...parsedIntent, increment: 10 }))
+      .toThrow('workflow_review_budget_limit_exceeded');
+    expect(() => parseWorkflowReviewBudgetExtensionIntent({ ...parsedIntent, extra: true })).toThrow('workflow_unknown_field');
+
+    for (const build of [legacyState, completedState]) {
+      const raw = { ...exhaustedState(build), reviewBudgetExtensions: [reviewBudgetExtension()] };
+      const parsed = parseWorkflowState(raw);
+      expect(parsed.reviewBudgetExtensions).toEqual([expect.objectContaining({ sequence: 1, oldCeiling: 1, newCeiling: 2 })]);
+      expect(workflowReviewCeiling(parsed)).toBe(2);
+      expect(Object.isFrozen(parsed.reviewBudgetExtensions)).toBe(true);
+      expect(Object.isFrozen(parsed.reviewBudgetExtensions![0])).toBe(true);
+      expect(Object.isFrozen(parsed.reviewBudgetExtensions![0]!.actor)).toBe(true);
+      expect(() => Object.assign(parsed.reviewBudgetExtensions![0]!, { reason: 'rewritten' })).toThrow();
+    }
+
+    const wrongChain = { ...exhaustedState(legacyState), reviewBudgetExtensions: [reviewBudgetExtension(1, 2, 3)] };
+    expect(() => parseWorkflowState(wrongChain)).toThrow('workflow_review_budget_extension_chain_mismatch');
+    const duplicate = { ...exhaustedState(legacyState), reviewBudgetExtensions: [reviewBudgetExtension(),
+      reviewBudgetExtension(2, 2, 3, 'review-budget-1')] };
+    expect(() => parseWorkflowState(duplicate)).toThrow('workflow_review_budget_extension_chain_mismatch');
+    const attributedLegacy = parseWorkflowState({ ...exhaustedState(legacyState), reviewBudgetExtensions: [{ ...reviewBudgetExtension(),
+      actor: { id: 'claude-lead', model: 'claude-fable-5' } }] });
+    expect(attributedLegacy.reviewBudgetExtensions?.[0]?.actor).toEqual({ id: 'claude-lead', model: 'claude-fable-5' });
+    expect(() => parseWorkflowState({ ...exhaustedState(completedState), reviewBudgetExtensions: [{ ...reviewBudgetExtension(),
+      actor: { id: 'other-lead', model: 'gpt-6-astra' } }] })).toThrow('workflow_review_budget_extension_actor_mismatch');
+  });
+  it('allows only one pure review-budget append and keeps the initial ceiling immutable in both schemas', () => {
+    for (const build of [legacyState, completedState]) {
+      const before = exhaustedState(build);
+      const recorded = { ...structuredClone(before), reviewBudgetExtensions: [reviewBudgetExtension()],
+        updatedAt: '2026-09-15T00:00:05.000Z' };
+      expect(() => validateWorkflowStateTransition(before, recorded)).not.toThrow();
+
+      const changedTask = structuredClone(recorded); changedTask.tasks[0]!.task.objective = 'Rewritten objective';
+      expect(() => validateWorkflowStateTransition(before, changedTask))
+        .toThrow('workflow_review_budget_extension_transition_invalid');
+      const rewritten = structuredClone(recorded); rewritten.reviewBudgetExtensions[0]!.reason = 'Rewritten reason';
+      expect(() => validateWorkflowStateTransition(recorded, rewritten))
+        .toThrow('workflow_review_budget_extension_history_rewritten');
+      const notExhausted = structuredClone(before); notExhausted.reviewPasses = 0;
+      if ('reviewAttempts' in notExhausted) notExhausted.reviewAttempts = [];
+      const unavailable = { ...structuredClone(notExhausted), reviewBudgetExtensions: [reviewBudgetExtension()] };
+      expect(() => validateWorkflowStateTransition(notExhausted, unavailable))
+        .toThrow('workflow_review_budget_extension_origin_mismatch');
+    }
+
+    const legacyBefore = legacyState();
+    const changedInitialBudget = structuredClone(legacyBefore); changedInitialBudget.options.maxReviewPasses = 3;
+    expect(() => validateWorkflowStateTransition(legacyBefore, changedInitialBudget)).toThrow('workflow_budget_reset_forbidden');
+
+    const attributedBefore = exhaustedState(legacyState);
+    const attributedAfter = { ...structuredClone(attributedBefore), reviewBudgetExtensions: [{ ...reviewBudgetExtension(),
+      actor: { id: 'claude-lead', model: 'claude-fable-5' } }] };
+    expect(() => validateWorkflowStateTransition(attributedBefore, attributedAfter)).not.toThrow();
+
+    const reviewedLegacy = legacyState(); reviewedLegacy.reviewPasses = 1;
+    const rolledBackLegacy = structuredClone(reviewedLegacy); rolledBackLegacy.reviewPasses = 0;
+    expect(() => validateWorkflowStateTransition(reviewedLegacy, rolledBackLegacy)).toThrow('workflow_budget_reset_forbidden');
+    const extendedLegacy = { ...exhaustedState(legacyState), reviewBudgetExtensions: [reviewBudgetExtension()] };
+    const rolledBackExtended = structuredClone(extendedLegacy); rolledBackExtended.reviewPasses = 0;
+    expect(() => validateWorkflowStateTransition(extendedLegacy, rolledBackExtended)).toThrow('workflow_budget_reset_forbidden');
   });
   it('strictly parses and freezes dispatch supplements in both schemas', () => {
     const intent = dispatchSupplement();
