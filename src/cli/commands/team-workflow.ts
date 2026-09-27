@@ -3,26 +3,31 @@ import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { publishWorkflowResultArtifact } from '../../team/workflow-publication.js';
 import {
   acceptWorkflowTask, addWorkflowFix, adjudicateWorkflow, cleanupWorkflow, finishWorkflow,
-  extendWorkflowReviewBudget, initWorkflow, initWorkflowV2, integrateWorkflowLeadCommit, readWorkflow, rejectWorkflowTask, resumeWorkflowTask, reviewWorkflow, runWorkflow,
-  substituteWorkflowBinding, supplementWorkflowTask, verifyWorkflow, workflowStatus,
+  extendWorkflowReviewBudget, initWorkflow, initWorkflowV2, inspectWorkflowTask, integrateWorkflowLeadCommit, readWorkflow, recoverWorkflowTask, rejectWorkflowTask, resumeWorkflowTask, reviewWorkflow, runWorkflow,
+  probeWorkflowBinding, refreshWorkflowBinding, substituteWorkflowBinding, supplementWorkflowTask, verifyWorkflow, workflowRouting, workflowStatus,
 } from '../../team/workflow.js';
 import type { WorkflowOptions } from '../../team/workflow.js';
 import { validateCliCommandRef } from '../../team/model-contract.js';
 import { workflowUsage } from '../../team/workflow-report.js';
-import { boundedText, safeWorkflowId, workflowSha } from '../../team/workflow-contracts.js';
+import { boundedText, parseWorkflowProviderPolicy, safeWorkflowId, workflowSha } from '../../team/workflow-contracts.js';
 import type { WorkflowAuthProfile, WorkflowRuntime } from '../../team/workflow-adapters.js';
 
 export const WORKFLOW_HELP = `Usage: omc team workflow <operation>
 
   init --file <plan.json> [--mode v1|balanced] [--workers N] [--max-review-passes N] [--max-attempts N]
-       [--timeout-ms N] [--provider-policy supervised] [--profile claude-glm-codex|claude-mimo-codex|role-substitution] [--bindings <roles.json>]
+       [--timeout-ms N] [--provider-policy unbounded-provider-timeout] [--profile claude-glm-codex|claude-mimo-codex|role-substitution] [--bindings <roles.json>]
        [--codex-command <executable>]
   run <name> [--runtime <absolute-private-config.json>]
   status <name>
+  inspect-task <name> <task-id>
+  routing <name>
   usage <name>
   publish-result --source <verified.json> --result-file <absolute-designated-path> --task-id <task-id>
   resume <name> <task-id> --expected-head <integration-sha> --reason <reason> [--runtime <absolute-private-config.json>]
+  recover-task <name> <task-id> --file <intent.json>
   substitute <name> --file <intent.json>
+  probe-binding <name> --file <refresh.json> --runtime <absolute-private-config.json>
+  refresh-binding <name> --file <refresh.json> --runtime <absolute-private-config.json>
   supplement <name> --file <intent.json>
   accept <name> <task-id>
   integrate-lead <name> --file <integration.json>
@@ -41,8 +46,9 @@ Legacy initialization is unchanged. V1.2 requires an explicit role-substitution
 profile, public bindings and balanced mode; private runtime stays outside the project.
 Initialization accepts an optional task timeout between 100 and 3600000 ms, inclusive;
 omitting it saves the controller's 600000 ms default unchanged.
-Initialization accepts one optional supervised provider policy; omitting it keeps the
-legacy finite provider timeout, and no later operation accepts the flag.
+Initialization accepts one optional unbounded-provider-timeout policy; the historical
+supervised spelling is accepted as an input alias and saved canonically. Omission keeps
+the finite provider timeout, and no later operation accepts the flag.
 Legacy reviewer command selection uses --codex-command, then OMC_CODEX_COMMAND,
 then codex on PATH. The command must be an executable name or absolute path.
 Local worker checks and integrated verification always keep the finite saved timeout.
@@ -160,8 +166,9 @@ export async function workflowCommand(args: string[], cwd = process.cwd()): Prom
   const { positional, flags } = parseArgs(rest);
   const allowed: Record<string, string[]> = {
     init: ['--file', '--mode', '--workers', '--max-review-passes', '--max-attempts', '--timeout-ms', '--provider-policy', '--profile', '--bindings', '--codex-command'],
-    run: ['--runtime'], status: [], usage: [], resume: ['--expected-head', '--reason', '--runtime'], accept: [], reject: ['--reason'], verify: [], review: ['--runtime'],
-    substitute: ['--file'], supplement: ['--file'], 'integrate-lead': ['--file'], 'extend-review-budget': ['--file'],
+    run: ['--runtime'], status: [], 'inspect-task': [], routing: [], usage: [], resume: ['--expected-head', '--reason', '--runtime'], accept: [], reject: ['--reason'], verify: [], review: ['--runtime'],
+    substitute: ['--file'], 'probe-binding': ['--file', '--runtime'], 'refresh-binding': ['--file', '--runtime'],
+    supplement: ['--file'], 'integrate-lead': ['--file'], 'extend-review-budget': ['--file'], 'recover-task': ['--file'],
     adjudicate: ['--file'], 'add-fix': ['--file'], finish: [], cleanup: [],
     'publish-result': ['--source', '--result-file', '--task-id'],
   };
@@ -169,7 +176,7 @@ export async function workflowCommand(args: string[], cwd = process.cwd()): Prom
   if ([...flags.keys()].some(flag => !allowed[operation].includes(flag))) {
     throw new Error('workflow_unknown_option');
   }
-  const expected = ['init', 'publish-result'].includes(operation) ? 0 : ['accept', 'reject', 'resume'].includes(operation) ? 2 : 1;
+  const expected = ['init', 'publish-result'].includes(operation) ? 0 : ['accept', 'reject', 'resume', 'inspect-task', 'recover-task'].includes(operation) ? 2 : 1;
   if (positional.length !== expected) throw new Error('workflow_invalid_arguments');
   if (operation === 'publish-result') {
     const source = flags.get('--source');
@@ -191,6 +198,18 @@ export async function workflowCommand(args: string[], cwd = process.cwd()): Prom
   };
   if (operation === 'usage') {
     console.log(JSON.stringify(workflowUsage(readWorkflow(cwd, name))));
+    return;
+  }
+  if (operation === 'routing') {
+    console.log(JSON.stringify(workflowRouting(cwd, name)));
+    return;
+  }
+  if (operation === 'inspect-task') {
+    console.log(JSON.stringify(inspectWorkflowTask(cwd, name, positional[1])));
+    return;
+  }
+  if (operation === 'probe-binding') {
+    console.log(JSON.stringify(probeWorkflowBinding(cwd, name, readInputFile(flags.get('--file')), runtime())));
     return;
   }
   let cleanup: Awaited<ReturnType<typeof cleanupWorkflow>> | undefined;
@@ -218,8 +237,8 @@ export async function workflowCommand(args: string[], cwd = process.cwd()): Prom
     // Init-only: the controller refuses every other present value and every later operation rejects the flag.
     const policy = flags.get('--provider-policy');
     if (policy !== undefined) {
-      if (policy !== 'supervised') throw new Error('workflow_invalid_policy');
-      options.providerPolicy = 'supervised';
+      parseWorkflowProviderPolicy(policy);
+      options.providerPolicy = 'unbounded-provider-timeout';
     }
     for (const [flag, key] of [
       ['--workers', 'workers'], ['--max-review-passes', 'maxReviewPasses'],
@@ -269,9 +288,13 @@ export async function workflowCommand(args: string[], cwd = process.cwd()): Prom
       reason: boundedText(input.reason, 1000), authorityRef: boundedText(input.authorityRef, 1000),
       ...(input.taskId === undefined ? {} : { taskId: safeWorkflowId(input.taskId) }) });
   }
+  else if (operation === 'refresh-binding') {
+    await refreshWorkflowBinding(cwd, name, readInputFile(flags.get('--file')), runtime());
+  }
   else if (operation === 'supplement') await supplementWorkflowTask(cwd, name, readInputFile(flags.get('--file')));
   else if (operation === 'integrate-lead') await integrateWorkflowLeadCommit(cwd, name, readInputFile(flags.get('--file')));
   else if (operation === 'extend-review-budget') await extendWorkflowReviewBudget(cwd, name, readInputFile(flags.get('--file')));
+  else if (operation === 'recover-task') await recoverWorkflowTask(cwd, name, positional[1], readInputFile(flags.get('--file')));
   else if (operation === 'accept') await acceptWorkflowTask(cwd, name, positional[1]);
   else if (operation === 'reject') {
     const reason = flags.get('--reason');

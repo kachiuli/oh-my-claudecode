@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -60,7 +60,8 @@ describe('attributed review-budget extensions', () => {
       oldCeiling: 1, newCeiling: 2, head, orchestrationHost: 'claude',
       actor: { id: 'claude-lead', model: 'claude-fable-5' } })]);
     expect(fixture.events().filter(event => event.event === 'start')).toHaveLength(launches);
-    expect(workflowStatus(fixture.cwd, name)).toMatchObject({ reviewPasses: 1, initialMaxReviewPasses: 1,
+    expect(workflowStatus(fixture.cwd, name)).toMatchObject({ reviewPasses: 1, completedReviews: 1,
+      reviewBudgetBasis: 'completed-reviews', reviewBudgetUsed: 1, initialMaxReviewPasses: 1,
       maxReviewPasses: 2, reviewBudgetExtensionCount: 1,
       reviewBudgetExtensions: [expect.objectContaining({ requestId: 'review-budget-2', oldCeiling: 1, newCeiling: 2 })] });
 
@@ -131,5 +132,24 @@ describe('attributed review-budget extensions', () => {
     expect(readWorkflow(fixture.cwd, name).reviewBudgetExtensions).toBeUndefined();
     leave();
     await operation;
+  }, 60_000);
+
+  it('does not treat an unsettled interrupted review as a retryable failed invocation', async () => {
+    await initWorkflow(fixture.cwd, plan(), options);
+    await runWorkflow(fixture.cwd, name);
+    await acceptWorkflowTask(fixture.cwd, name, 'a');
+    await verifyWorkflow(fixture.cwd, name);
+    const stateFile = String(workflowStatus(fixture.cwd, name).stateFile);
+    const raw = JSON.parse(readFileSync(stateFile, 'utf8'));
+    raw.reviewPasses = 1;
+    raw.reviewAttempts = [{ orchestrationHost: 'claude', pass: 1, head: raw.integrationHead,
+      startedAt: new Date().toISOString(), outcome: 'failed', error: 'workflow_invocation_incomplete', artifacts: [],
+      telemetry: { provider: 'codex', durationMs: 0, status: 'unknown', scope: 'unknown' } }];
+    writeFileSync(stateFile, JSON.stringify(raw));
+    const launches = fixture.events().filter(event => event.event === 'start').length;
+
+    await expect(reviewWorkflow(fixture.cwd, name)).rejects.toThrow('workflow_interrupted_review_requires_inspection');
+    expect(fixture.events().filter(event => event.event === 'start')).toHaveLength(launches);
+    expect(readWorkflow(fixture.cwd, name).reviewPasses).toBe(1);
   }, 60_000);
 });

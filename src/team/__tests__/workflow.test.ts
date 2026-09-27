@@ -376,14 +376,16 @@ describe('Claude/GLM/Codex workflow with real local fake providers', () => {
     const controlState = readWorkflow(fixture.cwd, control);
     expect(controlState.tasks[0]).toMatchObject({ status: 'failed', error: 'workflow_timeout', attempts: 1 });
     expect(controlState.options).not.toHaveProperty('providerPolicy');
-    expect(workflowStatus(fixture.cwd, control).providerPolicy).toBe('legacy');
+    expect(workflowStatus(fixture.cwd, control)).toMatchObject({ providerPolicy: 'legacy',
+      effectiveProviderPolicy: 'finite-provider-timeout' });
     const observed = fixture.events().length;
 
     await initWorkflow(fixture.cwd, plan(), { ...options, timeoutMs: finite, maxAttempts: 1, providerPolicy: 'supervised' });
     const implemented = await runWorkflow(fixture.cwd, name);
     expect(implemented.tasks[0]).toMatchObject({ status: 'completed', attempts: 1 });
-    expect(implemented.options).toMatchObject({ providerPolicy: 'supervised', timeoutMs: finite });
-    expect(workflowStatus(fixture.cwd, name).providerPolicy).toBe('supervised');
+    expect(implemented.options).toMatchObject({ providerPolicy: 'unbounded-provider-timeout', timeoutMs: finite });
+    expect(workflowStatus(fixture.cwd, name)).toMatchObject({ providerPolicy: 'unbounded-provider-timeout',
+      effectiveProviderPolicy: 'unbounded-provider-timeout' });
     await acceptWorkflowTask(fixture.cwd, name, 'a');
     await verifyWorkflow(fixture.cwd, name);
     expect((await reviewWorkflow(fixture.cwd, name)).reviewPasses).toBe(1);

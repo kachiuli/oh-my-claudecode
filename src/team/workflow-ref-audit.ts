@@ -3,6 +3,8 @@ import type { ArtifactDescriptor } from "../shared/artifact-descriptor.js";
 import { writeTextArtifact } from "../shared/artifact-descriptor.js";
 
 const MAX_RECORDED_CHANGES = 32;
+const MAX_CONTEXT_WORKERS = 32;
+const MAX_CONTEXT_WORKER_LENGTH = 80;
 const MAX_REF_OUTPUT_BYTES = 4 * 1024 * 1024;
 
 export type WorkflowRefPhase =
@@ -25,6 +27,15 @@ interface RefChange {
   activeProviders: number;
   completedProviders: number;
   transitions: number;
+  observationContext: RefObservationContext;
+}
+
+interface RefObservationContext {
+  meaning: "observation-context-not-writer-attribution";
+  activeWorkers: string[];
+  completedWorkers: string[];
+  boundaryWorker?: string;
+  truncated: boolean;
 }
 
 export interface WorkflowWorkerRefEvidence {
@@ -101,6 +112,8 @@ export class WorkflowRefAudit {
   private activeProviders = 0;
   private completedProviders = 0;
   private readonly providerWorkers = new Set<string>();
+  private readonly activeWorkers = new Set<string>();
+  private readonly completedWorkers = new Set<string>();
 
   constructor(
     private readonly cwd: string,
@@ -112,8 +125,9 @@ export class WorkflowRefAudit {
 
   providerStarted(worker: string): void {
     this.providerWorkers.add(worker);
+    this.activeWorkers.add(worker);
     this.activeProviders++;
-    this.observe("provider-start");
+    this.observe("provider-start", worker);
   }
 
   providerCompleted(worker: string): void {
@@ -123,14 +137,35 @@ export class WorkflowRefAudit {
       throw new Error("workflow_protected_ref_audit_failed");
     this.activeProviders--;
     this.completedProviders++;
-    this.observe("provider-complete");
+    this.activeWorkers.delete(worker);
+    this.completedWorkers.add(worker);
+    this.observe("provider-complete", worker);
   }
 
   controllerReplayCompleted(): void {
     this.observe("controller-replay");
   }
 
-  private observe(phase: WorkflowRefPhase): void {
+  private observationContext(boundaryWorker?: string): RefObservationContext {
+    const bounded = (workers: ReadonlySet<string>): string[] =>
+      [...workers]
+        .sort((left, right) => left.localeCompare(right))
+        .slice(0, MAX_CONTEXT_WORKERS)
+        .map((worker) => worker.slice(0, MAX_CONTEXT_WORKER_LENGTH));
+    return {
+      meaning: "observation-context-not-writer-attribution",
+      activeWorkers: bounded(this.activeWorkers),
+      completedWorkers: bounded(this.completedWorkers),
+      ...(boundaryWorker === undefined
+        ? {}
+        : { boundaryWorker: boundaryWorker.slice(0, MAX_CONTEXT_WORKER_LENGTH) }),
+      truncated:
+        this.activeWorkers.size > MAX_CONTEXT_WORKERS ||
+        this.completedWorkers.size > MAX_CONTEXT_WORKERS,
+    };
+  }
+
+  private observe(phase: WorkflowRefPhase, boundaryWorker?: string): void {
     const current = snapshot(this.cwd, this.workflowName);
     const names = new Set([
       ...this.previous.refs.keys(),
@@ -153,6 +188,7 @@ export class WorkflowRefAudit {
           activeProviders: this.activeProviders,
           completedProviders: this.completedProviders,
           transitions: 1,
+          observationContext: this.observationContext(boundaryWorker),
         });
       } else {
         this.overflow = true;

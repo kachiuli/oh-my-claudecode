@@ -9,9 +9,15 @@ const api = vi.hoisted(() => ({
   initWorkflow: vi.fn(async () => ({ plan: { name: 'feature' } })),
   initWorkflowV2: vi.fn(async () => ({ plan: { name: 'feature' } })),
   substituteWorkflowBinding: vi.fn(),
+  probeWorkflowBinding: vi.fn(() => ({ ready: true })),
+  refreshWorkflowBinding: vi.fn(),
+  workflowRouting: vi.fn(() => ({ name: 'feature', roles: [] })),
+  inspectWorkflowTask: vi.fn(() => ({ classification: 'recoverable-completed-handoff', nextAction: 'revalidate',
+    expectedRefsDigest: 'b'.repeat(64), savedHead: 'c'.repeat(40), observedHead: 'c'.repeat(40), clean: true, registered: true })),
   supplementWorkflowTask: vi.fn(),
   integrateWorkflowLeadCommit: vi.fn(),
   extendWorkflowReviewBudget: vi.fn(),
+  recoverWorkflowTask: vi.fn(),
   runWorkflow: vi.fn(), acceptWorkflowTask: vi.fn(), rejectWorkflowTask: vi.fn(),
   resumeWorkflowTask: vi.fn(), readWorkflow: vi.fn(),
   verifyWorkflow: vi.fn(), reviewWorkflow: vi.fn(), adjudicateWorkflow: vi.fn(),
@@ -221,6 +227,24 @@ describe('team workflow CLI', () => {
       expectedHead: 'a'.repeat(40), reason: 'Inspected', authorityRef: 'decision-one', ...override }));
     await expect(workflowCommand(['substitute', 'feature', '--file', file], root)).rejects.toThrow(/workflow_/);
     expect(api.substituteWorkflowBinding).not.toHaveBeenCalled();
+  });
+
+  it('prints sanitized effective routing without loading private runtime configuration', async () => {
+    await workflowCommand(['routing', 'feature'], root);
+    expect(api.workflowRouting).toHaveBeenCalledWith(root, 'feature');
+    expect(console.log).toHaveBeenCalledWith(JSON.stringify({ name: 'feature', roles: [] }));
+  });
+
+  it('probes and refreshes a receipt-covered binding through the explicit private runtime', async () => {
+    api.readWorkflow.mockReturnValue({ schemaVersion: 2 });
+    const intent = { role: 'implementer', sourceBindingId: 'claude-worker', newBindingId: 'claude-worker-next',
+      model: 'covered-model', expectedHead: 'a'.repeat(40), reason: 'Use covered model', authorityRef: 'release-v1.6' };
+    const file = join(root, 'refresh.json'); writeFileSync(file, JSON.stringify(intent));
+    const config = runtimeFile();
+    await workflowCommand(['probe-binding', 'feature', '--file', file, '--runtime', config], root);
+    expect(api.probeWorkflowBinding).toHaveBeenCalledWith(root, 'feature', intent, expect.objectContaining({ resolveBinding: expect.any(Function) }));
+    await workflowCommand(['refresh-binding', 'feature', '--file', file, '--runtime', config], root);
+    expect(api.refreshWorkflowBinding).toHaveBeenCalledWith(root, 'feature', intent, expect.objectContaining({ resolveBinding: expect.any(Function) }));
   });
 
   it('resolves only the selected private profile and receipt without copying values to CLI output', async () => {
@@ -503,6 +527,32 @@ describe('team workflow CLI', () => {
     expect(api.extendWorkflowReviewBudget).not.toHaveBeenCalled();
   });
 
+  it('forwards an attributed task-recovery intent file and documents the operation', async () => {
+    const file = join(root, 'task-recovery.json');
+    const intent = { requestId: 'recover-task-a-1', expectedHead: 'a'.repeat(40), expectedRefsDigest: 'b'.repeat(64),
+      expectedTaskCommit: 'c'.repeat(40), actor: { id: 'unknown', model: 'unknown' },
+      authorityRef: 'issue-45', reason: 'Revalidate the retained completed handoff.' };
+    writeFileSync(file, JSON.stringify(intent));
+    await workflowCommand(['recover-task', 'feature', 'task-a', '--file', file], root);
+    expect(api.recoverWorkflowTask).toHaveBeenCalledWith(root, 'feature', 'task-a', intent);
+    await workflowCommand(['--help'], root);
+    expect(console.log).toHaveBeenCalledWith(expect.stringContaining('recover-task <name> <task-id> --file <intent.json>'));
+  });
+
+  it('prints bounded task-recovery inspection without dispatching work', async () => {
+    await workflowCommand(['inspect-task', 'feature', 'task-a'], root);
+    expect(api.inspectWorkflowTask).toHaveBeenCalledWith(root, 'feature', 'task-a');
+    expect(console.log).toHaveBeenCalledWith(JSON.stringify(api.inspectWorkflowTask.mock.results[0]!.value));
+    expect(api.runWorkflow).not.toHaveBeenCalled();
+    await workflowCommand(['--help'], root);
+    expect(console.log).toHaveBeenCalledWith(expect.stringContaining('inspect-task <name> <task-id>'));
+  });
+
+  it('requires an explicit task-recovery input file', async () => {
+    await expect(workflowCommand(['recover-task', 'feature', 'task-a'])).rejects.toThrow('workflow_input_file_required');
+    expect(api.recoverWorkflowTask).not.toHaveBeenCalled();
+  });
+
   it('bounds input before passing it to the controller', async () => {
     const file = join(root, 'huge.json');
     writeFileSync(file, 'x'.repeat(256 * 1024 + 1));
@@ -516,18 +566,18 @@ describe('team workflow CLI', () => {
     expect(process.exitCode).toBe(1);
   });
 
-  it('forwards the explicit supervised policy to legacy initialization', async () => {
+  it('canonicalizes the historical supervised policy input for legacy initialization', async () => {
     await workflowCommand(['init', '--file', planFile(), '--provider-policy', 'supervised'], root);
-    expect(api.initWorkflow).toHaveBeenCalledWith(root, { name: 'feature' }, { providerPolicy: 'supervised' });
+    expect(api.initWorkflow).toHaveBeenCalledWith(root, { name: 'feature' }, { providerPolicy: 'unbounded-provider-timeout' });
     expect(api.initWorkflowV2).not.toHaveBeenCalled();
   });
 
-  it('forwards the same supervised policy to role-substitution initialization', async () => {
+  it('canonicalizes the historical supervised policy input for role-substitution initialization', async () => {
     await workflowCommand(['init', '--file', planFile(), '--profile', 'role-substitution',
       '--bindings', bindingsFile(), '--provider-policy', 'supervised'], root);
     expect(api.initWorkflowV2).toHaveBeenCalledWith(root, { name: 'feature' },
       { lead: { id: 'external-lead' }, implementer: { id: 'claude-worker' }, reviewer: { id: 'claude-reviewer' } },
-      { mode: 'balanced', providerPolicy: 'supervised' });
+      { mode: 'balanced', providerPolicy: 'unbounded-provider-timeout' });
     expect(api.initWorkflow).not.toHaveBeenCalled();
   });
 
@@ -558,10 +608,10 @@ describe('team workflow CLI', () => {
     expect(substitution[3]).not.toHaveProperty('providerPolicy');
   });
 
-  it('documents the supervised policy flag for init only', async () => {
+  it('documents the descriptive provider policy flag for init only', async () => {
     await workflowCommand(['--help'], root);
     const help = vi.mocked(console.log).mock.calls.map(call => String(call[0])).join('\n');
-    expect(help.slice(help.indexOf('init --file'), help.indexOf('run <name>'))).toContain('--provider-policy supervised');
+    expect(help.slice(help.indexOf('init --file'), help.indexOf('run <name>'))).toContain('--provider-policy unbounded-provider-timeout');
     expect(help.split('\n').filter(line => line.includes('--provider-policy'))).toHaveLength(1);
     await expect(workflowCommand(['run', 'feature', '--provider-policy', 'supervised'], root)).rejects.toThrow('workflow_unknown_option');
     expect(api.runWorkflow).not.toHaveBeenCalled();

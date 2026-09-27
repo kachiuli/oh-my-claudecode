@@ -11,7 +11,7 @@ English | [한국어](README.ko.md) | [中文](README.zh.md) | [日本語](READM
 [![Sponsor](https://img.shields.io/badge/Sponsor-❤️-red?style=flat&logo=github)](https://github.com/sponsors/Yeachan-Heo)
 [![Discord](https://img.shields.io/discord/1452487457085063218?color=5865F2&logo=discord&logoColor=white&label=Discord)](https://discord.gg/wSyUQYfhAw)
 
-> **workflow-v1.5:** This fork can use Claude Code or Codex as the repository's OMC lead, with independent Claude, Codex, GLM, and GLM Flash worker/reviewer bindings. `workflow-v1.5` carries the upstream 5.5.0 merge, settles attempts orphaned by a dead lead, and defaults the Claude lead's Bash timeout to the provider timeout. Workflow v1.5.6 adds opt-in MiMo v2.6 Pro and Flash workers; v1.5.7 adds worktree setup recovery, attributed lead integration, bounded worker telemetry evidence, and pending-task dispatch supplements; v1.5.8 accepts literal bracket route scopes and attributed review-budget extensions. See the [MiMo setup guide](docs/MIMO-WORKFLOW.md), [v1.5 release notes](docs/WORKFLOW-V1.5-RELEASE-NOTES.md), the [project setup and switching guide](docs/WORKFLOW-V1.4.md), the [v1.4 release notes](docs/WORKFLOW-V1.4-RELEASE-NOTES.md), and the live [Claude lead](docs/WORKFLOW-V1.4-CLAUDE-LEAD-VERIFICATION.md) and [lead/worker/reviewer matrix](docs/WORKFLOW-V1.5-ROLE-MATRIX-VERIFICATION.md) verification records. Codex integration adapts selected capabilities from [oh-my-codex](https://github.com/kachiuli/oh-my-codex).
+> **workflow-v1.6:** This fork can use Claude Code or Codex as the repository's OMC lead, with independent Claude, Codex, GLM, GLM Flash, and opt-in MiMo worker/reviewer bindings. V1.6 keeps the two-review default as a lead checkpoint, budgets completed reviews separately from failed reviewer invocations for new workflows, removes the cumulative review-extension ceiling, and lets an attributed lead commit be recorded at an exhausted checkpoint before fresh review authority is added. It also adds bounded failed-task inspection and revalidation, a sanitized effective-routing preview, and a receipt-covered model/effort refresh without provider fallback or automatic authentication. Existing saved workflows retain their original accounting and policy spelling. See the [v1.6 release notes](docs/WORKFLOW-V1.6-RELEASE-NOTES.md), [MiMo setup guide](docs/MIMO-WORKFLOW.md), [v1.5 release notes](docs/WORKFLOW-V1.5-RELEASE-NOTES.md), and [project setup and switching guide](docs/WORKFLOW-V1.4.md). Codex integration adapts selected capabilities from [oh-my-codex](https://github.com/kachiuli/oh-my-codex).
 
 > **Liked OmC but found it a bit overkill? Try [gajae-code](https://github.com/Yeachan-Heo/gajae-code).**
 > Keeps Claude OAuth as-is while being faster, cheaper, simpler, and more powerful — with an SDK-based integration path built for OpenClaw, Hermes, Grokbot, and similar agent runtimes.
@@ -415,7 +415,10 @@ The following examples use plan name `feature-x` and task ID `backend`. Replace 
 omc team workflow init --file .omc/plans/feature-x.json --workers 4
 omc team workflow run feature-x
 omc team workflow status feature-x
+omc team workflow routing feature-x
 ```
+
+`routing` is a read-only, sanitized view of the saved lead, implementer, and reviewer selections. It does not load private runtime configuration, call a provider, or prove that credentials currently work. Schema-2 workflows can separately probe and append a model/effort refresh only when the existing authenticated receipt already covers that choice; see the [V1.2 role-substitution guide](docs/GLM-WORKFLOW-V1.2.md#preview-and-refresh-a-receipt-covered-route).
 
 Test commands in the plan use executable/argument arrays without shell expansion. On Windows, use a directly executable command such as `node` plus a script path rather than a shell-only npm shim.
 
@@ -446,9 +449,9 @@ omc team workflow review feature-x
 
 Replace `fix-backend` with the fix task's ID. Dismissed findings need recorded reasons but no fix task; a clean review needs no remediation.
 
-The default budget is **2 review passes total**: the initial review and at most one re-review. Failed review attempts also consume a pass. Unresolved accepted findings or an exhausted budget do not automatically become success.
+The default budget for a new workflow is **2 completed reviews total**: the initial review and at most one re-review. Failed reviewer invocations remain in the attempt history but do not spend that completed-review allowance. An interrupted invocation that lacks a settled result still blocks another review and remains available for inspection. Existing workflows created before v1.6 keep their saved attempt-based accounting. Unresolved accepted findings or an exhausted budget do not automatically become success.
 
-If a review uncovers further work after the budget is exhausted, an authorized lead can record a bounded, append-only extension with `omc team workflow extend-review-budget <name> --file <intent.json>`. This preserves consumed passes and all findings; see the [workflow operator guide](docs/WORKFLOW-V1.4.md) for its guards and pinned-version limitations.
+If a review uncovers further work after the budget is exhausted, an authorized lead can record a bounded, append-only extension with `omc team workflow extend-review-budget <name> --file <intent.json>`. Each request can raise the current ceiling by at most ten, with no cumulative lifetime ceiling. New workflows apply the ceiling to completed reviews; historical workflows retain attempt-based accounting. The receipt preserves consumed attempts, completed reviews, and all findings. See the [workflow operator guide](docs/WORKFLOW-V1.4.md) for its guards and saved-state compatibility.
 
 After the gates pass:
 
@@ -466,6 +469,8 @@ Cleanup removes only clean, accepted worktrees after completion; it retains dirt
 ### 7. Inspect results and report bugs
 
 `omc team workflow status feature-x` returns concise task status, commits, test summaries, risks and artifact paths. Normal status is capped at 16 KiB and identifies omitted entries; follow the returned state/artifact paths for complete evidence. Full worker logs are not automatically sent to the lead.
+
+For a failed task, run `omc team workflow inspect-task feature-x backend` before deciding whether to reject or recover it. A `recoverable-completed-handoff` classification means OMC can revalidate the exact retained commit with the original local checks; it does not mean the commit is accepted. Use `recover-task` only with an attributed intent built from the inspection output, then run the normal `accept` operation separately. The [operator guide](docs/WORKFLOW-V1.4.md#failed-packets-and-shared-files) gives the guarded sequence and refusal cases.
 
 If a command fails, interrupt an active run if needed and **preserve the worktrees and `.omc` files**. Do not force-delete dirty work or repeatedly rerun an interrupted task. V1 starts fresh worker processes and does not automatically resume timed-out or interrupted assignments. Inspect preserved changes before beginning a new scoped workflow.
 

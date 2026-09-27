@@ -6,7 +6,7 @@ see [Workflow V1.2 setup](GLM-WORKFLOW-V1.2.md) and its
 legacy V1/V1.1 commands and defaults; opting into balanced mode alone does not
 migrate a workflow to schema version 2.
 
-For the optional supervised provider policy, see
+For the optional unbounded provider timeout policy, see
 [Workflow V1.3](GLM-WORKFLOW-V1.3.md). That policy is opt-in per new workflow: it
 removes only the implementer and reviewer elapsed bound, keeps local checks and
 integrated verification finite, and leaves every already saved workflow and
@@ -171,12 +171,12 @@ provider elapsed bound, see [Workflow V1.3](GLM-WORKFLOW-V1.3.md) and add the
 init-only flag:
 
 ```text
-omc team workflow init --file .omc/plans/feature-x.json --workers 4 --provider-policy supervised
+omc team workflow init --file .omc/plans/feature-x.json --workers 4 --provider-policy unbounded-provider-timeout
 ```
 
 The policy applies to new workflows only. It never migrates or rewrites an
 existing saved run, and worker-declared test commands and integrated verification
-keep the saved finite `--timeout-ms` value even under `supervised`. Omitting the
+keep the saved finite `--timeout-ms` value under this policy. Omitting the
 flag saves nothing, so the legacy finite provider timeout is unchanged.
 
 Worker counts are OMC admission limits, not claims about GLM subscription capacity.
@@ -259,9 +259,19 @@ finding IDs. The replacement may own the rejected task's files; the rejected
 commit and worktree remain available for inspection. Do not make the replacement
 depend on the rejected task: rejection does not satisfy a dependency.
 
-The default review budget is two passes: initial review and at most one re-review.
-Set `--max-review-passes` at initialization to change it. A failed attempt still
-consumes a review pass. The limit never converts unresolved findings into success.
+The default review budget for a new workflow is two completed reviews: the initial
+review and at most one re-review. Set `--max-review-passes` at initialization to
+change it. Failed reviewer invocations remain in the immutable attempt history but
+do not spend the completed-review allowance. An interrupted invocation with no
+settled result still blocks another review and remains available for inspection.
+Existing saved workflows without the v1.6 accounting marker keep their original
+attempt-based budget. The limit never converts unresolved findings into success.
+
+After the completed-review allowance is exhausted, an authorized lead can append
+an attributed extension with `extend-review-budget`. Each request may add at most
+ten completed reviews, while repeated authorized extensions have no cumulative
+lifetime ceiling. The operation does not run a reviewer, erase failed attempts,
+resolve findings, or waive verification and completion gates.
 
 After completion, explicit `cleanup` removes only clean, accepted worktrees through
 OMC's existing safety checks. Rejected, dirty or changed worker worktrees remain
@@ -270,6 +280,16 @@ Normal status is capped at 16 KiB; previews identify omitted tasks and reference
 the complete state and result artifacts. A pending task with unmet dependencies
 also reports `readiness: "blocked"`, the `blockedBy` task IDs, and whether it is
 waiting for dependency completion, acceptance, or an unavailable dependency.
+
+For a failed task, `inspect-task <name> <task-id>` returns a bounded, read-only
+classification without dispatching a provider or exposing worktree paths or ref
+names. Only `recoverable-completed-handoff` is eligible for `recover-task`: the
+controller rechecks the exact retained single-parent commit, scope, completed
+handoff and original local test commands under a stable all-ref digest. Recovery
+adds a present-day receipt and moves the task to `completed`; the lead must still
+inspect it and run the separate `accept` operation. See the
+[operator guide](WORKFLOW-V1.4.md#failed-packets-and-shared-files) for the intent
+shape and refusal cases.
 
 ## Local verification and CI
 
@@ -292,10 +312,14 @@ schedule distributed jobs. Cheap deterministic checks precede AI review and CI.
   and the GLM model environment overrides. Omit overrides to inherit wrapper defaults.
 - **Scope or branch rejected:** inspect the worker artifact and native worktree;
   repair or reject the task explicitly. Do not force-delete dirty worktrees.
+- **Failed retained task:** run `inspect-task` first. Recover only an exact clean
+  completed handoff; preserve dirty, missing, active or unverifiable work for
+  inspection and use a new scoped task when the saved contract no longer fits.
 - **Verification or review blocked:** ensure intended commits are accepted, the
   integration checkout is clean, local commands pass, and evidence matches HEAD.
 - **Review budget exhausted:** inspect remaining findings; completion stays blocked.
-  Do not restart a review loop merely to erase its history.
+  Use an attributed extension only for a newly authorized correction cycle. Do not
+  edit state or restart a review loop to erase its history.
 - **Interrupted worker:** inspect preserved state and worktree before recovery.
   One-shot V1 does not reconnect to a persistent model session. Timed-out or
   interrupted assignments are not automatically retried by a subsequent run;

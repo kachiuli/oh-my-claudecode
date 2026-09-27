@@ -1,25 +1,31 @@
-# Workflow V1.3: one optional supervised provider policy
+# Workflow V1.3 provider timeout policy
 
-V1.3 adds a single opt-in initialization policy to both existing profiles.
+V1.3 added a single opt-in initialization policy to both existing profiles.
+Workflow V1.6 gives it the descriptive name `unbounded-provider-timeout`.
+The earlier `supervised` spelling remains valid for saved-state compatibility and
+as an initialization input alias; new initialization saves the descriptive name.
 It does not migrate, upgrade or repair any earlier saved run. The
 [V1/V1.1 guide](GLM-WORKFLOW.md), the
 [V1.2 role-substitution setup](GLM-WORKFLOW-V1.2.md) and their
 [validation status](GLM-WORKFLOW-V1.2-VALIDATION.md) remain accurate for the
 workflows they already describe.
 
-V1.3 is opt-in per workflow. A new workflow is supervised only when its lead
-initializes it that way; every other workflow keeps the finite provider timeout
-it saved before, byte for byte.
+The policy is opt-in per workflow. A new workflow uses an unbounded provider
+timeout only when its lead initializes it that way; every other workflow keeps
+the finite provider timeout it saved before, byte for byte.
 
 ## What the policy changes
 
-The saved policy has exactly two observable values in status output:
-`supervised` when initialization selected it, and `legacy` when it was omitted.
+Status reports the raw saved value and its effective meaning. New initialization
+saves `providerPolicy: "unbounded-provider-timeout"`; a historical state may still show
+`"supervised"`. Both report `effectiveProviderPolicy: "unbounded-provider-timeout"`.
+An omitted policy reports the compatible `providerPolicy: "legacy"` and
+`effectiveProviderPolicy: "finite-provider-timeout"`.
 
-Under `supervised`, the controller passes `timeoutMs: null` to the implementer
-and reviewer provider calls only. `null` is the single explicit no-wall value the
-process layer accepts: the provider still runs as a real child with its own
-pipes, but the controller no longer terminates it because a configured number of
+Under either unbounded spelling, the controller passes `timeoutMs: null` to the
+implementer and reviewer provider calls only. `null` is the single explicit
+no-wall value the process layer accepts: the provider still runs as a real child
+with its own pipes, but the controller no longer terminates it because a configured number of
 milliseconds elapsed. Everything else about a provider call is unchanged,
 including argument construction, session handling, redaction, artifact
 retention, commit validation and protected-ref checks.
@@ -30,11 +36,11 @@ selects it; only an explicit initialization value does. Omitting the policy
 saves no value at all and keeps the legacy finite timeout.
 
 Worker-declared test commands and integrated verification stay finite. They keep
-receiving the saved numeric `timeoutMs` even under `supervised`, so a local check
+receiving the saved numeric `timeoutMs` even under this policy, so a local check
 that hangs still fails at the bound the lead chose. Git operations, help output,
 upstream OMC waits and every other controller path are untouched.
 
-## What supervised does not prove
+## What the policy does not prove
 
 An unbounded provider is not a monitored one. Because the controller no longer
 stops a provider on elapsed time:
@@ -44,13 +50,12 @@ stops a provider on elapsed time:
   failure. The controller adds no idle timer, controller timer, observation
   callback, IPC channel, stop command or consumer-specific provider label to
   pretend otherwise.
-- the explicit stop path is the host signal. Send `SIGINT` or `SIGTERM` to the
-  running controller when a supervised provider must be stopped. The retained
-  state then shows the unfinished attempt, and a later `run` refuses to
-  re-spawn retained running work without explicit inspection.
-- cleanup can remain unverified. A supervised provider that ignores the signal,
-  or a descendant that keeps an inherited pipe open, can leave a worktree, a
-  process or an artifact directory in a state the controller never observed.
+- the policy adds no provider cancellation mechanism. Interrupting the host may
+  leave an unfinished attempt, and a later `run` refuses to re-spawn retained
+  running work without explicit inspection.
+- cleanup can remain unverified. A provider or descendant that keeps an inherited
+  pipe open can leave a worktree, a process or an artifact directory in a state
+  the controller never observed.
   Preserve the state directory and the retained worker worktree for inspection
   rather than assuming cleanup finished.
 - inherited output that does not finish draining after its parent exits reports
@@ -59,18 +64,20 @@ stops a provider on elapsed time:
   artifacts stay inspectable, and remaining attempt budget is not spent on an
   automatic second dispatch.
 
-## Initialize a supervised workflow
+## Initialize an unbounded-provider-timeout workflow
 
-`--provider-policy supervised` is accepted by `init` only. It applies to both
+`--provider-policy unbounded-provider-timeout` is accepted by `init` only. The
+historical `supervised` spelling is also accepted there and saved canonically.
+The policy applies to both
 `claude-glm-codex` (schema 1, including balanced mode) and `role-substitution`
-(schema 2, always balanced). Every other present value, a missing value and a
+(schema 2, always balanced). Every other value, a flag without its value, and a
 duplicate flag fail before any state directory, branch or provider exists, and
 every later operation rejects the flag as an unknown option.
 
 ```text
-node bridge/cli.cjs team workflow init --file plan.json --mode balanced --provider-policy supervised
+node bridge/cli.cjs team workflow init --file plan.json --mode balanced --provider-policy unbounded-provider-timeout
 node bridge/cli.cjs team workflow init --file plan.json --profile role-substitution \
-  --bindings roles.json --provider-policy supervised
+  --bindings roles.json --provider-policy unbounded-provider-timeout
 ```
 
 `--timeout-ms` keeps its own meaning and range (100 to 3600000 ms, inclusive).
@@ -82,17 +89,18 @@ all.
 node bridge/cli.cjs team workflow status <name>
 ```
 
-Status reports `providerPolicy` as `supervised` or `legacy` together with the
-saved actors, bindings, substitutions, sessions, invocation evidence, review
-provenance, attempt budgets and worktrees. It exposes no private runtime
+Status reports the raw `providerPolicy` and effective timeout policy together
+with the saved actors, bindings, substitutions, sessions, invocation evidence,
+review provenance, attempt budgets and worktrees. It exposes no private runtime
 configuration, environment value, process handle or transcript.
 
 ## Inspect the saved policy before dispatch
 
 The saved policy is part of initialization, not a runtime switch. Loading
 validates any present value in both schemas and refuses anything other than
-`supervised` with `workflow_invalid_policy`, before a lock, a provider launch or
-any work. A workflow whose state omits the field stays omitted: it is never
+`unbounded-provider-timeout` or the historical `supervised` value with
+`workflow_invalid_policy`, before a lock, a provider launch or any work. A
+workflow whose state omits the field stays omitted: it is never
 added, rewritten or migrated on read. The selected policy also cannot change
 after initialization, so no substitution, resume, adjudication or other
 transition can edit it.
@@ -131,9 +139,9 @@ makes no assumption about a global installation.
    (for example under an untracked local state directory). The manifest is
    local evidence; it is not committed, copied into workflow state or used as
    input to a provider.
-3. The host initializes the new workflow with the supervised policy when the
-   project wants unbounded implementer and reviewer calls, and leaves the policy
-   out when it does not.
+3. The host initializes the new workflow with the unbounded provider timeout
+   policy when the project wants unbounded implementer and reviewer calls, and
+   leaves the policy out when it does not.
 4. Before dispatch, the host inspects the saved policy, actors and budgets with
    `status` and `usage` as above, and only then runs, reviews and verifies.
 
@@ -143,11 +151,11 @@ already activated, including its existing cutoff: an old R4 runner and its
 one-hour bound stay in force for the workflows that were saved against it, and
 V1.3 does not rewrite them.
 
-A future wrapper that needs to remove the bound on its non-provider controller call can
-select the low-level `timeoutMs: null` process mode directly. That is a
+A future wrapper that needs to remove the bound on its non-provider controller
+call can select the low-level `timeoutMs: null` process mode directly. That is a
 controller-side choice about one child process; it is not the workflow policy,
-must not be reported as a supervised provider, and must not be used to relax the
-finite timeout of worker-declared checks or integrated verification.
+must not be reported as the workflow provider policy, and must not be used to
+relax the finite timeout of worker-declared checks or integrated verification.
 
 ## Verification
 
@@ -157,5 +165,6 @@ malformed saved-state refusal; policy immutability; implementer and reviewer
 forwarding; finite worker-declared and integrated verification calls; and
 single-dispatch behavior after `workflow_output_incomplete`. The forwarding
 evidence is a real delayed provider fixture that outlives the paired former
-finite threshold under the supervised policy while a delayed local check at that
-same saved timeout still fails finitely. No hour-long test is part of the suite.
+finite threshold under the unbounded provider timeout policy while a delayed
+local check at that same saved timeout still fails finitely. No hour-long test is
+part of the suite.

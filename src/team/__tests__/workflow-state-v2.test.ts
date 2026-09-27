@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
 import { assertWorkflowResumeBinding, parseWorkflowBinding, parseWorkflowDispatchSupplementIntent,
   parseWorkflowLeadIntegrationIntent, parseWorkflowReviewBudgetExtensionIntent, parseWorkflowState,
-  validateWorkflowStateTransition, workflowReviewCeiling } from '../workflow-contracts.js';
+  validateWorkflowStateTransition, workflowReviewBudgetUsed, workflowReviewCeiling } from '../workflow-contracts.js';
 import type { WorkflowSetupAttempt, WorkflowTask } from '../workflow-contracts.js';
 
 const hash = 'a'.repeat(64);
@@ -271,7 +271,7 @@ describe('versioned workflow contracts', () => {
     expect(parseWorkflowBinding({ ...binding('implementer', 'claude'), model: 'glm-5.3-flash[1m]' }).providerRoute).toBe('claude');
   });
   it('keeps the optional provider policy absent when omitted and unchanged when present in both schemas', () => {
-    for (const policy of [undefined, 'supervised'] as const) {
+    for (const policy of [undefined, 'supervised', 'unbounded-provider-timeout'] as const) {
       for (const build of [() => legacyState(policy), () => state(policy)]) {
         const raw = build();
         const bytes = JSON.stringify(raw);
@@ -295,9 +295,12 @@ describe('versioned workflow contracts', () => {
     });
   it('refuses a provider policy change after initialization while permitting an unchanged value', () => {
     expect(() => validateWorkflowStateTransition(completedState('supervised'), completedState('supervised'))).not.toThrow();
+    expect(() => validateWorkflowStateTransition(completedState('unbounded-provider-timeout'), completedState('unbounded-provider-timeout'))).not.toThrow();
     expect(() => validateWorkflowStateTransition(completedState(), completedState())).not.toThrow();
     expect(() => validateWorkflowStateTransition(completedState(), completedState('supervised'))).toThrow('workflow_policy_change_forbidden');
     expect(() => validateWorkflowStateTransition(completedState('supervised'), completedState())).toThrow('workflow_policy_change_forbidden');
+    expect(() => validateWorkflowStateTransition(completedState('supervised'), completedState('unbounded-provider-timeout')))
+      .toThrow('workflow_policy_change_forbidden');
   });
   it('parses a strict frozen lead-integration intent and append-only evidence in both schemas', () => {
     const mutableCheck = { command: 'node', args: ['check.mjs'] };
@@ -385,8 +388,10 @@ describe('versioned workflow contracts', () => {
     expect(parsedIntent).toMatchObject({ requestId: 'review-budget-1', expectedCeiling: 1, increment: 1 });
     expect(Object.isFrozen(parsedIntent)).toBe(true);
     expect(Object.isFrozen(parsedIntent.actor)).toBe(true);
-    expect(() => parseWorkflowReviewBudgetExtensionIntent({ ...parsedIntent, increment: 10 }))
-      .toThrow('workflow_review_budget_limit_exceeded');
+    expect(parseWorkflowReviewBudgetExtensionIntent({ ...parsedIntent, expectedCeiling: 10, increment: 10 }))
+      .toMatchObject({ expectedCeiling: 10, increment: 10 });
+    expect(() => parseWorkflowReviewBudgetExtensionIntent({ ...parsedIntent, increment: 11 }))
+      .toThrow('workflow_invalid_counter');
     expect(() => parseWorkflowReviewBudgetExtensionIntent({ ...parsedIntent, extra: true })).toThrow('workflow_unknown_field');
 
     for (const build of [legacyState, completedState]) {
@@ -405,11 +410,32 @@ describe('versioned workflow contracts', () => {
     const duplicate = { ...exhaustedState(legacyState), reviewBudgetExtensions: [reviewBudgetExtension(),
       reviewBudgetExtension(2, 2, 3, 'review-budget-1')] };
     expect(() => parseWorkflowState(duplicate)).toThrow('workflow_review_budget_extension_chain_mismatch');
+    const beyondOldLifetimeLimit = { ...exhaustedState(legacyState), reviewBudgetExtensions: [
+      reviewBudgetExtension(), reviewBudgetExtension(2, 2, 12),
+    ] };
+    expect(workflowReviewCeiling(parseWorkflowState(beyondOldLifetimeLimit))).toBe(12);
     const attributedLegacy = parseWorkflowState({ ...exhaustedState(legacyState), reviewBudgetExtensions: [{ ...reviewBudgetExtension(),
       actor: { id: 'claude-lead', model: 'claude-fable-5' } }] });
     expect(attributedLegacy.reviewBudgetExtensions?.[0]?.actor).toEqual({ id: 'claude-lead', model: 'claude-fable-5' });
     expect(() => parseWorkflowState({ ...exhaustedState(completedState), reviewBudgetExtensions: [{ ...reviewBudgetExtension(),
       actor: { id: 'other-lead', model: 'gpt-6-astra' } }] })).toThrow('workflow_review_budget_extension_actor_mismatch');
+  });
+  it('opts new states into completed-review accounting without reinterpreting v1.5 attempt counters', () => {
+    const historical = completedState();
+    historical.reviewAttempts[0]!.outcome = 'failed';
+    expect(workflowReviewBudgetUsed(parseWorkflowState(historical))).toBe(1);
+
+    const current = { ...structuredClone(historical), reviewBudgetBasis: 'completed-reviews' as const };
+    const parsed = parseWorkflowState(current);
+    expect(parsed.reviewPasses).toBe(1);
+    expect(parsed.reviewAttempts).toHaveLength(1);
+    expect(workflowReviewBudgetUsed(parsed)).toBe(0);
+    expect(() => validateWorkflowStateTransition(historical, current)).toThrow('workflow_budget_reset_forbidden');
+
+    const completed = { ...structuredClone(current),
+      reviews: [{ pass: 1, head: current.integrationHead, findings: [], artifacts: [] }] };
+    completed.reviewAttempts[0]!.outcome = 'completed';
+    expect(workflowReviewBudgetUsed(parseWorkflowState(completed))).toBe(1);
   });
   it('allows only one pure review-budget append and keeps the initial ceiling immutable in both schemas', () => {
     for (const build of [legacyState, completedState]) {

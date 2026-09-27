@@ -1,9 +1,9 @@
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
-  acceptWorkflowTask, finishWorkflow, initWorkflow, integrateWorkflowLeadCommit, readWorkflow,
+  acceptWorkflowTask, extendWorkflowReviewBudget, finishWorkflow, initWorkflow, integrateWorkflowLeadCommit, readWorkflow,
   reviewWorkflow, runWorkflow, verifyWorkflow,
 } from '../workflow.js';
 import type { WorkflowLeadIntegrationIntent, WorkflowOptions, WorkflowPlan, WorkflowTask } from '../workflow-contracts.js';
@@ -84,6 +84,43 @@ describe('attributed lead integration', () => {
     await expect(finishWorkflow(fixture.cwd, name)).rejects.toThrow('workflow_current_review_required');
     await reviewWorkflow(fixture.cwd, name);
     await finishWorkflow(fixture.cwd, name);
+  }, 60_000);
+
+  it('adopts a lead commit at an exhausted checkpoint while still requiring fresh verification and review authorization', async () => {
+    await settle([task('a')], { ...options, maxReviewPasses: 1 });
+    await verifyWorkflow(fixture.cwd, name);
+    await reviewWorkflow(fixture.cwd, name);
+    const change = commit();
+    const integrated = await integrateWorkflowLeadCommit(fixture.cwd, name, intent(change));
+    expect(integrated.integrationHead).toBe(change.head);
+    await expect(finishWorkflow(fixture.cwd, name)).rejects.toThrow('workflow_current_verification_required');
+    await extendWorkflowReviewBudget(fixture.cwd, name, { requestId: 'post-lead-integration-review',
+      expectedHead: change.head, expectedCeiling: 1, increment: 1, actor: { id: 'unknown', model: 'unknown' },
+      authorityRef: 'lead-review-decision', reason: 'Authorize review of the adopted lead commit.' });
+    await verifyWorkflow(fixture.cwd, name);
+    await expect(finishWorkflow(fixture.cwd, name)).rejects.toThrow('workflow_current_review_required');
+    await reviewWorkflow(fixture.cwd, name);
+    expect((await finishWorkflow(fixture.cwd, name)).stage).toBe('complete');
+  }, 60_000);
+
+  it('refuses to adopt a lead commit while an interrupted review remains unsettled', async () => {
+    await settle([task('a')], { ...options, maxReviewPasses: 1 });
+    const stateFile = join(fixture.cwd, '.omc', 'state', 'team', name, 'workflow.json');
+    const raw = JSON.parse(readFileSync(stateFile, 'utf8'));
+    raw.reviewPasses = 1;
+    raw.reviewAttempts = [{ orchestrationHost: 'claude', pass: 1, head: raw.integrationHead,
+      startedAt: new Date().toISOString(), outcome: 'failed', error: 'workflow_invocation_incomplete', artifacts: [],
+      telemetry: { provider: 'codex', durationMs: 0, status: 'unknown', scope: 'unknown' } }];
+    writeFileSync(stateFile, JSON.stringify(raw));
+    const change = commit();
+
+    await expect(integrateWorkflowLeadCommit(fixture.cwd, name, intent(change)))
+      .rejects.toThrow('workflow_interrupted_review_requires_inspection');
+
+    const saved = readWorkflow(fixture.cwd, name);
+    expect(saved.integrationHead).toBe(change.parent);
+    expect(saved.leadIntegrations).toBeUndefined();
+    expect(saved.reviewAttempts?.at(-1)?.error).toBe('workflow_invocation_incomplete');
   }, 60_000);
 
   it.each([
