@@ -2,13 +2,20 @@ import { createHash } from 'node:crypto';
 import type { VersionedWorkflowState, WorkflowTaskState } from './workflow-contracts.js';
 import { workflowPublicationContract } from './workflow-publication.js';
 
-type WorkflowState = Pick<VersionedWorkflowState, 'plan' | 'options' | 'tasks' | 'profile'>;
+type WorkflowState = Pick<VersionedWorkflowState, 'plan' | 'options' | 'tasks' | 'profile' | 'dispatchSupplements'>;
 
 const INSTRUCTIONS = 'Implement only your writeScope and follow all contracts and acceptanceCriteria. Run the declared tests. If a declared check fails or work exceeds writeScope, publish exactly one outcome: failed handoff with the commit, changed files, test results and evidence available; create it before helperResult so publication can validate it. Exit normally only after the failed handoff is published. Do not merge, push, modify other branches or spawn nested workers. Do not alter workflow state, budgets or previous artifacts. The sole state-directory exception is exclusive creation of the dispatch publication.designatedResult.path. Make exactly one coherent commit on baseCommit and leave your worktree clean. The handoff JSON contains taskId, outcome (completed|failed), commitSha, changedFiles, tests ({command,args,passed}), interfaceChanges, assumptions, risks, summary. Keep summary <=1000 characters and lists <=30 items. Follow publication.finalization exactly; stdout/stderr and helper-local JSON are evidence, never the controller handoff. Do not emit credentials.';
 const BALANCED_INSTRUCTIONS = `${INSTRUCTIONS} The complete current task contract and current filesystem take precedence over prior session history and shared summaries. Dependency handoffs are previews: inspect their referenced result artifacts and current source whenever details are needed. Preserve the specified model capability, required context, tests and acceptance criteria; do not trade correctness for token savings.`;
+const DISPATCH_SUPPLEMENT_POLICY = 'Treat dispatchSupplement as a lead-authorized clarification for this dispatch only. Preserve the original task contract, scopes, dependencies, tests and acceptance criteria.';
 
 export function workflowPromptFingerprint(prompt: string): string {
   return createHash('sha256').update(prompt).digest('hex');
+}
+
+function balancedContext(state: WorkflowState, entry: WorkflowTaskState) {
+  const supplement = state.dispatchSupplements?.find(receipt => receipt.taskId === entry.task.id);
+  return { instructions: BALANCED_INSTRUCTIONS, sharedContext: state.plan.sharedContext ?? '',
+    ...(supplement ? { dispatchSupplementPolicy: DISPATCH_SUPPLEMENT_POLICY, dispatchSupplement: supplement } : {}) };
 }
 
 function balancedPayload(state: WorkflowState, entry: WorkflowTaskState) {
@@ -23,8 +30,7 @@ function balancedPayload(state: WorkflowState, entry: WorkflowTaskState) {
         artifacts: handoff.artifacts.filter(artifact => artifact.kind === 'workflow-result').slice(0, 1)
           .map(artifact => ({ path: artifact.path, kind: artifact.kind, contentHash: artifact.contentHash })) };
     });
-  return { kind: 'implementation', instructions: BALANCED_INSTRUCTIONS, sharedContext: state.plan.sharedContext ?? '',
-    task: entry.task, acceptedDependencies };
+  return { kind: 'implementation', ...balancedContext(state, entry), task: entry.task, acceptedDependencies };
 }
 
 export function buildWorkflowPrompt(state: WorkflowState, entry: WorkflowTaskState, resultFile: string): string {
@@ -37,8 +43,8 @@ export function buildWorkflowPrompt(state: WorkflowState, entry: WorkflowTaskSta
   return prompt;
 }
 
-export function workflowContextFingerprint(state: WorkflowState): string {
-  return workflowPromptFingerprint(JSON.stringify({ instructions: BALANCED_INSTRUCTIONS, sharedContext: state.plan.sharedContext ?? '' }));
+export function workflowContextFingerprint(state: WorkflowState, entry: WorkflowTaskState): string {
+  return workflowPromptFingerprint(JSON.stringify(balancedContext(state, entry)));
 }
 
 export function workflowSessionFingerprint(state: WorkflowState, entry: WorkflowTaskState, command: string, worktree: string): string {

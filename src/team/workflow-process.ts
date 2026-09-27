@@ -149,9 +149,11 @@ export async function runWorkflowProcess(input: {
       windowsVerbatimArguments: input.windowsVerbatimArguments })
     : { command, args, environment };
   const startedAt = performance.now();
-  const usage = input.collectUsage && input.provider ? createWorkflowUsageCollector(input.provider) : undefined;
+  const usage = input.collectUsage && input.provider ? createWorkflowUsageCollector(input.provider, {
+    retainIdentity: value => redactWorkflowText(value, true, redactionEnvironment) === value,
+  }) : undefined;
   const result = await new Promise<{ code: number | null; error?: WorkflowProcessResult['error']; stdout: Buffer; stderr: Buffer;
-    stdoutTruncated: boolean; settlement?: WorkflowProcessSettlement }>(resolve => {
+    stdoutTruncated: boolean; stderrTruncated: boolean; outputComplete: boolean; settlement?: WorkflowProcessSettlement }>(resolve => {
     const retainStdoutTail = usage !== undefined;
     let stdout: Buffer | undefined; const stderr: Buffer[] = [];
     let stdoutBytes = 0; let stdoutOffset = 0; let stdoutObservedBytes = 0; let stderrBytes = 0;
@@ -308,7 +310,7 @@ export async function runWorkflowProcess(input: {
         return Buffer.concat([marker, safeTail]);
       };
       resolve({ code, error, stdout: capturedStdout(),
-        stderr: captured(stderr, stderrTruncated), stdoutTruncated,
+        stderr: captured(stderr, stderrTruncated), stdoutTruncated, stderrTruncated, outputComplete: streamClose,
         ...(noWall ? { settlement: settlement() } : {}) });
     };
     /** Wait out the shared grace before dropping this controller's stream handles. */
@@ -393,10 +395,13 @@ export async function runWorkflowProcess(input: {
     : result.code === 0;
   // A capture/settlement failure can make the workflow result unsafe without turning a clean
   // provider exit into a process_failed telemetry diagnosis.
-  const telemetry = usage?.finish({ durationMs: performance.now() - startedAt, passed: parentExitedSuccessfully });
+  const telemetry = usage?.finish({ durationMs: performance.now() - startedAt, passed: parentExitedSuccessfully,
+    diagnosticLogComplete: !result.stdoutTruncated && !result.stderrTruncated, eventStreamComplete: result.outputComplete });
   if (telemetry && result.stdoutTruncated) {
     telemetry.diagnostics = [...new Set([...(telemetry.diagnostics ?? []), 'stdout_truncated'])].sort();
-    if (telemetry.status === 'measured') telemetry.status = 'partial';
+  }
+  if (telemetry && result.stderrTruncated) {
+    telemetry.diagnostics = [...new Set([...(telemetry.diagnostics ?? []), 'stderr_truncated'])].sort();
   }
   if (telemetry && result.settlement?.outputComplete === false) {
     telemetry.diagnostics = [...new Set([...(telemetry.diagnostics ?? []), 'output_incomplete'])].sort();

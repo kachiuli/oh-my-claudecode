@@ -6,7 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { withFileLock } from '../lib/file-lock.js';
 import { expandPathForCompare } from '../lib/worktree-paths.js';
 import { loadConfig } from '../config/loader.js';
-import { createArtifactDescriptorFromPath, type ArtifactDescriptor } from '../shared/artifact-descriptor.js';
+import { createArtifactDescriptorFromPath, writeTextArtifact, type ArtifactDescriptor } from '../shared/artifact-descriptor.js';
 import { withOrchestratorOperation, type ActiveOrchestratorSnapshot, type OrchestratorHost } from '../orchestration/selection.js';
 import { TeamPaths, absPath, teamStateRoot } from './state-paths.js';
 import { atomicWriteJson, ensureDirWithMode, validateResolvedPath } from './fs-utils.js';
@@ -25,10 +25,12 @@ import { classifyOrphanedAttempt } from './workflow-orphan.js';
 import { cachedCurrentProcessStartIdentity } from '../orchestration/operation-lock.js';
 import { boundedText, safeWorkflowId, parseWorkflowPlan, parseWorkflowTask, matchesScope,
   parseWorkflowHandoff, parseWorkflowFindings, parseWorkflowBinding, parseWorkflowState, parseWorkflowProviderPolicy,
-  validateWorkflowStateTransition,
+  validateWorkflowStateTransition, parseWorkflowLeadIntegrationIntent, parseWorkflowLeadIntegration,
+  parseWorkflowDispatchSupplementIntent, parseWorkflowDispatchSupplement,
   type WorkflowState as LegacyWorkflowState, type VersionedWorkflowState as WorkflowState, type WorkflowStateV2,
   parseWorkflowSubstitution, assertWorkflowResumeBinding, type WorkflowRole, type WorkflowRoleBinding, type WorkflowOptions, type WorkflowTaskState,
-  type WorkflowFinding, type WorkflowHandoff, type WorkflowInvocation, type WorkflowReviewAttempt, type WorkflowReviewAttemptV2 } from './workflow-contracts.js';
+  type WorkflowFinding, type WorkflowHandoff, type WorkflowInvocation, type WorkflowReviewAttempt, type WorkflowReviewAttemptV2,
+  type WorkflowLeadIntegrationIntent, type WorkflowDispatchSupplementIntent, type WorkflowWorktreeSetupDetail } from './workflow-contracts.js';
 
 export type { WorkflowState, WorkflowOptions, WorkflowPlan, WorkflowTask, WorkflowHandoff, WorkflowFinding } from './workflow-contracts.js';
 
@@ -37,10 +39,12 @@ const legacyProvider = (state: WorkflowState): 'glm' | 'mimo' => state.schemaVer
 const resolveLegacyExecutable = (state: WorkflowState): string => legacyProvider(state) === 'mimo'
   ? resolveMimoExecutable(state.options.glmCommand) : resolveGlmExecutable(state.options.glmCommand);
 const savedSnapshots = new WeakMap<WorkflowState, unknown>();
-function git(cwd: string, args: string[]): string {
-  try { return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: 'pipe', timeout: 30_000, windowsHide: true }).trim(); }
+const MAX_WORKFLOW_STATE_BYTES = 16 * 1024 * 1024;
+function gitRaw(cwd: string, args: string[]): string {
+  try { return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: 'pipe', timeout: 30_000, windowsHide: true }); }
   catch { throw new Error('workflow_git_operation_failed'); }
 }
+function git(cwd: string, args: string[]): string { return gitRaw(cwd, args).trim(); }
 function statePath(cwd: string, name: string): string {
   const root = teamStateRoot(cwd, safeWorkflowId(name));
   validateResolvedPath(root, teamStateRoot(cwd, ''));
@@ -107,6 +111,7 @@ function save(state: WorkflowState): void {
   const previous = savedSnapshots.get(state);
   if (previous) validateWorkflowStateTransition(previous, state);
   else parseWorkflowState(state);
+  if (Buffer.byteLength(`${JSON.stringify(state, null, 2)}\n`) > MAX_WORKFLOW_STATE_BYTES) throw new Error('workflow_state_too_large');
   atomicWriteJson(statePath(state.cwd, state.plan.name), state);
   savedSnapshots.set(state, JSON.parse(JSON.stringify(state)));
   // Canonical task projections retain numeric IDs and claim identities; workflow.json owns integration decisions.
@@ -160,6 +165,12 @@ const NON_RETRYABLE_WORKER_ERRORS = ['workflow_timeout', 'workflow_interrupted',
   'workflow_protected_ref_audit_failed', 'workflow_session_identity_mismatch'] as const;
 function nonRetryableWorkerError(error: string | undefined): boolean {
   return NON_RETRYABLE_WORKER_ERRORS.some(entry => entry === error);
+}
+function hasTrailingIncompleteInvocation(entry: WorkflowTaskState): boolean {
+  return entry.invocations?.at(-1)?.error === 'workflow_invocation_incomplete';
+}
+function assertNoIncompleteTaskInvocations(state: WorkflowState): void {
+  if (state.tasks.some(hasTrailingIncompleteInvocation)) throw new Error('workflow_interrupted_worker_requires_inspection');
 }
 /** A validated publication can settle missing terminal framing after a clean exit, but never incomplete process settlement. */
 function designatedResultOverridesProcessFailure(result: WorkflowProcessResult, handoff: WorkflowHandoff): boolean {
@@ -332,7 +343,7 @@ function validateCommit(state: WorkflowState, entry: WorkflowTaskState): string[
   if (!sha || git(cwd, ['rev-parse', 'HEAD']) !== sha) throw new Error('workflow_worker_commit_mismatch');
   const parents = git(cwd, ['rev-list', '--parents', '-n', '1', sha]).split(' ');
   if (parents.length !== 2 || parents[1] !== entry.task.baseCommit) throw new Error('workflow_worker_single_commit_required');
-  const files = git(cwd, ['diff', '--name-only', '--no-renames', '-z', entry.task.baseCommit, sha]).split('\0').filter(Boolean);
+  const files = gitRaw(cwd, ['diff', '--name-only', '--no-renames', '-z', entry.task.baseCommit, sha]).split('\0').filter(Boolean);
   if (!files.length || files.length > 100) throw new Error('workflow_invalid_changed_files');
   for (const file of files) if (!matchesScope(file, entry.task.writeScope) || matchesScope(file, entry.task.prohibitedScope)) throw new Error('workflow_out_of_scope_changes');
   if (JSON.stringify([...files].sort()) !== JSON.stringify([...(entry.handoff?.changedFiles ?? [])].sort())) throw new Error('workflow_changed_files_mismatch');
@@ -349,15 +360,73 @@ function sessionFingerprint(state: WorkflowState, entry: WorkflowTaskState, comm
   return workflowPromptFingerprint(JSON.stringify({ launch: launchIdentity,
     context: workflowSessionFingerprint(state, entry, executable, worktree) }));
 }
-async function executeTask(state: WorkflowState, entry: WorkflowTaskState, command: string, resumeReason?: string,
-  prepared?: PreparedWorkflowBinding, refAudit?: WorkflowRefAudit, orchestrationHost: OrchestratorHost = 'claude'): Promise<void> {
+const WORKTREE_SETUP_DETAILS = new Set<WorkflowWorktreeSetupDetail>([
+  'worktree_branch_mismatch', 'worktree_branch_in_use', 'worktree_path_mismatch', 'worktree_mismatch',
+]);
+function worktreeSetupDetail(error: unknown): WorkflowWorktreeSetupDetail | undefined {
+  const code = error && typeof error === 'object' && 'code' in error ? (error as { code?: unknown }).code : undefined;
+  return typeof code === 'string' && WORKTREE_SETUP_DETAILS.has(code as WorkflowWorktreeSetupDetail)
+    ? code as WorkflowWorktreeSetupDetail : undefined;
+}
+function worktreeSetupStderr(error: unknown, detail: WorkflowWorktreeSetupDetail | undefined,
+  state: WorkflowState, entry: WorkflowTaskState,
+  privateEnvironment: NodeJS.ProcessEnv): string {
+  const stderr = error && typeof error === 'object' && 'stderr' in error
+    ? (error as { stderr?: unknown }).stderr : undefined;
+  const raw = Buffer.isBuffer(stderr) ? stderr.toString('utf8') : typeof stderr === 'string' ? stderr : '';
+  let diagnostic = redactWorkflowText(raw, false, privateEnvironment);
+  for (const path of [state.cwd, getWorktreePath(state.cwd, state.plan.name, entry.worker)]) {
+    diagnostic = diagnostic.split(path).join('[PATH]').split(path.replaceAll('\\', '/')).join('[PATH]');
+  }
+  diagnostic = diagnostic.trim().slice(-4096);
+  return `${diagnostic || detail || 'git_stderr_unavailable'}\n`;
+}
+function recordWorktreeSetupFailure(state: WorkflowState, entry: WorkflowTaskState, startedAt: string,
+  mode: 'fresh' | 'resume', error: unknown, privateEnvironment: NodeJS.ProcessEnv): void {
+  const sequence = (entry.setupAttempts?.length ?? 0) + 1;
+  const detail = worktreeSetupDetail(error);
+  const artifact = writeTextArtifact({ path: join(artifactsRoot(state), `worktree-setup-${entry.worker}-${sequence}-${randomUUID()}.stderr.txt`),
+    content: worktreeSetupStderr(error, detail, state, entry, privateEnvironment), exclusive: true, kind: 'workflow-worktree-setup',
+    producer: { system: 'omc', component: 'team-workflow', worker: entry.worker }, retention: 'until-completion' });
+  const savedArtifact = JSON.parse(JSON.stringify(artifact)) as ArtifactDescriptor;
+  entry.setupAttempts = [...(entry.setupAttempts ?? []),
+    { sequence, startedAt, mode, outcome: 'failed', error: 'workflow_worktree_setup_failed',
+      ...(detail === undefined ? {} : { detail }), artifact: savedArtifact }];
+  entry.status = 'failed'; entry.error = 'workflow_worktree_setup_failed'; delete entry.claimToken; delete entry.backoffUntil;
+  entry.updatedAt = now();
+}
+type ReservedInvocationSettlement = {
+  invocation: WorkflowInvocation;
+  outcome: 'completed' | 'failed';
+  error?: string;
+};
+async function executeTask(state: WorkflowState, entry: WorkflowTaskState, command: string, resumeReason: string | undefined,
+  prepared: PreparedWorkflowBinding | undefined, refAudit: WorkflowRefAudit,
+  orchestrationHost: OrchestratorHost, settlements: ReservedInvocationSettlement[]): Promise<void> {
   const root = artifactsRoot(state);
   const balanced = state.options.mode === 'balanced';
   const resuming = resumeReason !== undefined;
-  if (entry.attempts === 0 && entry.task.dependencies.length) {
-    entry.task.baseCommit = state.integrationHead;
+  const setupMode = resuming ? 'resume' : 'fresh';
+  if (entry.attempts === 0 && !entry.setupAttempts?.length && entry.task.dependencies.length) {
+    entry.task.baseCommit = state.dispatchSupplements?.find(supplement => supplement.taskId === entry.task.id)?.expectedInputHead
+      ?? state.integrationHead;
   }
   while (entry.attempts < state.options.maxAttempts) {
+    const setupStartedAt = now();
+    try {
+      const worktree = ensureWorkerWorktree(state.plan.name, entry.worker, state.cwd, { mode: 'named', baseRef: entry.task.baseCommit });
+      if (!worktree) throw new Error('workflow_worktree_required');
+      entry.worktree = worktree.path; entry.branch = worktree.branch;
+      assertWorker(state, entry);
+      if (git(entry.worktree, ['rev-parse', 'HEAD']) !== entry.task.baseCommit) throw new Error('workflow_worker_base_mismatch');
+    } catch (error) {
+      recordWorktreeSetupFailure(state, entry, setupStartedAt, setupMode, error, prepared?.redactionEnvironment ?? process.env);
+      save(state);
+      return;
+    }
+    entry.setupAttempts = [...(entry.setupAttempts ?? []),
+      { sequence: (entry.setupAttempts?.length ?? 0) + 1, startedAt: setupStartedAt, mode: setupMode, outcome: 'completed' }];
+    entry.status = 'pending'; delete entry.error; entry.updatedAt = now(); save(state);
     const started = Date.now();
     entry.attempts++; entry.status = 'running'; entry.claimToken = randomUUID(); entry.updatedAt = now();
     const invocation: WorkflowInvocation = { orchestrationHost, attempt: entry.attempts, mode: resuming ? 'resume' : 'fresh',
@@ -367,14 +436,10 @@ async function executeTask(state: WorkflowState, entry: WorkflowTaskState, comma
       error: 'workflow_invocation_incomplete', ...(resumeReason === undefined ? {} : { reason: resumeReason }), artifacts: [],
       telemetry: { provider: prepared?.binding.providerRoute ?? legacyProvider(state), durationMs: 0, status: 'unknown', scope: 'unknown' } };
     (entry.invocations ??= []).push(invocation);
+    const settlement: ReservedInvocationSettlement = { invocation, outcome: 'failed', error: 'workflow_worker_persistence_failed' };
+    settlements.push(settlement);
     save(state);
     try {
-      const worktree = ensureWorkerWorktree(state.plan.name, entry.worker, state.cwd, { mode: 'named', baseRef: entry.task.baseCommit });
-      if (!worktree) throw new Error('workflow_worktree_required');
-      entry.worktree = worktree.path; entry.branch = worktree.branch;
-      assertWorker(state, entry);
-      if (git(entry.worktree, ['rev-parse', 'HEAD']) !== entry.task.baseCommit) throw new Error('workflow_worker_base_mismatch');
-      save(state);
       const prefix = join(root, `${entry.worker}-${entry.attempts}`);
       const resultFile = `${prefix}.result.json`;
       if (existsSync(resultFile)) throw new Error('workflow_result_already_exists');
@@ -389,6 +454,10 @@ async function executeTask(state: WorkflowState, entry: WorkflowTaskState, comma
         resultFile,
       });
       const sessionEnabled = balanced && (!prepared || prepared.binding.capabilities.includes('session-resume'));
+      if (balanced) {
+        invocation.promptFingerprint = workflowPromptFingerprint(prompt);
+        invocation.contextFingerprint = workflowContextFingerprint(state, entry);
+      }
       if (sessionEnabled) {
         const worktree = realpathSync(entry.worktree);
         const fingerprint = prepared ? workflowPromptFingerprint(JSON.stringify({ binding: prepared.binding, worktree, branch: entry.branch,
@@ -396,10 +465,8 @@ async function executeTask(state: WorkflowState, entry: WorkflowTaskState, comma
         if (resuming && (!entry.session?.confirmed || entry.session.fingerprint !== fingerprint)) throw new Error('workflow_session_identity_changed');
         entry.session = { id: resuming ? entry.session!.id : randomUUID(), confirmed: false, fingerprint,
           worktree, branch: entry.branch!, ...(prepared ? { binding: prepared.binding } : {}) };
-        invocation.promptFingerprint = workflowPromptFingerprint(prompt);
-        invocation.contextFingerprint = workflowContextFingerprint(state);
-        save(state);
       }
+      if (balanced) save(state);
       let result: Awaited<ReturnType<typeof runWorkflowProvider>>;
       refAudit?.providerStarted(entry.worker);
       try {
@@ -479,10 +546,10 @@ async function executeTask(state: WorkflowState, entry: WorkflowTaskState, comma
       }
     } finally {
       if (state.schemaVersion === 1) {
-        invocation.outcome = entry.status === 'completed' ? 'completed' : 'failed';
-        if (entry.error) invocation.error = entry.error; else delete invocation.error;
         if (!invocation.telemetry.durationMs) invocation.telemetry.durationMs = Date.now() - started;
       }
+      settlement.outcome = entry.status === 'completed' ? 'completed' : 'failed';
+      settlement.error = entry.error;
       delete entry.claimToken; delete entry.backoffUntil; entry.updatedAt = now(); save(state);
     }
   }
@@ -504,13 +571,12 @@ function failProtectedRefs(entries: WorkflowTaskState[], balanced: boolean, only
     if (invocation && (!onlyIncomplete || invocation.error === 'workflow_invocation_incomplete')) { invocation.outcome = 'failed'; invocation.error = entry.error; }
   }
 }
-function settleVersionedInvocations(state: WorkflowState, entries: WorkflowTaskState[]): void {
-  if (state.schemaVersion !== 2) return;
-  for (const entry of entries) {
-    const invocation = entry.invocations?.at(-1);
-    if (invocation?.error !== 'workflow_invocation_incomplete') continue;
-    invocation.outcome = entry.status === 'completed' ? 'completed' : 'failed';
-    if (entry.error) invocation.error = entry.error; else delete invocation.error;
+function settleInvocations(settlements: ReservedInvocationSettlement[]): void {
+  for (const settlement of settlements) {
+    const invocation = settlement.invocation;
+    if (invocation.error !== 'workflow_invocation_incomplete') continue;
+    invocation.outcome = settlement.outcome;
+    if (settlement.error) invocation.error = settlement.error; else delete invocation.error;
   }
 }
 export async function runWorkflow(cwd: string, name: string, runtime?: WorkflowRuntime): Promise<WorkflowState> {
@@ -519,9 +585,11 @@ export async function runWorkflow(cwd: string, name: string, runtime?: WorkflowR
     const refAudit = new WorkflowRefAudit(cwd, name);
     // A killed owner is never silently re-spawned: retained running work requires inspection.
     if (state.tasks.some(entry => entry.status === 'running')) throw new Error('workflow_interrupted_worker_requires_inspection');
+    assertNoIncompleteTaskInvocations(state);
     const candidates = state.tasks.filter(entry => ['pending', 'failed'].includes(entry.status) && entry.attempts < state.options.maxAttempts
       && !nonRetryableWorkerError(entry.error)
       && !(state.options.mode === 'balanced' && entry.invocations?.at(-1)?.mode === 'resume' && entry.invocations.at(-1)?.outcome === 'failed')
+      && !(entry.setupAttempts?.at(-1)?.mode === 'resume' && entry.setupAttempts.at(-1)?.outcome === 'failed')
       && entry.task.dependencies.every(id => getTask(state, id).status === 'accepted'));
     if (!candidates.length) {
       if (state.schemaVersion === 2 && state.tasks.some(entry => entry.status === 'failed' && entry.attempts >= state.options.maxAttempts)) throw new Error('workflow_attempt_limit_reached');
@@ -532,15 +600,16 @@ export async function runWorkflow(cwd: string, name: string, runtime?: WorkflowR
       try { command = resolveLegacyExecutable(state); } catch { throw new Error(`workflow_${legacyProvider(state)}_unavailable_fallback_disabled`); }
     }
     let cursor = 0;
+    const settlements: ReservedInvocationSettlement[] = [];
     const pools = await Promise.allSettled(Array.from({ length: Math.min(state.options.workers, candidates.length) }, async () => {
       while (cursor < candidates.length && !state.tasks.some(entry => entry.error === 'workflow_interrupted')) {
         const entry = candidates[cursor++]!;
         const prepared = state.schemaVersion === 2 ? prepareBinding(state, state.bindings.implementer, runtime) : undefined;
-        await executeTask(state, entry, prepared?.command ?? command, undefined, prepared, refAudit, active.host);
+        await executeTask(state, entry, prepared?.command ?? command, undefined, prepared, refAudit, active.host, settlements);
       }
     }));
-    if (state.schemaVersion === 1 && pools.some(pool => pool.status === 'rejected')) throw new Error('workflow_worker_persistence_failed');
     try {
+      if (state.schemaVersion === 1 && pools.some(pool => pool.status === 'rejected')) throw new Error('workflow_worker_persistence_failed');
       let audit;
       try {
         audit = refAudit.finalize(() => join(artifactsRoot(state), `ref-audit-${randomUUID()}.json`),
@@ -560,7 +629,7 @@ export async function runWorkflow(cwd: string, name: string, runtime?: WorkflowR
         throw new Error('workflow_worker_persistence_failed');
       }
     } finally {
-      settleVersionedInvocations(state, candidates);
+      settleInvocations(settlements);
     }
     state.stage = state.tasks.some(entry => entry.status === 'completed') ? 'integration' : 'implementation';
   });
@@ -571,6 +640,7 @@ export async function resumeWorkflowTask(cwd: string, name: string, taskId: stri
     if (state.options.mode !== 'balanced') throw new Error('workflow_balanced_mode_required');
     if (assertLeader(state) !== expectedHead) throw new Error('workflow_resume_head_mismatch');
     if (state.tasks.some(entry => entry.status === 'running')) throw new Error('workflow_interrupted_worker_requires_inspection');
+    assertNoIncompleteTaskInvocations(state);
     const safeReason = redactWorkflowText(boundedText(reason, 1000));
     const entry = getTask(state, taskId);
     if (entry.status !== 'failed') throw new Error('workflow_resume_failed_task_required');
@@ -597,8 +667,9 @@ export async function resumeWorkflowTask(cwd: string, name: string, taskId: stri
       context: workflowSessionFingerprint(state, entry, command, worktree) })) : sessionFingerprint(state, entry, command, worktree);
     if (session.fingerprint !== fingerprint) throw new Error('workflow_session_identity_changed');
     const refAudit = new WorkflowRefAudit(cwd, name);
+    const settlements: ReservedInvocationSettlement[] = [];
     let executionFailure: { error: unknown } | undefined;
-    try { await executeTask(state, entry, command, safeReason, prepared, refAudit, active.host); }
+    try { await executeTask(state, entry, command, safeReason, prepared, refAudit, active.host, settlements); }
     catch (error) { executionFailure = { error }; }
     try {
       let audit;
@@ -614,7 +685,7 @@ export async function resumeWorkflowTask(cwd: string, name: string, taskId: stri
         failProtectedRefs([entry], true, state.schemaVersion === 2);
         throw new Error('workflow_protected_refs_changed');
       }
-    } finally { settleVersionedInvocations(state, [entry]); }
+    } finally { settleInvocations(settlements); }
     if (executionFailure) throw executionFailure.error;
     state.stage = getTask(state, taskId).status === 'completed' ? 'integration' : 'implementation';
   });
@@ -622,6 +693,7 @@ export async function resumeWorkflowTask(cwd: string, name: string, taskId: stri
 export async function acceptWorkflowTask(cwd: string, name: string, taskId: string): Promise<WorkflowState> {
   return mutate(cwd, name, async state => {
     assertLeader(state);
+    assertNoIncompleteTaskInvocations(state);
     const entry = getTask(state, taskId);
     if (entry.status !== 'completed') throw new Error('workflow_task_not_awaiting_acceptance');
     if (!entry.task.dependencies.every(id => getTask(state, id).status === 'accepted')) throw new Error('workflow_dependency_not_integrated');
@@ -637,17 +709,103 @@ export async function acceptWorkflowTask(cwd: string, name: string, taskId: stri
     }
   });
 }
+/** Attach one lead-authorized clarification to a still-unstarted dependent task. */
+export async function supplementWorkflowTask(cwd: string, name: string, rawIntent: unknown): Promise<WorkflowState> {
+  const input: WorkflowDispatchSupplementIntent = parseWorkflowDispatchSupplementIntent(rawIntent);
+  if (redactWorkflowText(JSON.stringify(input)) !== JSON.stringify(input)) throw new Error('workflow_sensitive_input_rejected');
+  return mutate(cwd, name, async (state, active) => {
+    if (state.options.mode !== 'balanced') throw new Error('workflow_balanced_mode_required');
+    const head = assertLeader(state);
+    if (head !== input.expectedInputHead) throw new Error('workflow_dispatch_supplement_head_mismatch');
+    if (state.tasks.some(entry => entry.status === 'running')) throw new Error('workflow_interrupted_worker_requires_inspection');
+    assertNoIncompleteTaskInvocations(state);
+    if ((state.dispatchSupplements?.length ?? 0) >= 32) throw new Error('workflow_dispatch_supplement_limit_reached');
+    if (state.dispatchSupplements?.some(entry => entry.taskId === input.taskId)) {
+      throw new Error('workflow_dispatch_supplement_already_exists');
+    }
+    const entry = getTask(state, input.taskId);
+    if (entry.status !== 'pending' || entry.attempts !== 0 || !entry.task.dependencies.length
+      || entry.invocations !== undefined || entry.setupAttempts !== undefined || entry.session !== undefined
+      || entry.handoff !== undefined || entry.claimToken !== undefined || entry.worktree !== undefined || entry.branch !== undefined
+      || entry.backoffUntil !== undefined || entry.findingIds !== undefined || entry.error !== undefined) {
+      throw new Error('workflow_dispatch_supplement_unstarted_task_required');
+    }
+    if (!entry.task.dependencies.every(id => getTask(state, id).status === 'accepted')) {
+      throw new Error('workflow_dependency_not_integrated');
+    }
+    if (input.actor.id !== 'unknown' && (state.schemaVersion !== 2
+      || input.actor.id !== state.bindings.lead.id || input.actor.model !== state.bindings.lead.model)) {
+      throw new Error('workflow_dispatch_supplement_actor_mismatch');
+    }
+    const receipt = parseWorkflowDispatchSupplement({ ...input,
+      sequence: (state.dispatchSupplements?.length ?? 0) + 1, orchestrationHost: active.host, at: now() });
+    state.dispatchSupplements = [...(state.dispatchSupplements ?? []), receipt];
+  });
+}
+/** Adopt one explicit lead-authored direct child of the saved integration head. */
+export async function integrateWorkflowLeadCommit(cwd: string, name: string, rawIntent: unknown): Promise<WorkflowState> {
+  const input: WorkflowLeadIntegrationIntent = parseWorkflowLeadIntegrationIntent(rawIntent);
+  if (redactWorkflowText(JSON.stringify(input)) !== JSON.stringify(input)) throw new Error('workflow_sensitive_input_rejected');
+  return mutate(cwd, name, async (state, active) => {
+    integrated(state);
+    if (state.reviews.some(review => review.findings.some(finding => !finding.disposition
+      || finding.disposition === 'fix' && !finding.fixedBy))) throw new Error('workflow_findings_require_adjudication_or_fix');
+    if (state.reviewPasses >= state.options.maxReviewPasses) throw new Error('workflow_review_limit_reached');
+    if (git(cwd, ['branch', '--show-current']) !== state.plan.integrationBranch) throw new Error('workflow_integration_branch_mismatch');
+    if (!clean(cwd)) throw new Error('workflow_integration_worktree_dirty');
+    if (input.expectedParent !== state.integrationHead) throw new Error('workflow_lead_integration_parent_mismatch');
+    const head = git(cwd, ['rev-parse', 'HEAD']);
+    const branchHead = git(cwd, ['rev-parse', `refs/heads/${state.plan.integrationBranch}`]);
+    if (head !== input.expectedHead || branchHead !== input.expectedHead) throw new Error('workflow_lead_integration_head_mismatch');
+    const parents = git(cwd, ['rev-list', '--parents', '-n', '1', input.expectedHead]).split(' ');
+    if (parents.length !== 2 || parents[1] !== input.expectedParent
+      || git(cwd, ['rev-list', '--count', `${input.expectedParent}..${input.expectedHead}`]) !== '1') {
+      throw new Error('workflow_lead_integration_single_commit_required');
+    }
+    const changedFiles = gitRaw(cwd, ['diff', '--name-only', '--no-renames', '-z', input.expectedParent, input.expectedHead])
+      .split('\0').filter(Boolean);
+    if (!changedFiles.length || changedFiles.length > 100
+      || JSON.stringify([...changedFiles].sort()) !== JSON.stringify([...input.paths].sort())) {
+      throw new Error('workflow_lead_integration_changed_files_mismatch');
+    }
+    if (state.schemaVersion === 2 && input.actor.id !== 'unknown'
+      && (input.actor.id !== state.bindings.lead.id || input.actor.model !== state.bindings.lead.model)) {
+      throw new Error('workflow_lead_integration_actor_mismatch');
+    }
+    const refs = git(cwd, ['for-each-ref', '--format=%(refname) %(objectname)']);
+    const checks = [];
+    for (const [index, command] of input.checks.entries()) {
+      const result = await runWorkflowProcess({ ...command, cwd, timeoutMs: state.options.timeoutMs,
+        artifactPrefix: join(artifactsRoot(state), `lead-integration-${(state.leadIntegrations?.length ?? 0) + 1}-${index}-${randomUUID()}`) });
+      try {
+        if (git(cwd, ['for-each-ref', '--format=%(refname) %(objectname)']) !== refs
+          || git(cwd, ['branch', '--show-current']) !== state.plan.integrationBranch
+          || git(cwd, ['rev-parse', 'HEAD']) !== input.expectedHead || !clean(cwd)) throw new Error('changed');
+      } catch { throw new Error('workflow_lead_integration_repository_changed'); }
+      if (!result.passed) throw new Error('workflow_lead_integration_check_failed');
+      checks.push({ command, passed: true as const, artifacts: result.artifacts });
+    }
+    const record = parseWorkflowLeadIntegration({ sequence: (state.leadIntegrations?.length ?? 0) + 1,
+      parent: input.expectedParent, head: input.expectedHead, changedFiles, orchestrationHost: active.host,
+      actor: input.actor, authorityRef: input.authorityRef, reason: input.reason, checks, at: now() });
+    state.leadIntegrations = [...(state.leadIntegrations ?? []), record];
+    state.integrationHead = input.expectedHead;
+    delete state.verification;
+    state.stage = 'integration';
+  });
+}
 export async function rejectWorkflowTask(cwd: string, name: string, taskId: string, reason: string): Promise<WorkflowState> {
   return mutate(cwd, name, async state => {
     const entry = getTask(state, taskId);
     const safeReason = redactWorkflowText(boundedText(reason, 1000));
     // Explicit rejection is the inspected settlement for an attempt orphaned by a dead controller.
-    if (entry.status === 'running') settleOrphanedAttempt(state, entry);
+    if (entry.status === 'running' || hasTrailingIncompleteInvocation(entry)) settleOrphanedAttempt(state, entry);
     if (!['pending', 'completed', 'failed'].includes(entry.status)) throw new Error('workflow_task_cannot_be_rejected');
     entry.status = 'rejected'; entry.error = safeReason; entry.updatedAt = now();
   });
 }
 function integrated(state: WorkflowState): void {
+  assertNoIncompleteTaskInvocations(state);
   if (state.tasks.some(entry => !['accepted', 'rejected'].includes(entry.status)) || !state.tasks.some(entry => entry.status === 'accepted')) throw new Error('workflow_integration_incomplete');
 }
 export async function verifyWorkflow(cwd: string, name: string): Promise<WorkflowState> {
@@ -713,7 +871,7 @@ export function parseWorkflowReviewFindings(value: unknown, pass: number, cwd: s
       ? { ...finding, file: relativeFile(finding.file) } : finding) }, pass);
 }
 function reviewContext(state: WorkflowStateV2): { projectInstructions: Array<{ path: string; content: string }>; sourceInventory: string; changes: string } {
-  const affected = [...git(state.cwd, ['diff', '--name-only', '-z', state.plan.baseCommit, state.integrationHead]).split('\0').filter(Boolean),
+  const affected = [...gitRaw(state.cwd, ['diff', '--name-only', '-z', state.plan.baseCommit, state.integrationHead]).split('\0').filter(Boolean),
     ...state.tasks.flatMap(entry => [...entry.task.writeScope, ...entry.task.readScope])];
   const paths = new Set(['AGENTS.md', 'CLAUDE.md']);
   for (const path of affected) {
@@ -846,7 +1004,9 @@ export async function addWorkflowFix(cwd: string, name: string, rawTask: unknown
 export async function finishWorkflow(cwd: string, name: string): Promise<WorkflowState> {
   return mutate(cwd, name, async state => {
     verificationGate(state);
-    if (!state.reviews.length) throw new Error('workflow_review_required');
+    const review = state.reviews.at(-1);
+    if (!review) throw new Error('workflow_review_required');
+    if (review.head !== state.integrationHead) throw new Error('workflow_current_review_required');
     const findings = state.reviews.flatMap(review => review.findings);
     if (findings.some(finding => !finding.disposition || finding.disposition === 'fix' && !finding.fixedBy)) throw new Error('workflow_unresolved_findings');
     state.stage = 'complete';
@@ -866,6 +1026,18 @@ export function workflowStatus(cwd: string, name: string): Record<string, unknow
         bindingId: attempt.binding.id, outcome: attempt.outcome, relation: attempt.provenance.relation, context: attempt.provenance.context })) } : {}),
     activeWorkers: state.tasks.filter(entry => entry.status === 'running').length, integrationBranch: state.plan.integrationBranch,
     failedTasks: state.tasks.filter(entry => entry.status === 'failed').length,
+    leadIntegrationCount: state.leadIntegrations?.length ?? 0,
+    omittedLeadIntegrations: Math.max(0, (state.leadIntegrations?.length ?? 0) - 3),
+    leadIntegrations: (state.leadIntegrations ?? []).slice(-3).map(entry => ({ sequence: entry.sequence, parent: entry.parent, head: entry.head,
+      changedFileCount: entry.changedFiles.length, changedFiles: entry.changedFiles.slice(0, 3).map(path => path.slice(0, 200)),
+      orchestrationHost: entry.orchestrationHost, actor: entry.actor, authorityRef: entry.authorityRef.slice(0, 200),
+      reason: entry.reason.slice(0, 200), at: entry.at })),
+    dispatchSupplementCount: state.dispatchSupplements?.length ?? 0,
+    omittedDispatchSupplements: Math.max(0, (state.dispatchSupplements?.length ?? 0) - 3),
+    dispatchSupplements: (state.dispatchSupplements ?? []).slice(-3).map(entry => ({ sequence: entry.sequence,
+      taskId: entry.taskId, expectedInputHead: entry.expectedInputHead, orchestrationHost: entry.orchestrationHost,
+      actor: entry.actor, authorityRef: entry.authorityRef.slice(0, 200), reason: entry.reason.slice(0, 200),
+      contentSha256: entry.contentSha256, at: entry.at })),
     verification: state.verification ? { head: state.verification.head, passed: state.verification.passed } : null,
     reviewPasses: state.reviewPasses, maxReviewPasses: state.options.maxReviewPasses,
     findings: (state.reviews.at(-1)?.findings ?? []).map(finding => ({ ...finding, message: finding.message.slice(0, 300), reason: finding.reason?.slice(0, 200) })),
@@ -883,7 +1055,11 @@ export function workflowStatus(cwd: string, name: string): Record<string, unknow
       return { id: entry.task.id, worker: entry.worker, provider: versioned ? actual?.providerRoute ?? null : legacyProvider(state), model: versioned ? actual?.model ?? null : state.options.glmModel,
       ...(versioned ? { bindingId: actual?.id ?? null, selectedBinding: { id: versioned.bindings.implementer.id,
         provider: versioned.bindings.implementer.providerRoute, model: versioned.bindings.implementer.model } } : {}),
-      status: entry.status, attempts: entry.attempts, backoffUntil: entry.backoffUntil, worktree: entry.worktree, branch: entry.branch, updatedAt: entry.updatedAt,
+      status: entry.status, attempts: entry.attempts, setupAttempts: entry.setupAttempts?.length ?? 0,
+      ...(entry.setupAttempts?.at(-1) ? { setup: { sequence: entry.setupAttempts.at(-1)!.sequence,
+        mode: entry.setupAttempts.at(-1)!.mode, outcome: entry.setupAttempts.at(-1)!.outcome, error: entry.setupAttempts.at(-1)!.error,
+        detail: entry.setupAttempts.at(-1)!.detail, artifactPath: entry.setupAttempts.at(-1)!.artifact?.path } } : {}),
+      backoffUntil: entry.backoffUntil, worktree: entry.worktree, branch: entry.branch, updatedAt: entry.updatedAt,
       ...(blockedReason ? { readiness: 'blocked', blockedBy: blockedDependencies.map(dependency => dependency.task.id), blockedReason } : {}),
       ...(entry.session ? { session: { confirmed: entry.session.confirmed,
         resumeCandidate: entry.status === 'failed' && entry.session.confirmed && (versioned
@@ -900,6 +1076,12 @@ export function workflowStatus(cwd: string, name: string): Record<string, unknow
         risks: entry.handoff.risks.slice(0, 3).map(text => text.slice(0, 160)), preview: true,
         artifacts: entry.handoff.artifacts.filter(artifact => artifact.kind === 'workflow-result' || entry.status === 'failed').slice(0, 3)
           .map(artifact => ({ path: artifact.path, kind: artifact.kind })) } } : {}) }; }) };
+  while (Buffer.byteLength(JSON.stringify(result)) > 16 * 1024 && result.leadIntegrations.length) {
+    result.leadIntegrations.shift(); result.omittedLeadIntegrations++;
+  }
+  while (Buffer.byteLength(JSON.stringify(result)) > 16 * 1024 && result.dispatchSupplements.length) {
+    result.dispatchSupplements.shift(); result.omittedDispatchSupplements++;
+  }
   while (Buffer.byteLength(JSON.stringify(result)) > 16 * 1024 && result.tasks.length) {
     result.tasks.pop(); result.omittedTasks++;
   }

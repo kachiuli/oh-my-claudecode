@@ -238,6 +238,70 @@ describe('bounded one-shot workflow process', () => {
     expect(result.artifacts[0]!.sizeBytes).toBeLessThanOrEqual(1024 * 1024);
   });
 
+  it('retains complete identity and model-usage evidence beyond the stdout tail cap', async () => {
+    const result = await runMeasured(`
+      const session='12345678-1234-4123-8123-123456789abc';
+      process.stdout.write(JSON.stringify({type:'system',subtype:'init',session_id:session,model:'glm-5.3'})+'\\n');
+      for(let index=0;index<180;index++) process.stdout.write(JSON.stringify({type:'assistant',session_id:session,
+        message:{model:'glm-5.3',content:'PRIVATE_CONTENT'.padEnd(9000,'x')}})+'\\n');
+      process.stdout.write(JSON.stringify({type:'result',subtype:'success',session_id:session,
+        modelUsage:{'glm-5.3':{inputTokens:1,outputTokens:2,cacheReadInputTokens:0,cacheCreationInputTokens:0}}})+'\\n');
+    `);
+    expect(result).toMatchObject({ passed: true, stdoutTruncated: true, telemetry: { status: 'measured',
+      evidence: { diagnosticLogComplete: false, eventStreamComplete: true, identityEvidenceComplete: true,
+        identityConsistent: true, accountingEvidenceComplete: true, terminalEventCount: 1,
+        sessions: [{ value: '12345678-1234-4123-8123-123456789abc', initEvents: 1, assistantEvents: 180, terminalEvents: 1 }],
+        models: [{ value: 'glm-5.3', initEvents: 1, assistantEvents: 180, terminalUsageBuckets: 1 }],
+        terminalUsageBuckets: [{ model: 'glm-5.3', inputTokens: 1, outputTokens: 2,
+          cacheReadInputTokens: 0, cacheCreationInputTokens: 0, observations: 1 }] } } });
+    const output = readFileSync(result.artifacts[0]!.path, 'utf8');
+    expect(output).toContain('[output truncated]');
+    expect(output).not.toContain('"subtype":"init"');
+    expect(output).toContain('"type":"result"');
+    expect(JSON.stringify(result.telemetry?.evidence)).not.toContain('PRIVATE_CONTENT');
+    expect(Buffer.byteLength(JSON.stringify(result.telemetry?.evidence))).toBeLessThan(64 * 1024);
+  });
+
+  it('retains conflicting model and session identities from the discarded stdout prefix', async () => {
+    const result = await runMeasured(`
+      const expected='12345678-1234-4123-8123-123456789abc';
+      const wrong='87654321-1234-4123-8123-123456789abc';
+      process.stdout.write(JSON.stringify({type:'system',subtype:'init',session_id:expected,model:'glm-5.3'})+'\\n');
+      process.stdout.write(JSON.stringify({type:'assistant',session_id:wrong,message:{model:'glm-5.3-flash',content:'discarded'}})+'\\n');
+      for(let index=0;index<180;index++) process.stdout.write(JSON.stringify({type:'assistant',session_id:expected,
+        message:{model:'glm-5.3',content:'x'.repeat(9000)}})+'\\n');
+      process.stdout.write(JSON.stringify({type:'result',subtype:'success',session_id:expected,
+        modelUsage:{'glm-5.3':{inputTokens:1,outputTokens:2,cacheReadInputTokens:0,cacheCreationInputTokens:0}}})+'\\n');
+    `);
+    expect(result.stdoutTruncated).toBe(true);
+    expect(result.telemetry?.sessionId).toBeUndefined();
+    expect(result.telemetry?.diagnostics).toEqual(expect.arrayContaining([
+      'model_identity_conflict', 'session_identity_conflict', 'stdout_truncated',
+    ]));
+    expect(result.telemetry?.evidence).toMatchObject({ diagnosticLogComplete: false,
+      identityEvidenceComplete: true, identityConsistent: false, accountingEvidenceComplete: true });
+    expect(result.telemetry?.evidence?.sessions.map(entry => entry.value)).toEqual([
+      '12345678-1234-4123-8123-123456789abc', '87654321-1234-4123-8123-123456789abc',
+    ]);
+    expect(result.telemetry?.evidence?.models.map(entry => entry.value)).toEqual(['glm-5.3', 'glm-5.3-flash']);
+    expect(readFileSync(result.artifacts[0]!.path, 'utf8')).not.toContain('discarded');
+  });
+
+  it('marks the diagnostic log incomplete when stderr alone exceeds its cap', async () => {
+    const result = await runMeasured(`
+      const session='12345678-1234-4123-8123-123456789abc';
+      process.stdout.write(JSON.stringify({type:'system',subtype:'init',session_id:session,model:'glm-5.3'})+'\\n');
+      process.stdout.write(JSON.stringify({type:'result',subtype:'success',session_id:session,
+        modelUsage:{'glm-5.3':{inputTokens:1,outputTokens:2,cacheReadInputTokens:0,cacheCreationInputTokens:0}}})+'\\n');
+      process.stderr.write('synthetic diagnostic '.repeat(70000));
+    `);
+    expect(result).toMatchObject({ passed: true, stdoutTruncated: false, telemetry: { status: 'measured',
+      evidence: { diagnosticLogComplete: false, eventStreamComplete: true, identityEvidenceComplete: true,
+        accountingEvidenceComplete: true } } });
+    expect(result.telemetry?.diagnostics).toContain('stderr_truncated');
+    expect(result.artifacts[1]!.sizeBytes).toBeLessThanOrEqual(1024 * 1024);
+  });
+
   it('keeps only complete records when a credential crosses the retained stdout boundary', async () => {
     vi.stubEnv('OMC_FIXTURE_API_TOKEN', 'splice-sensitive-credential-1234567890');
     const result = await runMeasured(`
@@ -321,6 +385,8 @@ describe('bounded one-shot workflow process', () => {
     expect(result.passed).toBe(false);
     expect(result.error).toBe('process_failed');
     expect(result.telemetry!.diagnostics).toContain('missing_terminal_event');
+    expect(result.telemetry!.evidence).toMatchObject({ terminalEventCount: 0,
+      identityEvidenceComplete: false, accountingEvidenceComplete: false });
   });
 
   it('leaves V1 output semantics unchanged without collection enabled', async () => {
@@ -345,6 +411,24 @@ describe('bounded one-shot workflow process', () => {
     expect(readFileSync(result.artifacts[0]!.path, 'utf8')).toContain('[REDACTED]');
   });
 
+  it('rejects a known private value before retaining model evidence', async () => {
+    const privateModel = 'glm-private-fixture-53';
+    const result = await runWorkflowProcess({ command: process.execPath, args: ['-e', `
+      const model=process.env.OMC_FIXTURE_API_TOKEN;
+      process.stdout.write(JSON.stringify({type:'system',subtype:'init',
+        session_id:'12345678-1234-4123-8123-123456789abc',model})+'\\n');
+      process.stdout.write(JSON.stringify({type:'result',subtype:'success',
+        session_id:'12345678-1234-4123-8123-123456789abc',modelUsage:{[model]:{
+          inputTokens:1,outputTokens:2,cacheReadInputTokens:0,cacheCreationInputTokens:0}}})+'\\n');
+    `], cwd, provider: 'glm', collectUsage: true, timeoutMs: 5000, artifactPrefix: join(cwd, 'private-model'),
+    environment: { OMC_FIXTURE_API_TOKEN: privateModel }, redactionEnvironment: { OMC_FIXTURE_API_TOKEN: privateModel } });
+    expect(JSON.stringify(result)).not.toContain(privateModel);
+    expect(result.telemetry?.diagnostics).toContain('model_identity_redacted');
+    expect(result.telemetry?.evidence).toMatchObject({ identityEvidenceComplete: false,
+      accountingEvidenceComplete: false, models: [], terminalUsageBuckets: [] });
+    expect(readFileSync(result.artifacts[0]!.path, 'utf8')).toContain('[REDACTED]');
+  });
+
   it.each([0, 1])('accepts recovered Codex errors only when completion and process exit (%s) succeed', async exitCode => {
     const result = await runMeasured(`
       process.stdout.write(JSON.stringify({type:'error',message:'Reconnecting 1/5'})+'\\n');
@@ -365,6 +449,8 @@ describe('bounded one-shot workflow process', () => {
         cacheReadInputTokens:80,cacheCreationInputTokens:20}}})+'\\n')`);
       expect(result.telemetry!.sessionId).toBeUndefined();
       expect(result.telemetry!.diagnostics).toContain('session_identity_invalid');
+      expect(result.telemetry!.evidence?.sessions).toEqual([]);
+      expect(JSON.stringify(result.telemetry!.evidence).toLowerCase()).not.toContain(credential.toLowerCase());
       expect(result.telemetry!.status).toBe('partial');
       expect(JSON.stringify(result).toLowerCase()).not.toContain(credential.toLowerCase());
       expect(readFileSync(result.artifacts[0]!.path, 'utf8')).toContain('[REDACTED]');
