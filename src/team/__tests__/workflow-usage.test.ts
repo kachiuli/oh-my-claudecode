@@ -14,8 +14,10 @@ describe('workflow terminal usage accounting', () => {
   it('preserves the normal Claude route while reading Claude Code all-model terminal usage', () => {
     const telemetry = collect([{ type: 'system', subtype: 'init', session_id: sessionId },
       { ...result, modelUsage: { 'claude-fable-5-1[1m]': modelUsage.glm } }], 'claude');
-    expect(telemetry).toEqual({ provider: 'claude', durationMs: 12, status: 'measured', scope: 'all-models',
+    expect(telemetry).toMatchObject({ provider: 'claude', durationMs: 12, status: 'measured', scope: 'all-models',
       inputTokens: 200, outputTokens: 30, cacheReadTokens: 80, cacheWriteTokens: 20, sessionId, terminal: 'success' });
+    expect(telemetry.evidence).toMatchObject({ accountingEvidenceComplete: true, identityEvidenceComplete: true,
+      models: [{ value: 'claude-fable-5-1[1m]', terminalUsageBuckets: 1 }] });
   });
   const claudeResult = { ...result, modelUsage: { 'claude-fable-5-1[1m]': modelUsage.glm } };
   const claudeZero = { ...result, modelUsage: { 'claude-fable-5-1[1m]': {
@@ -37,7 +39,7 @@ describe('workflow terminal usage accounting', () => {
     { name: 'process failure after successful result', events: [claudeResult], passed: false,
       expected: { status: 'partial', inputTokens: 200, terminal: 'success', diagnostics: ['process_failed'] }, absent: [] },
     { name: 'conflicting terminal totals', events: [claudeResult, claudeZero], passed: true,
-      expected: { status: 'unknown', scope: 'unknown', diagnostics: ['conflicting_terminal_events'] }, absent: ['inputTokens'] },
+      expected: { status: 'unknown', scope: 'unknown', diagnostics: ['conflicting_terminal_events', 'duplicate_terminal_events'] }, absent: ['inputTokens'] },
     { name: 'counter overflow', events: [{ ...result, modelUsage: { claude: { ...modelUsage.glm, inputTokens: Number.MAX_SAFE_INTEGER } } }], passed: true,
       expected: { status: 'partial', outputTokens: 30, diagnostics: ['usage_overflow'] }, absent: ['inputTokens'] },
   ])('keeps normal Claude $name truthful', ({ events, passed, expected, absent }) => {
@@ -64,12 +66,17 @@ describe('workflow terminal usage accounting', () => {
         ...modelUsage, subagent: { inputTokens: 50, outputTokens: 10, cacheReadInputTokens: 20, cacheCreationInputTokens: 0 },
       } },
     ]);
-    expect(telemetry).toEqual({ provider: 'glm', durationMs: 12, status: 'measured', scope: 'all-models',
+    expect(telemetry).toMatchObject({ provider: 'glm', durationMs: 12, status: 'measured', scope: 'all-models',
       inputTokens: 270, outputTokens: 40, cacheReadTokens: 100, cacheWriteTokens: 20, sessionId, terminal: 'success' });
+    expect(telemetry.evidence?.terminalUsageBuckets).toHaveLength(2);
   });
 
-  it('counts identical terminal events once', () => {
-    expect(collect([result, result])).toMatchObject({ status: 'measured', inputTokens: 200, outputTokens: 30 });
+  it('counts identical terminal usage once while reporting duplicate terminal framing', () => {
+    const telemetry = collect([result, result]);
+    expect(telemetry).toMatchObject({ status: 'partial', inputTokens: 200, outputTokens: 30,
+      diagnostics: ['duplicate_terminal_events'] });
+    expect(telemetry.evidence).toMatchObject({ terminalEventCount: 2, accountingEvidenceComplete: false,
+      terminalUsageBuckets: [{ model: 'glm', observations: 2 }] });
   });
 
   it('does not subtract usage from previous invocations of a resumed session', () => {
@@ -146,6 +153,114 @@ describe('workflow terminal usage accounting', () => {
     expect(conflict.diagnostics).toContain('session_identity_conflict');
   });
 
+  it('retains bounded source counts for every observed session and primary model identity', () => {
+    const telemetry = collect([
+      { type: 'system', subtype: 'init', session_id: sessionId, model: 'glm-5.3' },
+      { type: 'assistant', session_id: sessionId, message: { model: 'glm-5.3', content: 'private transcript' } },
+      { ...result, modelUsage: { 'glm-5.3': modelUsage.glm } },
+    ]);
+    expect(telemetry.evidence).toMatchObject({ diagnosticLogComplete: true, eventStreamComplete: true,
+      identityEvidenceComplete: true, identityConsistent: true, accountingEvidenceComplete: true, terminalEventCount: 1,
+      sessions: [{ value: sessionId, initEvents: 1, assistantEvents: 1, terminalEvents: 1 }],
+      models: [{ value: 'glm-5.3', initEvents: 1, assistantEvents: 1, terminalUsageBuckets: 1 }],
+      terminalUsageBuckets: [{ model: 'glm-5.3', inputTokens: 100, outputTokens: 30,
+        cacheReadInputTokens: 80, cacheCreationInputTokens: 20, observations: 1 }] });
+    expect(JSON.stringify(telemetry.evidence)).not.toContain('private transcript');
+  });
+
+  it.each(['init', 'terminal'] as const)('marks identity evidence incomplete when the %s session endpoint is absent', endpoint => {
+    const init = { type: 'system', subtype: 'init', model: 'glm-5.3',
+      ...(endpoint === 'init' ? {} : { session_id: sessionId }) };
+    const terminal = { ...result, modelUsage: { 'glm-5.3': modelUsage.glm },
+      ...(endpoint === 'terminal' ? { session_id: undefined } : {}) };
+    const telemetry = collect([init, terminal]);
+    expect(telemetry.evidence).toMatchObject({ identityEvidenceComplete: false,
+      accountingEvidenceComplete: true, terminalEventCount: 1 });
+    expect(telemetry.diagnostics).toContain('missing_session_id');
+  });
+
+  it('retains conflicting identities without selecting a false session', () => {
+    const otherSession = '87654321-1234-4123-8123-123456789abc';
+    const telemetry = collect([
+      { type: 'system', subtype: 'init', session_id: sessionId, model: 'glm-5.3' },
+      { type: 'assistant', session_id: otherSession, message: { model: 'glm-5.3-flash', content: 'discarded' } },
+      { ...result, modelUsage: { 'glm-5.3': modelUsage.glm } },
+    ]);
+    expect(telemetry.sessionId).toBeUndefined();
+    expect(telemetry.diagnostics).toEqual(expect.arrayContaining(['model_identity_conflict', 'session_identity_conflict']));
+    expect(telemetry.evidence).toMatchObject({ identityEvidenceComplete: true, identityConsistent: false,
+      accountingEvidenceComplete: true });
+    expect(telemetry.evidence?.sessions.map(entry => entry.value)).toEqual([sessionId, otherSession].sort());
+    expect(telemetry.evidence?.models.map(entry => entry.value)).toEqual(['glm-5.3', 'glm-5.3-flash']);
+  });
+
+  it('keeps accounting complete when only the diagnostic log is truncated', () => {
+    const collector = createWorkflowUsageCollector('glm');
+    collector.write(Buffer.from(`${JSON.stringify({ type: 'system', subtype: 'init', session_id: sessionId, model: 'glm-5.3' })}\n`
+      + JSON.stringify({ ...result, modelUsage: { 'glm-5.3': modelUsage.glm } })));
+    const telemetry = collector.finish({ durationMs: 1, passed: true,
+      diagnosticLogComplete: false, eventStreamComplete: true });
+    expect(telemetry.status).toBe('measured');
+    expect(telemetry.evidence).toMatchObject({ diagnosticLogComplete: false, eventStreamComplete: true,
+      identityEvidenceComplete: true, accountingEvidenceComplete: true });
+  });
+
+  it('marks identity and accounting incomplete when the event stream is incomplete', () => {
+    const collector = createWorkflowUsageCollector('glm');
+    collector.write(Buffer.from(JSON.stringify({ ...result, modelUsage: { 'glm-5.3': modelUsage.glm } })));
+    const telemetry = collector.finish({ durationMs: 1, passed: true, eventStreamComplete: false });
+    expect(telemetry.evidence).toMatchObject({ eventStreamComplete: false,
+      identityEvidenceComplete: false, accountingEvidenceComplete: false });
+  });
+
+  it('bounds distinct model evidence and reports when identities are omitted', () => {
+    const events: unknown[] = [{ type: 'system', subtype: 'init', session_id: sessionId, model: 'glm-model-0' }];
+    for (let index = 1; index <= 65; index++) {
+      events.push({ type: 'assistant', session_id: sessionId, message: { model: `glm-model-${index}` } });
+    }
+    events.push({ ...result, modelUsage: { 'glm-model-0': modelUsage.glm } });
+    const telemetry = collect(events);
+    expect(telemetry.evidence?.models).toHaveLength(8);
+    expect(telemetry.evidence?.identityEvidenceComplete).toBe(false);
+    expect(telemetry.diagnostics).toContain('model_identity_evidence_overflow');
+  });
+
+  it.each([9, 64])('preserves exact totals for %s terminal models beyond the evidence cap', count => {
+    const models = Object.fromEntries(Array.from({ length: count }, (_, index) => [`glm-model-${index}`, modelUsage.glm]));
+    const telemetry = collect([{ type: 'system', subtype: 'init', session_id: sessionId, model: 'glm-model-0' },
+      { ...result, modelUsage: models }]);
+    expect(telemetry).toMatchObject({ status: 'partial', scope: 'all-models', inputTokens: count * 200,
+      outputTokens: count * 30, cacheReadTokens: count * 80, cacheWriteTokens: count * 20 });
+    expect(telemetry.evidence).toMatchObject({ accountingEvidenceComplete: false, identityEvidenceComplete: false });
+    expect(telemetry.evidence?.models).toHaveLength(8);
+    expect(telemetry.evidence?.terminalUsageBuckets).toHaveLength(8);
+    expect(telemetry.diagnostics).toContain('model_identity_evidence_overflow');
+  });
+
+  it('rejects a terminal usage object beyond the existing 64-model protocol bound', () => {
+    const models = Object.fromEntries(Array.from({ length: 65 }, (_, index) => [`glm-model-${index}`, modelUsage.glm]));
+    const telemetry = collect([{ ...result, modelUsage: models }]);
+    expect(telemetry.status).toBe('unknown');
+    expect(telemetry.diagnostics).toContain('invalid_model_usage');
+  });
+
+  it('keeps maximum bounded evidence below the workflow state read limit across all provider attempts', () => {
+    const modelIds = Array.from({ length: 8 }, (_, index) => `glm-${index}-${'x'.repeat(150)}`);
+    const events: unknown[] = [{ type: 'system', subtype: 'init', session_id: sessionId, model: modelIds[0] }];
+    for (let index = 1; index < 8; index++) events.push({ type: 'assistant',
+      session_id: `${String(index).padStart(8, '0')}-1234-4123-8123-123456789abc`,
+      message: { model: modelIds[index] } });
+    events.push({ type: 'result', subtype: 'success', session_id: sessionId,
+      modelUsage: Object.fromEntries(modelIds.map(model => [model, modelUsage.glm])) });
+    const evidence = collect(events).evidence!;
+    expect(evidence.sessions).toHaveLength(8);
+    expect(evidence.models).toHaveLength(8);
+    expect(evidence.terminalUsageBuckets).toHaveLength(8);
+    expect(Buffer.byteLength(JSON.stringify(evidence))).toBeLessThan(8 * 1024);
+    // 100 tasks x 5 attempts plus the maximum 10 review attempts leaves ample room for all other state fields.
+    expect(Buffer.byteLength(JSON.stringify(Array.from({ length: 510 }, () => evidence)))).toBeLessThan(8 * 1024 * 1024);
+  });
+
   it('distinguishes missing session metadata from an invalid supplied identity', () => {
     const telemetry = collect([{ type: 'system', subtype: 'init' }, { ...result, session_id: undefined }]);
     expect(telemetry.sessionId).toBeUndefined();
@@ -178,6 +293,7 @@ describe('workflow terminal usage accounting', () => {
     collector.write(Buffer.from(`\n${JSON.stringify(result)}\n`));
     const telemetry = collector.finish({ durationMs: 1, passed: true });
     expect(telemetry).toMatchObject({ status: 'partial', inputTokens: 200, diagnostics: ['malformed_event', 'oversized_event'] });
+    expect(telemetry.evidence).toMatchObject({ identityEvidenceComplete: false, accountingEvidenceComplete: false });
     expect(JSON.stringify(telemetry)).not.toContain('private content');
   });
 
@@ -188,7 +304,7 @@ describe('workflow terminal usage accounting', () => {
   it('uses Codex total input without adding its cached subset or reasoning output again', () => {
     expect(collect([{ type: 'thread.started', thread_id: sessionId }, { type: 'turn.completed', usage: {
       input_tokens: 150, cached_input_tokens: 100, output_tokens: 25, reasoning_output_tokens: 20,
-    } }], 'codex')).toEqual({ provider: 'codex', durationMs: 12, status: 'measured', scope: 'turn',
+    } }], 'codex')).toMatchObject({ provider: 'codex', durationMs: 12, status: 'measured', scope: 'turn',
       inputTokens: 150, outputTokens: 25, cacheReadTokens: 100, sessionId, terminal: 'success' });
   });
 

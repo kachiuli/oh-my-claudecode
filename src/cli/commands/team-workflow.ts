@@ -3,8 +3,8 @@ import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { publishWorkflowResultArtifact } from '../../team/workflow-publication.js';
 import {
   acceptWorkflowTask, addWorkflowFix, adjudicateWorkflow, cleanupWorkflow, finishWorkflow,
-  initWorkflow, initWorkflowV2, readWorkflow, rejectWorkflowTask, resumeWorkflowTask, reviewWorkflow, runWorkflow,
-  substituteWorkflowBinding, verifyWorkflow, workflowStatus,
+  initWorkflow, initWorkflowV2, integrateWorkflowLeadCommit, readWorkflow, rejectWorkflowTask, resumeWorkflowTask, reviewWorkflow, runWorkflow,
+  substituteWorkflowBinding, supplementWorkflowTask, verifyWorkflow, workflowStatus,
 } from '../../team/workflow.js';
 import type { WorkflowOptions } from '../../team/workflow.js';
 import { validateCliCommandRef } from '../../team/model-contract.js';
@@ -23,7 +23,9 @@ export const WORKFLOW_HELP = `Usage: omc team workflow <operation>
   publish-result --source <verified.json> --result-file <absolute-designated-path> --task-id <task-id>
   resume <name> <task-id> --expected-head <integration-sha> --reason <reason> [--runtime <absolute-private-config.json>]
   substitute <name> --file <intent.json>
+  supplement <name> --file <intent.json>
   accept <name> <task-id>
+  integrate-lead <name> --file <integration.json>
   reject <name> <task-id> --reason <reason>
   verify <name>
   review <name> [--runtime <absolute-private-config.json>]
@@ -158,7 +160,7 @@ export async function workflowCommand(args: string[], cwd = process.cwd()): Prom
   const allowed: Record<string, string[]> = {
     init: ['--file', '--mode', '--workers', '--max-review-passes', '--max-attempts', '--timeout-ms', '--provider-policy', '--profile', '--bindings', '--codex-command'],
     run: ['--runtime'], status: [], usage: [], resume: ['--expected-head', '--reason', '--runtime'], accept: [], reject: ['--reason'], verify: [], review: ['--runtime'],
-    substitute: ['--file'], adjudicate: ['--file'], 'add-fix': ['--file'], finish: [], cleanup: [],
+    substitute: ['--file'], supplement: ['--file'], 'integrate-lead': ['--file'], adjudicate: ['--file'], 'add-fix': ['--file'], finish: [], cleanup: [],
     'publish-result': ['--source', '--result-file', '--task-id'],
   };
   if (!Object.hasOwn(allowed, operation)) throw new Error('workflow_unknown_operation');
@@ -265,6 +267,8 @@ export async function workflowCommand(args: string[], cwd = process.cwd()): Prom
       reason: boundedText(input.reason, 1000), authorityRef: boundedText(input.authorityRef, 1000),
       ...(input.taskId === undefined ? {} : { taskId: safeWorkflowId(input.taskId) }) });
   }
+  else if (operation === 'supplement') await supplementWorkflowTask(cwd, name, readInputFile(flags.get('--file')));
+  else if (operation === 'integrate-lead') await integrateWorkflowLeadCommit(cwd, name, readInputFile(flags.get('--file')));
   else if (operation === 'accept') await acceptWorkflowTask(cwd, name, positional[1]);
   else if (operation === 'reject') {
     const reason = flags.get('--reason');

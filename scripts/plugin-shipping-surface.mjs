@@ -82,7 +82,7 @@ function readJson(root, repoPath, label = repoPath) {
 }
 
 function git(root, args, { allowFailure = false } = {}) {
-  const result = spawnSync('git', args, { cwd: root, encoding: 'utf8' });
+  const result = spawnSync('git', args, { cwd: root, encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 });
   if (result.error) fail(`git ${args.join(' ')} could not start: ${result.error.message}`);
   if (result.status !== 0 && !allowFailure) {
     const detail = result.stderr.trim() || result.stdout.trim() || `exit ${result.status}`;

@@ -5,15 +5,15 @@
   "provenance": {
     "base": "05c800f40d1ad53b42a78609d2667ef4f726808b",
     "planningHead": "0a91273e61dbbd47eb0af4c02844409251e08398",
-    "head": "45a20d346269e09743eac7d051b30319d30d78eb",
-    "sourceSha256": "b24b83b8ee7147af86e491c292eb53d732da39f113e1c75ad940d2d9ad6c0f40",
+    "head": "e8083c9f5dd17f57b5a27ea45ed1cebbc74e41de",
+    "sourceSha256": "542a6079c06be2ba63f765b2e534c39c8770e891d2aea3660eec8fd0df8a3662",
     "generatedAt": null,
     "generator": "scripts/generate-inventory-graph.mjs"
   },
   "base": "05c800f40d1ad53b42a78609d2667ef4f726808b",
   "planningHead": "0a91273e61dbbd47eb0af4c02844409251e08398",
-  "head": "45a20d346269e09743eac7d051b30319d30d78eb",
-  "sourceSha256": "b24b83b8ee7147af86e491c292eb53d732da39f113e1c75ad940d2d9ad6c0f40",
+  "head": "e8083c9f5dd17f57b5a27ea45ed1cebbc74e41de",
+  "sourceSha256": "542a6079c06be2ba63f765b2e534c39c8770e891d2aea3660eec8fd0df8a3662",
   "counts": {
     "public": {
       "skills": 43,
@@ -76716,6 +76716,11 @@
       },
       {
         "from": "src/team/__tests__/workflow-state-v2.test.ts",
+        "to": "external:node:crypto",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-state-v2.test.ts",
         "to": "external:vitest",
         "kind": "imports"
       },
@@ -76723,6 +76728,11 @@
         "from": "src/team/__tests__/workflow-state-v2.test.ts",
         "to": "src/team/workflow-contracts.ts",
         "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-state-v2.test.ts",
+        "to": "src/team/workflow-contracts.ts",
+        "kind": "type-imports"
       },
       {
         "from": "src/team/__tests__/workflow-usage.test.ts",
@@ -80073,6 +80083,11 @@
         "from": "src/team/workflow-adapters.ts",
         "to": "src/team/workflow-contracts.ts",
         "kind": "type-imports"
+      },
+      {
+        "from": "src/team/workflow-contracts.ts",
+        "to": "external:node:crypto",
+        "kind": "imports"
       },
       {
         "from": "src/team/workflow-contracts.ts",
@@ -83682,11 +83697,11 @@
     ],
     "stats": {
       "nodeCount": 7182,
-      "edgeCount": 8248,
-      "importEdgeCount": 6804,
+      "edgeCount": 8251,
+      "importEdgeCount": 6806,
       "registerEdgeCount": 64
     }
   },
   "inventorySha256": "4dc5e7288e322dd6d4b1cdf54f5802be0a386187bd446cb247ccf2577c0e94d6",
-  "manifestSha256": "55eaad06997b7b0fe617f6b4bb61e6a380c33b1714af0f427705535ed7f9a1e8"
+  "manifestSha256": "7f36d8e54ebdb0c48d2c2827cb42de2da0aa8a2d0e449e7bd6c5d6f08ab1215a"
 }

@@ -77,3 +77,14 @@ The V1.4 compatibility matrix, setup safety and rollback rules, donor boundary a
 ## workflow-v1.5.6 MiMo workers
 
 This fork release adds separate `mimo-v2.6-pro` and `mimo-v2.6-flash` worker selection through Claude Code's Anthropic-compatible transport. `omc ask mimo`, `omc team N:mimo`, and the opt-in `claude-mimo-codex` workflow profile use a private `claude-mimo` profile. Existing Claude and GLM routes stay available. The package version remains 5.5.0. See the [MiMo setup guide](MIMO-WORKFLOW.md) for Windows and Bash launchers, API key placement, and model selection. Automated checks verify routing without a MiMo account; authenticated MiMo execution requires the operator's own key.
+
+## workflow-v1.5.7 workflow recovery and evidence
+
+This release addresses #38, #39, #40, and #41 for workflows led by either Claude Code or Codex. The package version remains 5.5.0. Install the custom release archive using the command above with `workflow-v1.5.7` in place of `workflow-v1.5`.
+
+- A Git worktree setup failure now records a bounded, redacted diagnostic without spending a provider attempt. After repairing the checkout condition, explicitly run the workflow again; OMC can reattach a retained task branch only when it still points to the expected base and is not in use by another worktree.
+- `omc team workflow integrate-lead <name> --file <integration.json>` can adopt one attributed lead commit directly on the saved integration head after all tasks settle. It validates the exact commit and paths, runs declared checks, records an append-only entry, and requires fresh verification and review before completion. Existing HEAD and protected-ref guards still apply to normal operations.
+- Worker telemetry now retains a bounded metadata summary of session IDs, model IDs, and terminal usage observations as events arrive. It reports diagnostic-log truncation separately from event-stream, identity, and accounting completeness, without storing transcripts or raw provider events in the summary.
+- A balanced workflow lead can append one attributed dispatch supplement to an unstarted dependent task. Its bounded content, authority, hash, and exact input head are recorded separately from the frozen plan and delivered in that task's prompt; scope, checks, and acceptance gates stay intact.
+
+The checkout recovery and telemetry cases were verified with synthetic in-repository fixtures, including a native Windows long-path failure and repair. Authenticated GLM or MiMo execution was not needed for these regression checks.

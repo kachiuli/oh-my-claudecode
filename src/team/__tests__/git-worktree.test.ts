@@ -68,6 +68,47 @@ describe('git-worktree', () => {
       expect(info2.reused).toBe(true);
     });
 
+    it('reattaches an unregistered task branch left at its requested base', () => {
+      const base = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoDir, encoding: 'utf8' }).trim();
+      const branch = `omc-team/${teamName}/worker-recover`;
+      execFileSync('git', ['branch', branch, base], { cwd: repoDir, stdio: 'pipe' });
+
+      const info = ensureWorkerWorktree(teamName, 'worker-recover', repoDir, { mode: 'named', baseRef: base });
+
+      expect(info?.branch).toBe(branch);
+      expect(info?.created).toBe(true);
+      expect(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: info!.path, encoding: 'utf8' }).trim()).toBe(base);
+    });
+
+    it('preserves a task branch that moved away from the requested base', () => {
+      const base = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoDir, encoding: 'utf8' }).trim();
+      writeFileSync(join(repoDir, 'moved.txt'), 'retained work');
+      execFileSync('git', ['add', 'moved.txt'], { cwd: repoDir, stdio: 'pipe' });
+      execFileSync('git', ['commit', '-m', 'Retained work'], { cwd: repoDir, stdio: 'pipe' });
+      const moved = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoDir, encoding: 'utf8' }).trim();
+      const branch = `omc-team/${teamName}/worker-moved`;
+      execFileSync('git', ['branch', branch, moved], { cwd: repoDir, stdio: 'pipe' });
+
+      expect(() => ensureWorkerWorktree(teamName, 'worker-moved', repoDir, {
+        mode: 'named', baseRef: base,
+      })).toThrow(/worktree_branch_mismatch/);
+      expect(execFileSync('git', ['rev-parse', branch], { cwd: repoDir, encoding: 'utf8' }).trim()).toBe(moved);
+    });
+
+    it('refuses a retained task branch registered to another worktree', () => {
+      const base = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoDir, encoding: 'utf8' }).trim();
+      const branch = `omc-team/${teamName}/worker-in-use`;
+      const other = join(repoDir, '.omc', 'other-registered-worktree');
+      mkdirSync(join(repoDir, '.omc'), { recursive: true });
+      execFileSync('git', ['worktree', 'add', '-b', branch, other, base], { cwd: repoDir, stdio: 'pipe' });
+
+      expect(() => ensureWorkerWorktree(teamName, 'worker-in-use', repoDir, {
+        mode: 'named', baseRef: base,
+      })).toThrow(/worktree_branch_in_use/);
+      expect(existsSync(other)).toBe(true);
+      execFileSync('git', ['worktree', 'remove', other], { cwd: repoDir, stdio: 'pipe' });
+    });
+
     it('rejects a stale plain directory instead of deleting files', () => {
       const stalePath = join(repoDir, '.omc', 'team', teamName, 'worktrees', 'worker-stale');
       rmSync(stalePath, { recursive: true, force: true });

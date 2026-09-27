@@ -83,11 +83,12 @@ describe('Claude/GLM/Codex workflow with real local fake providers', () => {
       expect(child.status).toBe(0);
       return child.pid!;
     }
-    async function orphanRunningAttempt(identity: unknown, controller?: unknown, attempt = 1) {
+    async function orphanRunningAttempt(identity: unknown, controller?: unknown, attempt = 1,
+      status: 'running' | 'failed' | 'completed' | 'accepted' = 'running') {
       await initWorkflow(fixture.cwd, plan(), options);
       const stateFile = String(workflowStatus(fixture.cwd, name).stateFile);
       const state = JSON.parse(readFileSync(stateFile, 'utf8'));
-      state.tasks[0] = { ...state.tasks[0], status: 'running', attempts: 1, claimToken: randomUUID(), invocations: [{
+      state.tasks[0] = { ...state.tasks[0], status, attempts: 1, claimToken: randomUUID(), invocations: [{
         orchestrationHost: 'claude', attempt, mode: 'fresh', model: 'glm-5.3', startedAt: new Date().toISOString(),
         outcome: 'failed', error: 'workflow_invocation_incomplete', artifacts: [],
         telemetry: { provider: 'glm', durationMs: 0, status: 'unknown', scope: 'unknown' },
@@ -152,6 +153,39 @@ describe('Claude/GLM/Codex workflow with real local fake providers', () => {
       expect(task.status).toBe('running');
       expect(task.claimToken).toBeDefined();
       expect(task.invocations?.[0].error).toBe('workflow_invocation_incomplete');
+    });
+
+    it.each(['failed', 'completed'] as const)(
+      'lets explicit rejection inspect and settle a dead trailing invocation from %s state', async status => {
+        await orphanRunningAttempt({ pid: exitedPid(), processStartedAt: currentProcessStartIdentity() }, undefined, 1, status);
+        const settled = await rejectWorkflowTask(fixture.cwd, name, 'a', 'Inspected crash-window attempt.');
+        expect(settled.tasks[0]).toMatchObject({ status: 'rejected', error: 'Inspected crash-window attempt.',
+          invocations: [expect.objectContaining({ outcome: 'failed', error: 'workflow_invocation_interrupted' })] });
+      });
+
+    it.each(['failed', 'completed'] as const)(
+      'refuses explicit rejection of a live trailing invocation from %s state', async status => {
+        await orphanRunningAttempt({ pid: process.pid, processStartedAt: currentProcessStartIdentity() }, undefined, 1, status);
+        await expect(rejectWorkflowTask(fixture.cwd, name, 'a', 'Do not settle a live provider.'))
+          .rejects.toThrow('workflow_interrupted_worker_requires_inspection');
+        expect(readWorkflow(fixture.cwd, name).tasks[0]).toMatchObject({ status,
+          invocations: [expect.objectContaining({ error: 'workflow_invocation_incomplete' })] });
+      });
+
+    it('refuses accepting completed work whose provider invocation was never settled', async () => {
+      await orphanRunningAttempt({ pid: exitedPid(), processStartedAt: currentProcessStartIdentity() }, undefined, 1, 'completed');
+      const before = readWorkflow(fixture.cwd, name).tasks[0]!.invocations;
+      await expect(acceptWorkflowTask(fixture.cwd, name, 'a'))
+        .rejects.toThrow('workflow_interrupted_worker_requires_inspection');
+      expect(readWorkflow(fixture.cwd, name).tasks[0]!.invocations).toEqual(before);
+      expect(fixture.git('rev-parse', 'HEAD')).toBe(fixture.baseCommit);
+    });
+
+    it('refuses integrated-stage operations while an accepted task invocation is incomplete', async () => {
+      await orphanRunningAttempt({ pid: exitedPid(), processStartedAt: currentProcessStartIdentity() }, undefined, 1, 'accepted');
+      const before = readWorkflow(fixture.cwd, name).tasks[0]!.invocations;
+      await expect(verifyWorkflow(fixture.cwd, name)).rejects.toThrow('workflow_interrupted_worker_requires_inspection');
+      expect(readWorkflow(fixture.cwd, name).tasks[0]!.invocations).toEqual(before);
     });
 
     it('lets recovery pass, rejection settle, and selection resume after a crash left the attempt and advisory lock behind', async () => {
@@ -319,6 +353,8 @@ describe('Claude/GLM/Codex workflow with real local fake providers', () => {
     const failed = (await readWorkflow(fixture.cwd, name)).tasks[0]!;
     expect(failed.status).toBe('failed');
     expect(failed.attempts).toBe(2);
+    expect(failed.invocations).toHaveLength(2);
+    expect(failed.invocations?.every(invocation => invocation.error !== 'workflow_invocation_incomplete')).toBe(true);
     expect(fixture.events().filter(event => event.event === 'start')).toHaveLength(2);
     expect(JSON.stringify(failed).length).toBeLessThan(12000);
     expect(JSON.stringify(failed)).not.toContain('WORKER_PRIVATE_TRANSCRIPT');
@@ -758,12 +794,67 @@ describe('Claude/GLM/Codex workflow with real local fake providers', () => {
 
   it('bounds status for the maximum planned task count and reports omitted rows', async () => {
     await initWorkflow(fixture.cwd, plan(Array.from({ length: 100 }, (_, index) => task(`component-${String(index).padStart(20, '0')}`))), options);
-    const status = workflowStatus(fixture.cwd, name);
+    let status = workflowStatus(fixture.cwd, name);
     expect(Buffer.byteLength(JSON.stringify(status))).toBeLessThanOrEqual(16 * 1024);
     expect(status.omittedTasks).toBeGreaterThan(0);
     expect((status.tasks as unknown[]).length + Number(status.omittedTasks)).toBe(100);
     expect(status.failedTasks).toBe(0);
     expect(existsSync(String(status.stateFile))).toBe(true);
+
+    const state = readWorkflow(fixture.cwd, name);
+    const heads = ['c'.repeat(40), 'd'.repeat(40), 'e'.repeat(40)];
+    const leadIntegrations = heads.map((head, index) => ({ sequence: index + 1,
+      parent: index ? heads[index - 1]! : state.integrationHead, head,
+      changedFiles: Array.from({ length: 100 }, (_, pathIndex) =>
+        `src/lead-${index}/${String(pathIndex).padStart(3, '0')}-${'x'.repeat(180)}.ts`),
+      orchestrationHost: 'codex', actor: { id: 'unknown', model: 'unknown' }, authorityRef: `issue-39-${index}`,
+      reason: 'Exercise the bounded status preview.', checks: [{ command: check, passed: true, artifacts: [] }],
+      at: `2026-09-27T00:00:0${index}.000Z` }));
+    writeFileSync(String(status.stateFile), `${JSON.stringify({ ...state, integrationHead: heads.at(-1), stage: 'integration', leadIntegrations })}\n`);
+    status = workflowStatus(fixture.cwd, name);
+    expect(Buffer.byteLength(JSON.stringify(status))).toBeLessThanOrEqual(16 * 1024);
+    expect(status.leadIntegrationCount).toBe(3);
+    expect(Number(status.omittedLeadIntegrations)).toBeGreaterThan(0);
+    expect((status.leadIntegrations as unknown[]).length + Number(status.omittedLeadIntegrations)).toBe(3);
+  });
+
+  it('refuses an oversized save before replacing the last readable workflow state', async () => {
+    const historyIds = ['history-a', 'history-b', 'history-c', 'history-d'];
+    await initWorkflow(fixture.cwd, plan([...historyIds.map(id => task(id)), task('target')]), options);
+    const status = workflowStatus(fixture.cwd, name);
+    const stateFile = String(status.stateFile);
+    const state = readWorkflow(fixture.cwd, name);
+    const artifactPaths: Array<{ path: string }> = [];
+    for (const entry of state.tasks.filter(entry => historyIds.includes(entry.task.id))) {
+      entry.status = 'failed'; entry.error = 'workflow_worktree_setup_failed';
+      entry.setupAttempts = Array.from({ length: 1000 }, (_, index) => {
+        const artifact = { kind: 'workflow-worktree-setup',
+          path: `C:/project/.omc/setup/${entry.task.id}/${index + 1}/`, contentHash: 'a'.repeat(64),
+          createdAt: '2026-09-27T00:00:00.000Z', producer: { system: 'omc' as const,
+            component: 'team-workflow', worker: entry.worker }, sizeBytes: 1, retention: 'until-completion' as const };
+        artifactPaths.push(artifact);
+        return { sequence: index + 1, startedAt: '2026-09-27T00:00:00.000Z' as const,
+          outcome: 'failed' as const, error: 'workflow_worktree_setup_failed' as const, artifact };
+      });
+    }
+    const limit = 16 * 1024 * 1024;
+    const encode = () => `${JSON.stringify(state, null, 2)}\n`;
+    let remaining = limit - 128 - Buffer.byteLength(encode());
+    expect(remaining).toBeGreaterThan(1000);
+    for (const artifact of artifactPaths) {
+      const added = Math.min(4000 - artifact.path.length, remaining);
+      artifact.path += 'x'.repeat(added); remaining -= added;
+      if (!remaining) break;
+    }
+    expect(remaining).toBe(0);
+    const readable = encode();
+    expect(Buffer.byteLength(readable)).toBe(limit - 128);
+    writeFileSync(stateFile, readable);
+
+    await expect(rejectWorkflowTask(fixture.cwd, name, 'target', 'y'.repeat(1000)))
+      .rejects.toThrow('workflow_state_too_large');
+    expect(readFileSync(stateFile, 'utf8')).toBe(readable);
+    expect(readWorkflow(fixture.cwd, name).tasks.find(entry => entry.task.id === 'target')?.status).toBe('pending');
   });
 
   it('bounds status with maximum findings and retains failed-task totals when task rows are omitted', async () => {

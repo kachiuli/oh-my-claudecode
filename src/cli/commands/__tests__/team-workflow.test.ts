@@ -9,6 +9,8 @@ const api = vi.hoisted(() => ({
   initWorkflow: vi.fn(async () => ({ plan: { name: 'feature' } })),
   initWorkflowV2: vi.fn(async () => ({ plan: { name: 'feature' } })),
   substituteWorkflowBinding: vi.fn(),
+  supplementWorkflowTask: vi.fn(),
+  integrateWorkflowLeadCommit: vi.fn(),
   runWorkflow: vi.fn(), acceptWorkflowTask: vi.fn(), rejectWorkflowTask: vi.fn(),
   resumeWorkflowTask: vi.fn(), readWorkflow: vi.fn(),
   verifyWorkflow: vi.fn(), reviewWorkflow: vi.fn(), adjudicateWorkflow: vi.fn(),
@@ -446,6 +448,42 @@ describe('team workflow CLI', () => {
     await workflowCommand(['adjudicate', 'feature', '--file', file], root);
     expect(api.adjudicateWorkflow).toHaveBeenCalledWith(root, 'feature', decisions);
     expect(api.runWorkflow).not.toHaveBeenCalled();
+  });
+
+  it('forwards an explicit lead-integration intent file and documents the operation', async () => {
+    const file = join(root, 'lead-integration.json');
+    const intent = { expectedParent: 'a'.repeat(40), expectedHead: 'b'.repeat(40),
+      actor: { id: 'unknown', model: 'unknown' }, authorityRef: 'issue-39', reason: 'Authorized registry pin',
+      paths: ['src/registry.ts'], checks: [{ command: process.execPath, args: ['-e', 'process.exit(0)'] }] };
+    writeFileSync(file, JSON.stringify(intent));
+    await workflowCommand(['integrate-lead', 'feature', '--file', file], root);
+    expect(api.integrateWorkflowLeadCommit).toHaveBeenCalledWith(root, 'feature', intent);
+    await workflowCommand(['--help'], root);
+    expect(console.log).toHaveBeenCalledWith(expect.stringContaining('integrate-lead <name> --file <integration.json>'));
+  });
+
+  it('forwards one explicit dispatch supplement file and documents the operation', async () => {
+    const file = join(root, 'supplement.json');
+    const intent = { taskId: 'task-b', expectedInputHead: 'a'.repeat(40), actor: { id: 'unknown', model: 'unknown' },
+      authorityRef: 'issue-41', reason: 'Clarify the accepted dependency contract', content: 'Use the public parser from task-a.',
+      contentSha256: 'b'.repeat(64) };
+    writeFileSync(file, JSON.stringify(intent));
+    await workflowCommand(['supplement', 'feature', '--file', file], root);
+    expect(api.supplementWorkflowTask).toHaveBeenCalledWith(root, 'feature', intent);
+    await workflowCommand(['--help'], root);
+    expect(console.log).toHaveBeenCalledWith(expect.stringContaining('supplement <name> --file <intent.json>'));
+  });
+
+  it('requires a dispatch supplement input file', async () => {
+    await expect(workflowCommand(['supplement', 'feature'], root)).rejects.toThrow('workflow_input_file_required');
+    expect(api.supplementWorkflowTask).not.toHaveBeenCalled();
+  });
+
+  it('requires exactly one bounded lead-integration input file', async () => {
+    await expect(workflowCommand(['integrate-lead', 'feature'], root)).rejects.toThrow('workflow_input_file_required');
+    await expect(workflowCommand(['integrate-lead', 'feature', '--file', join(root, 'missing.json')], root))
+      .rejects.toThrow();
+    expect(api.integrateWorkflowLeadCommit).not.toHaveBeenCalled();
   });
 
   it('bounds input before passing it to the controller', async () => {

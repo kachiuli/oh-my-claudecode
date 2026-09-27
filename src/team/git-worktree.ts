@@ -13,7 +13,7 @@
  * worker changes.
  */
 
-import { existsSync, realpathSync, readFileSync, readdirSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { atomicWriteJson, ensureDirWithMode, validateResolvedPath } from './fs-utils.js';
@@ -492,9 +492,28 @@ export function ensureWorkerWorktree(
   const wtDir = join(getOmcRoot(repoRoot), 'team', sanitizeName(teamName), 'worktrees');
   ensureDirWithMode(wtDir);
 
-  const args = mode === 'named'
-    ? ['worktree', 'add', '-b', branch, wtPath, options.baseRef ?? 'HEAD']
-    : ['worktree', 'add', '--detach', wtPath, options.baseRef ?? 'HEAD'];
+  const baseRef = options.baseRef ?? 'HEAD';
+  let args: string[];
+  if (mode === 'named') {
+    let branchExists = false;
+    try { git(repoRoot, ['show-ref', '--verify', '--quiet', `refs/heads/${branch}`]); branchExists = true; }
+    catch (error) { if ((error as { status?: number }).status !== 1) throw error; }
+    if (branchExists) {
+      const base = git(repoRoot, ['rev-parse', '--verify', `${baseRef}^{commit}`]);
+      const current = git(repoRoot, ['rev-parse', '--verify', `refs/heads/${branch}^{commit}`]);
+      if (current !== base) {
+        const error = new Error(`worktree_branch_mismatch: retained branch ${branch} moved from requested base`);
+        (error as Error & { code?: string }).code = 'worktree_branch_mismatch';
+        throw error;
+      }
+      if (git(repoRoot, ['worktree', 'list', '--porcelain']).split('\n').some(line => line.trim() === `branch refs/heads/${branch}`)) {
+        const error = new Error(`worktree_branch_in_use: retained branch ${branch} is registered to another worktree`);
+        (error as Error & { code?: string }).code = 'worktree_branch_in_use';
+        throw error;
+      }
+    }
+    args = branchExists ? ['worktree', 'add', wtPath, branch] : ['worktree', 'add', '-b', branch, wtPath, baseRef];
+  } else args = ['worktree', 'add', '--detach', wtPath, baseRef];
   execFileSync('git', args, { cwd: repoRoot, stdio: 'pipe', windowsHide: true });
 
   const info: EnsureWorkerWorktreeResult = {

@@ -1,6 +1,8 @@
 import type { ArtifactDescriptor } from '../shared/artifact-descriptor.js';
-import type { WorkflowTelemetry } from './workflow-usage.js';
+import type { WorkflowIdentityEvidence, WorkflowTelemetry, WorkflowTelemetryEvidence,
+  WorkflowTerminalUsageEvidence } from './workflow-usage.js';
 import { isDeepStrictEqual } from 'node:util';
+import { createHash } from 'node:crypto';
 import type { OrchestratorHost } from '../orchestration/selection.js';
 
 export type WorkflowRole = 'lead' | 'implementer' | 'reviewer';
@@ -88,7 +90,19 @@ export interface WorkflowTaskState {
   findingIds?: string[];
   session?: { id: string; confirmed: boolean; fingerprint: string; worktree: string; branch: string };
   invocations?: WorkflowInvocation[];
+  setupAttempts?: WorkflowSetupAttempt[];
 }
+export interface WorkflowSetupAttempt {
+  readonly sequence: number;
+  readonly startedAt: string;
+  readonly mode?: 'fresh' | 'resume';
+  readonly outcome: 'completed' | 'failed';
+  readonly error?: 'workflow_worktree_setup_failed';
+  readonly detail?: WorkflowWorktreeSetupDetail;
+  readonly artifact?: ArtifactDescriptor;
+}
+export type WorkflowWorktreeSetupDetail = 'worktree_branch_mismatch' | 'worktree_branch_in_use'
+  | 'worktree_path_mismatch' | 'worktree_mismatch';
 export interface WorkflowInvocation {
   /** Snapshot of the lead host; omitted historical records are never backfilled. */
   readonly orchestrationHost?: OrchestratorHost;
@@ -148,6 +162,8 @@ export interface WorkflowState {
   reviewPasses: number;
   reviews: Array<{ pass: number; head: string; findings: WorkflowFinding[]; artifacts: ArtifactDescriptor[] }>;
   reviewAttempts?: WorkflowReviewAttempt[];
+  leadIntegrations?: WorkflowLeadIntegration[];
+  dispatchSupplements?: WorkflowDispatchSupplement[];
   createdAt: string;
   updatedAt: string;
 }
@@ -196,6 +212,55 @@ export interface WorkflowSubstitution {
   readonly afterAttempt?: number;
   readonly afterReviewPass?: number;
 }
+export interface WorkflowLeadIntegrationActor {
+  readonly id: string;
+  readonly model: string;
+}
+export interface WorkflowLeadIntegrationCheck {
+  readonly command: WorkflowCommand;
+  readonly passed: true;
+  readonly artifacts: readonly ArtifactDescriptor[];
+}
+export interface WorkflowLeadIntegration {
+  readonly sequence: number;
+  readonly parent: string;
+  readonly head: string;
+  readonly changedFiles: readonly string[];
+  readonly orchestrationHost: OrchestratorHost;
+  readonly actor: WorkflowLeadIntegrationActor;
+  readonly authorityRef: string;
+  readonly reason: string;
+  readonly checks: readonly WorkflowLeadIntegrationCheck[];
+  readonly at: string;
+}
+export interface WorkflowLeadIntegrationIntent {
+  readonly expectedParent: string;
+  readonly expectedHead: string;
+  readonly actor: WorkflowLeadIntegrationActor;
+  readonly authorityRef: string;
+  readonly reason: string;
+  readonly paths: readonly string[];
+  readonly checks: readonly WorkflowCommand[];
+}
+export interface WorkflowDispatchSupplement {
+  readonly sequence: number;
+  readonly taskId: string;
+  readonly expectedInputHead: string;
+  readonly orchestrationHost: OrchestratorHost;
+  readonly actor: WorkflowLeadIntegrationActor;
+  readonly authorityRef: string;
+  readonly reason: string;
+  readonly content: string;
+  readonly contentSha256: string;
+  readonly at: string;
+}
+export type WorkflowDispatchSupplementIntent = Omit<WorkflowDispatchSupplement,
+  'sequence' | 'orchestrationHost' | 'at'>;
+const MAX_LEAD_INTEGRATIONS = 32;
+const MAX_LEAD_INTEGRATION_BYTES = 128 * 1024;
+const MAX_DISPATCH_SUPPLEMENTS = 32;
+const MAX_DISPATCH_SUPPLEMENT_BYTES = 8 * 1024;
+const MAX_DISPATCH_SUPPLEMENT_RECORD_BYTES = 16 * 1024;
 
 function object(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('workflow_expected_object');
@@ -267,6 +332,189 @@ function timestamp(value: unknown): string {
   if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(text) || !Number.isFinite(Date.parse(text)) || new Date(text).toISOString() !== text) throw new Error('workflow_invalid_timestamp');
   return text;
 }
+function telemetryObject(value: unknown, keys: readonly string[], error: string): Record<string, unknown> {
+  try {
+    const raw = object(value);
+    if (Object.keys(raw).some(key => !keys.includes(key))) throw new Error(error);
+    return raw;
+  } catch { throw new Error(error); }
+}
+function telemetryInteger(value: unknown, minimum: number, error: string): number {
+  if (!Number.isSafeInteger(value) || Number(value) < minimum) throw new Error(error);
+  return Number(value);
+}
+function telemetryText(value: unknown, limit: number, error: string): string {
+  try { return boundedText(value, limit); } catch { throw new Error(error); }
+}
+function telemetryModel(value: unknown, error: string): string {
+  try { return modelLiteral(value); } catch { throw new Error(error); }
+}
+function parseWorkflowIdentityEvidence(value: unknown, kind: 'session' | 'model'): WorkflowIdentityEvidence {
+  const error = 'workflow_invalid_telemetry_evidence';
+  const raw = telemetryObject(value,
+    ['value', 'initEvents', 'assistantEvents', 'terminalEvents', 'threadEvents', 'terminalUsageBuckets'], error);
+  const allowed = kind === 'session'
+    ? ['initEvents', 'assistantEvents', 'terminalEvents', 'threadEvents'] as const
+    : ['initEvents', 'assistantEvents', 'terminalUsageBuckets'] as const;
+  const forbidden = kind === 'session' ? ['terminalUsageBuckets'] : ['terminalEvents', 'threadEvents'];
+  if (forbidden.some(key => raw[key] !== undefined)) throw new Error(error);
+  const parsed: WorkflowIdentityEvidence = { value: kind === 'session'
+    ? (() => { const id = telemetryText(raw.value, 36, error); if (!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(id)) throw new Error(error); return id; })()
+    : telemetryModel(raw.value, error) };
+  let observations = 0;
+  for (const key of allowed) if (raw[key] !== undefined) {
+    const count = telemetryInteger(raw[key], 1, error); observations += count; parsed[key] = count;
+  }
+  if (!observations) throw new Error(error);
+  return Object.freeze(parsed);
+}
+function parseWorkflowTerminalUsageEvidence(value: unknown): WorkflowTerminalUsageEvidence {
+  const error = 'workflow_invalid_telemetry_evidence';
+  const raw = telemetryObject(value,
+    ['model', 'inputTokens', 'outputTokens', 'cacheReadInputTokens', 'cacheCreationInputTokens', 'observations'], error);
+  const parsed: WorkflowTerminalUsageEvidence = { model: telemetryModel(raw.model, error),
+    observations: telemetryInteger(raw.observations, 1, error) };
+  let counters = 0;
+  for (const key of ['inputTokens', 'outputTokens', 'cacheReadInputTokens', 'cacheCreationInputTokens'] as const) {
+    if (raw[key] !== undefined) { parsed[key] = telemetryInteger(raw[key], 0, error); counters++; }
+  }
+  if (!counters) throw new Error(error);
+  return Object.freeze(parsed);
+}
+function parseWorkflowTelemetryEvidence(value: unknown, telemetry: WorkflowTelemetry): WorkflowTelemetryEvidence {
+  const error = 'workflow_invalid_telemetry_evidence';
+  const raw = telemetryObject(value, ['version', 'diagnosticLogComplete', 'eventStreamComplete', 'identityEvidenceComplete',
+    'identityConsistent', 'accountingEvidenceComplete', 'terminalEventCount', 'sessions', 'models', 'terminalUsageBuckets'], error);
+  if (raw.version !== 1 || ['diagnosticLogComplete', 'eventStreamComplete', 'identityEvidenceComplete',
+    'identityConsistent', 'accountingEvidenceComplete'].some(key => typeof raw[key] !== 'boolean')
+    || !Array.isArray(raw.sessions) || raw.sessions.length > 8 || !Array.isArray(raw.models) || raw.models.length > 8
+    || !Array.isArray(raw.terminalUsageBuckets) || raw.terminalUsageBuckets.length > 8) throw new Error(error);
+  const sessions = raw.sessions.map(entry => parseWorkflowIdentityEvidence(entry, 'session'));
+  const models = raw.models.map(entry => parseWorkflowIdentityEvidence(entry, 'model'));
+  const terminalUsageBuckets = raw.terminalUsageBuckets.map(parseWorkflowTerminalUsageEvidence);
+  const bucketSignature = (entry: WorkflowTerminalUsageEvidence) => JSON.stringify([entry.model, entry.inputTokens ?? null,
+    entry.outputTokens ?? null, entry.cacheReadInputTokens ?? null, entry.cacheCreationInputTokens ?? null]);
+  if (new Set(sessions.map(entry => entry.value.toLowerCase())).size !== sessions.length
+    || new Set(models.map(entry => entry.value)).size !== models.length
+    || new Set(terminalUsageBuckets.map(bucketSignature)).size !== terminalUsageBuckets.length) throw new Error(error);
+  if (telemetry.provider === 'codex'
+    ? models.length > 0 || terminalUsageBuckets.length > 0
+      || sessions.some(entry => entry.initEvents !== undefined || entry.assistantEvents !== undefined || entry.terminalEvents !== undefined)
+    : sessions.some(entry => entry.threadEvents !== undefined)) {
+    throw new Error('workflow_telemetry_evidence_mismatch');
+  }
+  const evidence: WorkflowTelemetryEvidence = Object.freeze({ version: 1,
+    diagnosticLogComplete: raw.diagnosticLogComplete as boolean, eventStreamComplete: raw.eventStreamComplete as boolean,
+    identityEvidenceComplete: raw.identityEvidenceComplete as boolean, identityConsistent: raw.identityConsistent as boolean,
+    accountingEvidenceComplete: raw.accountingEvidenceComplete as boolean,
+    terminalEventCount: telemetryInteger(raw.terminalEventCount, 0, error),
+    sessions: Object.freeze(sessions) as WorkflowIdentityEvidence[], models: Object.freeze(models) as WorkflowIdentityEvidence[],
+    terminalUsageBuckets: Object.freeze(terminalUsageBuckets) as WorkflowTerminalUsageEvidence[] });
+  const requiredCounters = telemetry.provider === 'codex'
+    ? [telemetry.inputTokens, telemetry.outputTokens, telemetry.cacheReadTokens]
+    : [telemetry.inputTokens, telemetry.outputTokens, telemetry.cacheReadTokens, telemetry.cacheWriteTokens];
+  if (telemetry.status === 'measured' && !evidence.accountingEvidenceComplete) {
+    throw new Error('workflow_telemetry_evidence_mismatch');
+  }
+  if (evidence.accountingEvidenceComplete) {
+    if (!evidence.eventStreamComplete || evidence.terminalEventCount !== 1 || telemetry.terminal !== 'success'
+      || requiredCounters.some(count => count === undefined)
+      || telemetry.provider === 'codex' && telemetry.scope !== 'turn'
+      || telemetry.provider !== 'codex' && telemetry.scope !== 'all-models'
+      || telemetry.provider === 'codex' && (telemetry.cacheReadTokens! > telemetry.inputTokens!
+        || telemetry.cacheWriteTokens !== undefined && telemetry.cacheWriteTokens > telemetry.inputTokens!)) {
+      throw new Error('workflow_telemetry_evidence_mismatch');
+    }
+    if (telemetry.provider !== 'codex') {
+      const completeBuckets = terminalUsageBuckets.length > 0 && terminalUsageBuckets.every(bucket => bucket.observations === 1
+        && bucket.inputTokens !== undefined && bucket.outputTokens !== undefined
+        && bucket.cacheReadInputTokens !== undefined && bucket.cacheCreationInputTokens !== undefined);
+      const countForModel = (model: string) => terminalUsageBuckets.filter(bucket => bucket.model === model).length;
+      const bucketModels = new Set(terminalUsageBuckets.map(bucket => bucket.model));
+      const modelCountsMatch = bucketModels.size === terminalUsageBuckets.length
+        && models.every(model => model.terminalUsageBuckets === undefined
+          ? countForModel(model.value) === 0
+          : model.terminalUsageBuckets === 1 && countForModel(model.value) === 1)
+        && terminalUsageBuckets.every(bucket => models.some(model => model.value === bucket.model
+          && model.terminalUsageBuckets === 1));
+      const sum = (values: number[]): number | undefined => {
+        const result = values.reduce((total, value) => total + value, 0);
+        return Number.isSafeInteger(result) ? result : undefined;
+      };
+      const fresh = sum(terminalUsageBuckets.map(bucket => bucket.inputTokens!));
+      const output = sum(terminalUsageBuckets.map(bucket => bucket.outputTokens!));
+      const read = sum(terminalUsageBuckets.map(bucket => bucket.cacheReadInputTokens!));
+      const write = sum(terminalUsageBuckets.map(bucket => bucket.cacheCreationInputTokens!));
+      const input = fresh === undefined || read === undefined || write === undefined ? undefined : sum([fresh, read, write]);
+      if (!completeBuckets || !modelCountsMatch || input !== telemetry.inputTokens || output !== telemetry.outputTokens
+        || read !== telemetry.cacheReadTokens || write !== telemetry.cacheWriteTokens) {
+        throw new Error('workflow_telemetry_evidence_mismatch');
+      }
+    }
+  }
+  const primaryModels = models.filter(entry => (entry.initEvents ?? 0) + (entry.assistantEvents ?? 0) > 0);
+  const terminalSessionEvents = sessions.reduce((total, session) => total + (session.terminalEvents ?? 0), 0);
+  if (evidence.identityEvidenceComplete && (!evidence.eventStreamComplete || evidence.terminalEventCount !== 1
+    || telemetry.provider === 'codex' && !sessions.some(entry => (entry.threadEvents ?? 0) > 0)
+    || telemetry.provider !== 'codex' && (!sessions.some(entry => (entry.initEvents ?? 0) > 0)
+      || terminalSessionEvents !== evidence.terminalEventCount || models.length === 0))) {
+    throw new Error('workflow_telemetry_evidence_mismatch');
+  }
+  if (evidence.identityConsistent && (sessions.length > 1 || primaryModels.length > 1)
+    || telemetry.sessionId !== undefined && (sessions.length !== 1
+      || sessions[0]!.value.toLowerCase() !== telemetry.sessionId.toLowerCase())) {
+    throw new Error('workflow_telemetry_evidence_mismatch');
+  }
+  return evidence;
+}
+function parseWorkflowTelemetry(value: unknown, expectedProvider?: WorkflowProviderRoute): WorkflowTelemetry {
+  const error = 'workflow_invalid_telemetry';
+  const raw = telemetryObject(value, ['provider', 'durationMs', 'status', 'scope', 'inputTokens', 'outputTokens',
+    'cacheReadTokens', 'cacheWriteTokens', 'sessionId', 'terminal', 'diagnostics', 'evidence'], error);
+  if (!['claude', 'glm', 'mimo', 'codex'].includes(String(raw.provider))) throw new Error(error);
+  if (expectedProvider !== undefined && raw.provider !== expectedProvider) throw new Error('workflow_telemetry_route_mismatch');
+  if (!['measured', 'partial', 'unknown'].includes(String(raw.status))
+    || !['all-models', 'main-loop', 'turn', 'unknown'].includes(String(raw.scope))) throw new Error(error);
+  const telemetry: WorkflowTelemetry = { provider: raw.provider as WorkflowTelemetry['provider'],
+    durationMs: telemetryInteger(raw.durationMs, 0, error), status: raw.status as WorkflowTelemetry['status'],
+    scope: raw.scope as WorkflowTelemetry['scope'] };
+  for (const key of ['inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheWriteTokens'] as const) {
+    if (raw[key] !== undefined) telemetry[key] = telemetryInteger(raw[key], 0, error);
+  }
+  if (raw.sessionId !== undefined) {
+    const id = telemetryText(raw.sessionId, 36, error);
+    if (!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(id)) throw new Error(error);
+    telemetry.sessionId = id;
+  }
+  if (raw.terminal !== undefined) {
+    if (raw.terminal !== 'success' && raw.terminal !== 'failure') throw new Error(error);
+    telemetry.terminal = raw.terminal;
+  }
+  if (raw.diagnostics !== undefined) {
+    if (!Array.isArray(raw.diagnostics) || raw.diagnostics.length > 100) throw new Error(error);
+    const diagnostics = raw.diagnostics.map(value => telemetryText(value, 160, error));
+    if (new Set(diagnostics).size !== diagnostics.length || diagnostics.some(value => !/^[a-z][a-z0-9_]*$/.test(value))) throw new Error(error);
+    telemetry.diagnostics = Object.freeze(diagnostics) as string[];
+  }
+  if (raw.evidence !== undefined) telemetry.evidence = parseWorkflowTelemetryEvidence(raw.evidence, telemetry);
+  return Object.freeze(telemetry);
+}
+function parseArtifactDescriptor(value: unknown, expectedKind?: string): ArtifactDescriptor {
+  const raw = exactObject(value, ['kind', 'path', 'contentHash', 'createdAt', 'producer', 'sizeBytes', 'retention', 'expiresAt']);
+  const kind = literal(raw.kind);
+  if (expectedKind !== undefined && kind !== expectedKind) throw new Error('workflow_invalid_artifact');
+  const path = boundedText(raw.path, 4000);
+  if (/[\r\n]/.test(path) || raw.contentHash === undefined || raw.sizeBytes === undefined) throw new Error('workflow_invalid_artifact');
+  const producerRaw = exactObject(raw.producer, ['system', 'component', 'worker']);
+  if (producerRaw.system !== 'omc' && producerRaw.system !== 'omx') throw new Error('workflow_invalid_artifact');
+  const producer = Object.freeze({ system: producerRaw.system, component: literal(producerRaw.component),
+    ...(producerRaw.worker === undefined ? {} : { worker: literal(producerRaw.worker) }) });
+  const retention = raw.retention;
+  if (!['ephemeral', 'session', 'until-completion', 'persistent'].includes(String(retention))) throw new Error('workflow_invalid_artifact');
+  return Object.freeze({ kind, path, contentHash: digest(raw.contentHash), createdAt: timestamp(raw.createdAt), producer,
+    sizeBytes: integer(raw.sizeBytes, 0, Number.MAX_SAFE_INTEGER), retention: retention as ArtifactDescriptor['retention'],
+    ...(raw.expiresAt === undefined ? {} : { expiresAt: timestamp(raw.expiresAt) }) });
+}
 function boundAttempt(value: unknown, role: 'implementer' | 'reviewer', ordinal: number): Record<string, unknown> {
   const raw = object(value);
   validateOrchestrationHost(raw.orchestrationHost);
@@ -275,18 +523,41 @@ function boundAttempt(value: unknown, role: 'implementer' | 'reviewer', ordinal:
   if (!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(invocationId)) throw new Error('workflow_invalid_invocation_id');
   if (binding.role !== role || (raw.model !== undefined && raw.model !== binding.model)) throw new Error('workflow_invocation_binding_mismatch');
   if (!['completed', 'failed'].includes(String(raw.outcome)) || !Array.isArray(raw.artifacts)) throw new Error('workflow_invalid_invocation');
-  if (object(raw.telemetry).provider !== binding.providerRoute) throw new Error('workflow_telemetry_route_mismatch');
+  const telemetry = parseWorkflowTelemetry(raw.telemetry, binding.providerRoute);
   const field = role === 'implementer' ? 'attempt' : 'pass';
   if (raw[field] !== ordinal) throw new Error('workflow_invocation_sequence_mismatch');
   if (role === 'implementer' && !['fresh', 'resume'].includes(String(raw.mode))) throw new Error('workflow_invalid_invocation_mode');
-  const parsed = { ...raw, startedAt: timestamp(raw.startedAt), binding, invocationId };
+  const parsed = { ...raw, startedAt: timestamp(raw.startedAt), binding, invocationId, telemetry };
   // The outcome/telemetry may settle later; the reserved identity may not change.
   Object.defineProperties(parsed, { binding: { writable: false, configurable: false }, invocationId: { writable: false, configurable: false },
+    telemetry: { writable: false, configurable: false },
     ...(raw.orchestrationHost === undefined ? {} : { orchestrationHost: { writable: false, configurable: false } }) });
   return parsed;
 }
 function validateOrchestrationHost(value: unknown): void {
   if (value !== undefined && value !== 'claude' && value !== 'codex') throw new Error('workflow_invalid_orchestration_host');
+}
+function parseWorkflowSetupAttempts(value: unknown): WorkflowSetupAttempt[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > 1000) throw new Error('workflow_invalid_setup_history');
+  return value.map((value, index) => {
+    const raw = exactObject(value, ['sequence', 'startedAt', 'mode', 'outcome', 'error', 'detail', 'artifact']);
+    const sequence = integer(raw.sequence, 1, 1000);
+    if (sequence !== index + 1 || !['completed', 'failed'].includes(String(raw.outcome))
+      || raw.mode !== undefined && raw.mode !== 'fresh' && raw.mode !== 'resume') throw new Error('workflow_invalid_setup_history');
+    const details: WorkflowWorktreeSetupDetail[] = ['worktree_branch_mismatch', 'worktree_branch_in_use', 'worktree_path_mismatch', 'worktree_mismatch'];
+    if (raw.outcome === 'failed') {
+      if (raw.error !== 'workflow_worktree_setup_failed' || !raw.artifact || typeof raw.artifact !== 'object' || Array.isArray(raw.artifact)) {
+        throw new Error('workflow_invalid_setup_history');
+      }
+      if (raw.detail !== undefined && !details.includes(raw.detail as WorkflowWorktreeSetupDetail)) throw new Error('workflow_invalid_setup_history');
+    } else if (raw.error !== undefined || raw.detail !== undefined || raw.artifact !== undefined) throw new Error('workflow_invalid_setup_history');
+    return Object.freeze({ sequence, startedAt: timestamp(raw.startedAt),
+      ...(raw.mode === undefined ? {} : { mode: raw.mode as 'fresh' | 'resume' }), outcome: raw.outcome as WorkflowSetupAttempt['outcome'],
+      ...(raw.error === undefined ? {} : { error: raw.error as 'workflow_worktree_setup_failed' }),
+      ...(raw.detail === undefined ? {} : { detail: raw.detail as WorkflowWorktreeSetupDetail }),
+      ...(raw.artifact === undefined ? {} : { artifact: parseArtifactDescriptor(raw.artifact, 'workflow-worktree-setup') }) });
+  });
 }
 function reviewProvenance(value: unknown, binding: WorkflowRoleBinding): WorkflowReviewProvenance {
   const raw = exactObject(value, ['relation', 'authorIds', 'reviewerId', 'context']);
@@ -297,6 +568,93 @@ function reviewProvenance(value: unknown, binding: WorkflowRoleBinding): Workflo
   if (raw.context === 'same-session' && !binding.capabilities.includes('review-permission-transition')) throw new Error('workflow_review_transition_unsupported');
   return Object.freeze({ relation: raw.relation as WorkflowReviewProvenance['relation'], context: raw.context as WorkflowReviewProvenance['context'],
     authorIds: Object.freeze(authorIds), reviewerId });
+}
+function leadIntegrationActor(value: unknown): WorkflowLeadIntegrationActor {
+  const raw = exactObject(value, ['id', 'model']);
+  const id = literal(raw.id, 200);
+  const model = modelLiteral(raw.model);
+  if ((id === 'unknown') !== (model === 'unknown')) throw new Error('workflow_invalid_lead_integration_actor');
+  return Object.freeze({ id, model });
+}
+function literalPaths(value: unknown): string[] {
+  const paths = texts(value).map(literalFilePath);
+  if (!paths.length || new Set(paths).size !== paths.length) throw new Error('workflow_invalid_lead_integration_paths');
+  return paths;
+}
+function frozenWorkflowCommand(value: unknown): WorkflowCommand {
+  const parsed = parseWorkflowCommand(value);
+  return Object.freeze({ command: parsed.command, args: Object.freeze([...parsed.args]) as string[] });
+}
+export function parseWorkflowLeadIntegrationIntent(value: unknown): WorkflowLeadIntegrationIntent {
+  const raw = exactObject(value, ['expectedParent', 'expectedHead', 'actor', 'authorityRef', 'reason', 'paths', 'checks']);
+  if (!Array.isArray(raw.checks) || !raw.checks.length || raw.checks.length > 30) throw new Error('workflow_lead_integration_checks_required');
+  const checks = raw.checks.map(value => frozenWorkflowCommand(exactObject(value, ['command', 'args'])));
+  const parsed: WorkflowLeadIntegrationIntent = { expectedParent: workflowSha(raw.expectedParent), expectedHead: workflowSha(raw.expectedHead),
+    actor: leadIntegrationActor(raw.actor), authorityRef: boundedText(raw.authorityRef, 1000), reason: boundedText(raw.reason, 1000),
+    paths: Object.freeze(literalPaths(raw.paths)), checks: Object.freeze(checks) };
+  if (Buffer.byteLength(JSON.stringify(parsed)) > MAX_LEAD_INTEGRATION_BYTES) throw new Error('workflow_lead_integration_too_large');
+  return Object.freeze(parsed);
+}
+export function parseWorkflowLeadIntegration(value: unknown): WorkflowLeadIntegration {
+  const raw = exactObject(value, ['sequence', 'parent', 'head', 'changedFiles', 'orchestrationHost', 'actor', 'authorityRef', 'reason', 'checks', 'at']);
+  validateOrchestrationHost(raw.orchestrationHost);
+  if (raw.orchestrationHost === undefined) throw new Error('workflow_invalid_orchestration_host');
+  if (!Array.isArray(raw.checks) || !raw.checks.length || raw.checks.length > 30) throw new Error('workflow_lead_integration_checks_required');
+  const checks = raw.checks.map(value => {
+    const check = exactObject(value, ['command', 'passed', 'artifacts']);
+    if (check.passed !== true || !Array.isArray(check.artifacts) || check.artifacts.length > 100) throw new Error('workflow_invalid_lead_integration_check');
+    return Object.freeze({ command: frozenWorkflowCommand(check.command), passed: true as const,
+      artifacts: Object.freeze(check.artifacts.map(artifact => parseArtifactDescriptor(artifact))) });
+  });
+  const parsed: WorkflowLeadIntegration = { sequence: integer(raw.sequence, 1, MAX_LEAD_INTEGRATIONS), parent: workflowSha(raw.parent), head: workflowSha(raw.head),
+    changedFiles: Object.freeze(literalPaths(raw.changedFiles)), orchestrationHost: raw.orchestrationHost as OrchestratorHost,
+    actor: leadIntegrationActor(raw.actor), authorityRef: boundedText(raw.authorityRef, 1000), reason: boundedText(raw.reason, 1000),
+    checks: Object.freeze(checks), at: timestamp(raw.at) };
+  if (Buffer.byteLength(JSON.stringify(parsed)) > MAX_LEAD_INTEGRATION_BYTES) throw new Error('workflow_lead_integration_too_large');
+  return Object.freeze(parsed);
+}
+function dispatchSupplementContent(value: unknown): string {
+  if (typeof value !== 'string' || !value.trim() || value.includes('\0')) {
+    throw new Error('workflow_invalid_dispatch_supplement');
+  }
+  if (Buffer.byteLength(value, 'utf8') > MAX_DISPATCH_SUPPLEMENT_BYTES) {
+    throw new Error('workflow_dispatch_supplement_too_large');
+  }
+  return value;
+}
+function dispatchSupplementFields(value: unknown): Omit<WorkflowDispatchSupplement,
+  'sequence' | 'orchestrationHost' | 'at'> {
+  const raw = exactObject(value, ['taskId', 'expectedInputHead', 'actor', 'authorityRef', 'reason', 'content', 'contentSha256']);
+  const content = dispatchSupplementContent(raw.content);
+  const contentSha256 = digest(raw.contentSha256);
+  if (createHash('sha256').update(content, 'utf8').digest('hex') !== contentSha256) {
+    throw new Error('workflow_dispatch_supplement_digest_mismatch');
+  }
+  return Object.freeze({ taskId: safeWorkflowId(raw.taskId), expectedInputHead: workflowSha(raw.expectedInputHead),
+    actor: leadIntegrationActor(raw.actor), authorityRef: boundedText(raw.authorityRef, 1000),
+    reason: boundedText(raw.reason, 1000), content, contentSha256 });
+}
+export function parseWorkflowDispatchSupplementIntent(value: unknown): WorkflowDispatchSupplementIntent {
+  const parsed = dispatchSupplementFields(value);
+  if (Buffer.byteLength(JSON.stringify(parsed), 'utf8') > MAX_DISPATCH_SUPPLEMENT_RECORD_BYTES) {
+    throw new Error('workflow_dispatch_supplement_too_large');
+  }
+  return parsed;
+}
+export function parseWorkflowDispatchSupplement(value: unknown): WorkflowDispatchSupplement {
+  const raw = exactObject(value, ['sequence', 'taskId', 'expectedInputHead', 'orchestrationHost', 'actor',
+    'authorityRef', 'reason', 'content', 'contentSha256', 'at']);
+  validateOrchestrationHost(raw.orchestrationHost);
+  if (raw.orchestrationHost === undefined) throw new Error('workflow_invalid_orchestration_host');
+  const fields = dispatchSupplementFields({ taskId: raw.taskId, expectedInputHead: raw.expectedInputHead,
+    actor: raw.actor, authorityRef: raw.authorityRef, reason: raw.reason, content: raw.content,
+    contentSha256: raw.contentSha256 });
+  const parsed: WorkflowDispatchSupplement = { sequence: integer(raw.sequence, 1, MAX_DISPATCH_SUPPLEMENTS), ...fields,
+    orchestrationHost: raw.orchestrationHost as OrchestratorHost, at: timestamp(raw.at) };
+  if (Buffer.byteLength(JSON.stringify(parsed), 'utf8') > MAX_DISPATCH_SUPPLEMENT_RECORD_BYTES) {
+    throw new Error('workflow_dispatch_supplement_too_large');
+  }
+  return Object.freeze(parsed);
 }
 export function parseWorkflowSubstitution(value: unknown): WorkflowSubstitution {
   const raw = exactObject(value, ['sequence', 'role', 'from', 'to', 'reason', 'authorityRef', 'head', 'at', 'taskId', 'afterAttempt', 'afterReviewPass']);
@@ -325,10 +683,65 @@ export function parseWorkflowState(value: unknown): VersionedWorkflowState {
     if (Array.isArray(invocations)) for (const invocation of invocations) validateOrchestrationHost(object(invocation).orchestrationHost);
   }
   if (Array.isArray(raw.reviewAttempts)) for (const attempt of raw.reviewAttempts) validateOrchestrationHost(object(attempt).orchestrationHost);
+  if (raw.leadIntegrations !== undefined && (!Array.isArray(raw.leadIntegrations)
+    || raw.leadIntegrations.length > MAX_LEAD_INTEGRATIONS)) throw new Error('workflow_invalid_lead_integrations');
+  const leadIntegrations = (raw.leadIntegrations ?? []).map(parseWorkflowLeadIntegration);
+  leadIntegrations.forEach((entry, index) => {
+    if (entry.sequence !== index + 1) throw new Error('workflow_lead_integration_sequence_mismatch');
+  });
+  if (raw.dispatchSupplements !== undefined && (!Array.isArray(raw.dispatchSupplements)
+    || raw.dispatchSupplements.length > MAX_DISPATCH_SUPPLEMENTS)) throw new Error('workflow_invalid_dispatch_supplements');
+  const dispatchSupplements = (raw.dispatchSupplements ?? []).map(parseWorkflowDispatchSupplement);
+  const supplementedTasks = new Set<string>();
+  dispatchSupplements.forEach((entry, index) => {
+    if (entry.sequence !== index + 1) throw new Error('workflow_dispatch_supplement_sequence_mismatch');
+    if (supplementedTasks.has(entry.taskId)) throw new Error('workflow_duplicate_dispatch_supplement');
+    supplementedTasks.add(entry.taskId);
+  });
   const rejected = new Set(raw.tasks.filter(entry => object(entry).status === 'rejected').map(entry => safeWorkflowId(object(object(entry).task).id)));
   const plan = parseWorkflowPlan(raw.plan, rejected);
+  if (dispatchSupplements.length && options.mode !== 'balanced') throw new Error('workflow_balanced_mode_required');
+  for (const entry of dispatchSupplements) {
+    const task = plan.tasks.find(task => task.id === entry.taskId);
+    if (!task?.dependencies.length) throw new Error('workflow_invalid_dispatch_supplement_task');
+  }
   // Preserve legacy shape and optional fields exactly; this is not a migration.
-  if (raw.schemaVersion === 1) return value as WorkflowState;
+  if (raw.schemaVersion === 1) {
+    const hasSetupHistory = raw.tasks.some(entry => object(entry).setupAttempts !== undefined);
+    const attemptHasEvidence = (value: unknown): boolean => {
+      const telemetry = object(value).telemetry;
+      return telemetry !== undefined && object(telemetry).evidence !== undefined;
+    };
+    const hasTelemetryEvidence = raw.tasks.some(entry => {
+      const invocations = object(entry).invocations;
+      return Array.isArray(invocations) && invocations.some(attemptHasEvidence);
+    }) || Array.isArray(raw.reviewAttempts) && raw.reviewAttempts.some(attemptHasEvidence);
+    if (!hasSetupHistory && raw.leadIntegrations === undefined && raw.dispatchSupplements === undefined
+      && !hasTelemetryEvidence) return value as WorkflowState;
+    if (dispatchSupplements.some(entry => entry.actor.id !== 'unknown')) {
+      throw new Error('workflow_dispatch_supplement_actor_mismatch');
+    }
+    const implementerProvider: WorkflowProviderRoute = raw.profile === 'claude-mimo-codex' ? 'mimo' : 'glm';
+    const parseLegacyAttempt = (value: unknown, expectedProvider: WorkflowProviderRoute): Record<string, unknown> => {
+      const attempt = object(value);
+      const parsed = { ...attempt, telemetry: parseWorkflowTelemetry(attempt.telemetry, expectedProvider) };
+      Object.defineProperty(parsed, 'telemetry', { writable: false, configurable: false });
+      return parsed;
+    };
+    return { ...raw, tasks: raw.tasks.map(entry => {
+      const task = object(entry); const setupAttempts = parseWorkflowSetupAttempts(task.setupAttempts);
+      const invocations = hasTelemetryEvidence && task.invocations !== undefined
+        ? (() => { if (!Array.isArray(task.invocations)) throw new Error('workflow_invalid_invocation');
+          return task.invocations.map(attempt => parseLegacyAttempt(attempt, implementerProvider)); })()
+        : task.invocations;
+      return { ...task, ...(task.setupAttempts === undefined ? {} : { setupAttempts: Object.freeze(setupAttempts) }),
+        ...(task.invocations === undefined ? {} : { invocations }) };
+    }), ...(hasTelemetryEvidence && raw.reviewAttempts !== undefined
+      ? { reviewAttempts: (() => { if (!Array.isArray(raw.reviewAttempts)) throw new Error('workflow_invalid_invocation');
+        return raw.reviewAttempts.map(attempt => parseLegacyAttempt(attempt, 'codex')); })() } : {}),
+    ...(raw.leadIntegrations === undefined ? {} : { leadIntegrations: Object.freeze(leadIntegrations) }),
+    ...(raw.dispatchSupplements === undefined ? {} : { dispatchSupplements: Object.freeze(dispatchSupplements) }) } as unknown as WorkflowState;
+  }
   const maxAttempts = integer(options.maxAttempts, 1, 5);
   const maxReviewPasses = integer(options.maxReviewPasses, 1, 10);
   integer(raw.reviewPasses, 0, maxReviewPasses);
@@ -351,7 +764,10 @@ export function parseWorkflowState(value: unknown): VersionedWorkflowState {
       session = { ...saved, id: literal(saved.id, 100), fingerprint: digest(saved.fingerprint), worktree: boundedText(saved.worktree, 1000), branch: boundedText(saved.branch, 200), binding };
       Object.defineProperty(session, 'binding', { writable: false, configurable: false });
     }
-    return { ...task, task: contract, ...(session ? { session } : {}), ...(task.invocations === undefined ? {} : { invocations: invocations.map((entry, index) => boundAttempt(entry, 'implementer', index + 1)) }) };
+    const setupAttempts = parseWorkflowSetupAttempts(task.setupAttempts);
+    return { ...task, task: contract, ...(session ? { session } : {}),
+      ...(task.setupAttempts === undefined ? {} : { setupAttempts: Object.freeze(setupAttempts) }),
+      ...(task.invocations === undefined ? {} : { invocations: invocations.map((entry, index) => boundAttempt(entry, 'implementer', index + 1)) }) };
   });
   const reviewAttempts = raw.reviewAttempts ?? [];
   if (!Array.isArray(reviewAttempts) || reviewAttempts.length !== raw.reviewPasses) throw new Error('workflow_review_history_mismatch');
@@ -385,6 +801,16 @@ export function parseWorkflowState(value: unknown): VersionedWorkflowState {
     if (chain.has(role) && !isDeepStrictEqual(chain.get(role), parsedBindings[role])) throw new Error('workflow_selected_binding_mismatch');
     remember(parsedBindings[role]);
   }
+  const knownLeadActors = new Set<string>();
+  const rememberLead = (binding: WorkflowRoleBinding) => {
+    if (binding.role === 'lead') knownLeadActors.add(`${binding.id}\0${binding.model}`);
+  };
+  rememberLead(parsedBindings.lead);
+  substitutions.forEach(entry => { rememberLead(entry.from); rememberLead(entry.to); });
+  for (const entry of leadIntegrations) if (entry.actor.id !== 'unknown'
+    && !knownLeadActors.has(`${entry.actor.id}\0${entry.actor.model}`)) throw new Error('workflow_lead_integration_actor_mismatch');
+  for (const entry of dispatchSupplements) if (entry.actor.id !== 'unknown'
+    && !knownLeadActors.has(`${entry.actor.id}\0${entry.actor.model}`)) throw new Error('workflow_dispatch_supplement_actor_mismatch');
   const ids = new Set<string>();
   const checkSnapshot = (entry: Record<string, unknown>) => {
     const binding = entry.binding as WorkflowRoleBinding;
@@ -401,12 +827,49 @@ export function parseWorkflowState(value: unknown): VersionedWorkflowState {
   }
   for (const review of parsedReviews) checkSnapshot(review);
   return { ...raw, tasks, ...(raw.reviewAttempts === undefined ? {} : { reviewAttempts: parsedReviews }),
+    ...(raw.leadIntegrations === undefined ? {} : { leadIntegrations: Object.freeze(leadIntegrations) }),
+    ...(raw.dispatchSupplements === undefined ? {} : { dispatchSupplements: Object.freeze(dispatchSupplements) }),
     substitutions: Object.freeze(substitutions), bindings: Object.freeze(parsedBindings) } as unknown as WorkflowStateV2;
 }
 /** Compare saved contracts under the controller's lock; this does not reserve or execute work. */
 export function validateWorkflowStateTransition(previous: unknown, next: unknown): void {
   const before = parseWorkflowState(previous); const after = parseWorkflowState(next);
+  const persistedEqual = (left: unknown, right: unknown): boolean => isDeepStrictEqual(
+    left === undefined ? undefined : JSON.parse(JSON.stringify(left)),
+    right === undefined ? undefined : JSON.parse(JSON.stringify(right)));
   if (before.schemaVersion !== after.schemaVersion) throw new Error('workflow_implicit_migration_forbidden');
+  const oldSupplements = before.dispatchSupplements ?? [];
+  const newSupplements = after.dispatchSupplements ?? [];
+  if (newSupplements.length < oldSupplements.length || newSupplements.length > oldSupplements.length + 1
+    || oldSupplements.some((entry, index) => !isDeepStrictEqual(entry, newSupplements[index]))) {
+    throw new Error('workflow_dispatch_supplement_history_rewritten');
+  }
+  if (newSupplements.length === oldSupplements.length + 1) {
+    const appended = newSupplements.at(-1)!;
+    const task = before.tasks.find(entry => entry.task.id === appended.taskId);
+    const unavailable = !task || before.options.mode !== 'balanced' || appended.expectedInputHead !== before.integrationHead
+      || task.status !== 'pending' || task.attempts !== 0 || !task.task.dependencies.length
+      || task.task.dependencies.some(id => before.tasks.find(entry => entry.task.id === id)?.status !== 'accepted')
+      || task.invocations !== undefined || task.setupAttempts !== undefined || task.session !== undefined
+      || task.handoff !== undefined || task.claimToken !== undefined || task.worktree !== undefined || task.branch !== undefined
+      || task.backoffUntil !== undefined || task.findingIds !== undefined || task.error !== undefined
+      || before.tasks.some(entry => entry.status === 'running'
+        || entry.invocations?.at(-1)?.error === 'workflow_invocation_incomplete');
+    if (unavailable) throw new Error('workflow_dispatch_supplement_origin_mismatch');
+    if (appended.actor.id !== 'unknown' && (before.schemaVersion !== 2
+      || appended.actor.id !== before.bindings.lead.id || appended.actor.model !== before.bindings.lead.model)) {
+      throw new Error('workflow_dispatch_supplement_actor_mismatch');
+    }
+    const withoutSupplement = (state: VersionedWorkflowState): Record<string, unknown> => {
+      const copy = JSON.parse(JSON.stringify(state)) as Record<string, unknown>;
+      delete copy.dispatchSupplements;
+      delete copy.updatedAt;
+      return copy;
+    };
+    if (!isDeepStrictEqual(withoutSupplement(before), withoutSupplement(after))) {
+      throw new Error('workflow_dispatch_supplement_transition_invalid');
+    }
+  }
   // Host provenance is immutable for both legacy and role-substitution workflows.
   const preserveHosts = (old: Array<WorkflowInvocation | WorkflowReviewAttempt>, current: Array<WorkflowInvocation | WorkflowReviewAttempt>) => {
     for (const [index, entry] of old.entries()) {
@@ -416,8 +879,75 @@ export function validateWorkflowStateTransition(previous: unknown, next: unknown
   for (const task of before.tasks) {
     const replacement = after.tasks.find(entry => entry.task.id === task.task.id);
     preserveHosts(task.invocations ?? [], replacement?.invocations ?? []);
+    if (!replacement) continue;
+    const oldSetup = task.setupAttempts ?? []; const newSetup = replacement.setupAttempts ?? [];
+    if (newSetup.length < oldSetup.length || newSetup.length > oldSetup.length + 1
+      || oldSetup.some((entry, index) => !isDeepStrictEqual(entry, newSetup[index]))) throw new Error('workflow_setup_history_rewritten');
+    if (newSetup.length === oldSetup.length + 1) {
+      const appended = newSetup.at(-1)!;
+      const supplement = before.dispatchSupplements?.find(entry => entry.taskId === task.task.id);
+      const expectedBase = oldSetup.length === 0 && task.attempts === 0 && task.task.dependencies.length
+        ? supplement?.expectedInputHead ?? before.integrationHead : task.task.baseCommit;
+      const expectedTask = { ...task.task, baseCommit: expectedBase };
+      if (replacement.attempts !== task.attempts || !persistedEqual(replacement.invocations, task.invocations)
+        || !persistedEqual(replacement.session, task.session) || !persistedEqual(replacement.handoff, task.handoff)
+        || !isDeepStrictEqual(replacement.task, expectedTask)
+        || replacement.claimToken !== undefined || appended.outcome === 'failed'
+          && (replacement.status !== 'failed' || replacement.error !== 'workflow_worktree_setup_failed')
+        || appended.outcome === 'completed' && (replacement.status !== 'pending' || replacement.error !== undefined)) {
+        throw new Error('workflow_setup_history_origin_mismatch');
+      }
+    }
   }
   preserveHosts(before.reviewAttempts ?? [], after.reviewAttempts ?? []);
+  const oldLeadIntegrations = before.leadIntegrations ?? [];
+  const newLeadIntegrations = after.leadIntegrations ?? [];
+  if (newLeadIntegrations.length < oldLeadIntegrations.length || newLeadIntegrations.length > oldLeadIntegrations.length + 1
+    || oldLeadIntegrations.some((entry, index) => !isDeepStrictEqual(entry, newLeadIntegrations[index]))) {
+    throw new Error('workflow_lead_integration_history_rewritten');
+  }
+  if (newLeadIntegrations.length === oldLeadIntegrations.length + 1) {
+    const appended = newLeadIntegrations.at(-1)!;
+    if (appended.parent !== before.integrationHead || appended.head !== after.integrationHead) throw new Error('workflow_lead_integration_origin_mismatch');
+    if (after.verification !== undefined || after.stage !== 'integration') throw new Error('workflow_lead_integration_transition_invalid');
+    if (!isDeepStrictEqual(before.plan, after.plan) || !isDeepStrictEqual(before.options, after.options)
+      || !isDeepStrictEqual(before.tasks, after.tasks) || !isDeepStrictEqual(before.reviews, after.reviews)
+      || !isDeepStrictEqual(before.reviewAttempts, after.reviewAttempts) || before.reviewPasses !== after.reviewPasses
+      || before.createdAt !== after.createdAt || before.cwd !== after.cwd || before.profile !== after.profile) {
+      throw new Error('workflow_lead_integration_history_rewritten');
+    }
+    if (before.schemaVersion === 2 && after.schemaVersion === 2
+      && (!isDeepStrictEqual(before.bindings, after.bindings) || !isDeepStrictEqual(before.substitutions, after.substitutions))) {
+      throw new Error('workflow_lead_integration_history_rewritten');
+    }
+  }
+  if (before.schemaVersion === 1 && after.schemaVersion === 1) {
+    const preserveLegacyAttempts = (old: Array<WorkflowInvocation | WorkflowReviewAttempt>,
+      current: Array<WorkflowInvocation | WorkflowReviewAttempt>) => {
+      for (const [index, entry] of old.entries()) {
+        const replacement = current[index];
+        if (!replacement || entry.startedAt !== replacement.startedAt || entry.model !== replacement.model
+          || 'attempt' in entry && (!('attempt' in replacement) || entry.attempt !== replacement.attempt
+            || entry.mode !== replacement.mode)
+          || 'pass' in entry && (!('pass' in replacement) || entry.pass !== replacement.pass || entry.head !== replacement.head)) {
+          throw new Error('workflow_invocation_identity_rewritten');
+        }
+        if (entry.telemetry.evidence !== undefined && !persistedEqual(entry.telemetry, replacement.telemetry)) {
+          throw new Error('workflow_invocation_history_rewritten');
+        }
+        if (entry.error !== 'workflow_invocation_incomplete' && !persistedEqual(entry, replacement)) {
+          throw new Error('workflow_invocation_history_rewritten');
+        }
+      }
+    };
+    for (const task of before.tasks) {
+      const replacement = after.tasks.find(entry => entry.task.id === task.task.id);
+      if (!replacement) throw new Error('workflow_invocation_history_rewritten');
+      preserveLegacyAttempts(task.invocations ?? [], replacement.invocations ?? []);
+    }
+    preserveLegacyAttempts(before.reviewAttempts ?? [], after.reviewAttempts ?? []);
+    return;
+  }
   if (before.schemaVersion !== 2 || after.schemaVersion !== 2) return;
   if (before.cwd !== after.cwd || before.plan.name !== after.plan.name || before.plan.baseCommit !== after.plan.baseCommit
     || before.plan.integrationBranch !== after.plan.integrationBranch) throw new Error('workflow_state_identity_changed');
@@ -440,6 +970,9 @@ export function validateWorkflowStateTransition(previous: unknown, next: unknown
         || entry.startedAt !== replacement.startedAt || entry.model !== replacement.model) throw new Error('workflow_invocation_identity_rewritten');
       if ('mode' in entry && (!('mode' in replacement) || entry.mode !== replacement.mode)
         || 'head' in entry && (!('head' in replacement) || entry.head !== replacement.head || !isDeepStrictEqual(entry.provenance, replacement.provenance))) throw new Error('workflow_invocation_identity_rewritten');
+      if (entry.telemetry.evidence !== undefined && !persistedEqual(entry.telemetry, replacement.telemetry)) {
+        throw new Error('workflow_invocation_history_rewritten');
+      }
       if (entry.error !== 'workflow_invocation_incomplete' && !isDeepStrictEqual(entry, replacement)) throw new Error('workflow_invocation_history_rewritten');
     }
   };
