@@ -36,6 +36,7 @@ import { boundedText, safeWorkflowId, parseWorkflowPlan, parseWorkflowTask, matc
   parseWorkflowSubstitution, parseWorkflowBindingRefreshIntent, assertWorkflowResumeBinding,
   type WorkflowRole, type WorkflowRoleBinding, type WorkflowBindingRefreshIntent, type WorkflowOptions, type WorkflowTaskState,
   type WorkflowFinding, type WorkflowHandoff, type WorkflowInvocation, type WorkflowReviewAttempt, type WorkflowReviewAttemptV2,
+  type WorkflowProcessResultSnapshot,
   type WorkflowLeadIntegrationIntent, type WorkflowDispatchSupplementIntent, type WorkflowReviewBudgetExtensionIntent,
   type WorkflowWorktreeSetupDetail } from './workflow-contracts.js';
 
@@ -95,6 +96,23 @@ async function runWorkflowProvider(input: Parameters<typeof runWorkflowProcess>[
   }
   // Return parse failures so callers can retain process artifacts and preserve the original failure precedence.
   return { ...result, output, outputError, outputArtifactPath };
+}
+function workflowProcessResultSnapshot(result: WorkflowProcessResult): WorkflowProcessResultSnapshot {
+  const settlement = result.settlement === undefined ? undefined : Object.freeze({
+    parentExitCode: result.settlement.parentExitCode,
+    parentExitSignal: result.settlement.parentExitSignal,
+    outputComplete: result.settlement.outputComplete,
+    termination: result.settlement.termination,
+    directChild: result.settlement.directChild,
+    descendants: result.settlement.descendants,
+  });
+  return Object.freeze({ passed: result.passed, ...(result.error === undefined ? {} : { error: result.error }),
+    parentExitedSuccessfully: result.parentExitedSuccessfully, stdoutTruncated: result.stdoutTruncated,
+    ...(settlement === undefined ? {} : { settlement }) });
+}
+function recordWorkflowProcessResult(attempt: WorkflowInvocation | WorkflowReviewAttempt, result: WorkflowProcessResult): void {
+  Object.defineProperty(attempt, 'processResult', { value: workflowProcessResultSnapshot(result),
+    enumerable: true, writable: false, configurable: false });
 }
 function clean(cwd: string): boolean {
   return git(cwd, ['status', '--porcelain', '--untracked-files=all']).split('\n')
@@ -604,12 +622,15 @@ async function executeTask(state: WorkflowState, entry: WorkflowTaskState, comma
         publicationEnvironment: publication.environment,
         ...(prepared ? { environment: prepared.environment, redactionEnvironment: prepared.redactionEnvironment } : {}) }, resultFile,
         { kind: 'worker-designated-result', taskId: entry.task.id });
+        recordWorkflowProcessResult(invocation, result);
+        invocation.telemetry = result.telemetry ?? { provider: prepared?.binding.providerRoute ?? legacyProvider(state), durationMs: Date.now() - started, status: 'unknown', scope: 'unknown' };
+        invocation.artifacts = result.artifacts;
+        // Preserve the observed process outcome before cleanup or any untrusted result validation.
+        save(state);
       } finally {
         try { publication.revoke(); }
         finally { refAudit?.providerCompleted(entry.worker); }
       }
-      invocation.telemetry = result.telemetry ?? { provider: prepared?.binding.providerRoute ?? legacyProvider(state), durationMs: Date.now() - started, status: 'unknown', scope: 'unknown' };
-      invocation.artifacts = result.artifacts;
       entry.handoff = { taskId: entry.task.id, outcome: 'failed', changedFiles: [], tests: [], interfaceChanges: [], assumptions: [], risks: [], summary: result.error ?? 'Worker result pending validation', artifacts: result.artifacts };
       if (sessionEnabled) {
         if (result.telemetry?.sessionId && result.telemetry.sessionId !== entry.session!.id
@@ -1180,8 +1201,11 @@ export async function reviewWorkflow(cwd: string, name: string, runtime?: Workfl
         timeoutMs: providerTimeoutMs(state), artifactPrefix: prefix, provider: prepared?.binding.providerRoute ?? 'codex', ...(balanced ? { collectUsage: true } : {}) }, resultFile,
         prepared?.binding.providerRoute === 'claude' ? { kind: 'claude-native-structured' } : { kind: 'provider-designated-json' });
       if (attempt) {
+        recordWorkflowProcessResult(attempt, result);
         attempt.telemetry = result.telemetry ?? { provider: prepared?.binding.providerRoute ?? 'codex', durationMs: Date.now() - started, status: 'unknown', scope: 'unknown' };
         attempt.artifacts = result.artifacts;
+        // Preserve process settlement before repository, output and findings validation can fail.
+        save(state);
       }
       try {
         if (assertLeader(state) !== head || git(cwd, ['for-each-ref', '--format=%(refname) %(objectname)']) !== refs) throw new Error('changed');
