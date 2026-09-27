@@ -27,10 +27,12 @@ import { boundedText, safeWorkflowId, parseWorkflowPlan, parseWorkflowTask, matc
   parseWorkflowHandoff, parseWorkflowFindings, parseWorkflowBinding, parseWorkflowState, parseWorkflowProviderPolicy,
   validateWorkflowStateTransition, parseWorkflowLeadIntegrationIntent, parseWorkflowLeadIntegration,
   parseWorkflowDispatchSupplementIntent, parseWorkflowDispatchSupplement,
+  parseWorkflowReviewBudgetExtensionIntent, parseWorkflowReviewBudgetExtension, workflowReviewCeiling,
   type WorkflowState as LegacyWorkflowState, type VersionedWorkflowState as WorkflowState, type WorkflowStateV2,
   parseWorkflowSubstitution, assertWorkflowResumeBinding, type WorkflowRole, type WorkflowRoleBinding, type WorkflowOptions, type WorkflowTaskState,
   type WorkflowFinding, type WorkflowHandoff, type WorkflowInvocation, type WorkflowReviewAttempt, type WorkflowReviewAttemptV2,
-  type WorkflowLeadIntegrationIntent, type WorkflowDispatchSupplementIntent, type WorkflowWorktreeSetupDetail } from './workflow-contracts.js';
+  type WorkflowLeadIntegrationIntent, type WorkflowDispatchSupplementIntent, type WorkflowReviewBudgetExtensionIntent,
+  type WorkflowWorktreeSetupDetail } from './workflow-contracts.js';
 
 export type { WorkflowState, WorkflowOptions, WorkflowPlan, WorkflowTask, WorkflowHandoff, WorkflowFinding } from './workflow-contracts.js';
 
@@ -139,14 +141,16 @@ export function readWorkflow(cwd: string, name: string): WorkflowState {
   return state;
 }
 async function mutate(cwd: string, name: string,
-  action: (state: WorkflowState, active: ActiveOrchestratorSnapshot) => Promise<void>): Promise<WorkflowState> {
+  action: (state: WorkflowState, active: ActiveOrchestratorSnapshot) => Promise<void | false>,
+  options: { allowComplete?: boolean } = {}): Promise<WorkflowState> {
   assertLeadCaller();
   const path = statePath(cwd, name);
   return withOrchestratorOperation(cwd, active => withFileLock(`${path}.lock`, async () => {
       const state = readWorkflow(cwd, name);
       savedSnapshots.set(state, JSON.parse(JSON.stringify(state)));
-      assertMutable(state);
-      try { await action(state, active); } finally { save(state); }
+      if (!options.allowComplete) assertMutable(state);
+      let saveRequired = true;
+      try { saveRequired = await action(state, active) !== false; } finally { if (saveRequired) save(state); }
       return state;
     }, { timeoutMs: 0 }));
 }
@@ -171,6 +175,11 @@ function hasTrailingIncompleteInvocation(entry: WorkflowTaskState): boolean {
 }
 function assertNoIncompleteTaskInvocations(state: WorkflowState): void {
   if (state.tasks.some(hasTrailingIncompleteInvocation)) throw new Error('workflow_interrupted_worker_requires_inspection');
+}
+function assertNoIncompleteReviewInvocations(state: WorkflowState): void {
+  if (state.reviewAttempts?.some(attempt => attempt.error === 'workflow_invocation_incomplete')) {
+    throw new Error('workflow_interrupted_review_requires_inspection');
+  }
 }
 /** A validated publication can settle missing terminal framing after a clean exit, but never incomplete process settlement. */
 function designatedResultOverridesProcessFailure(result: WorkflowProcessResult, handoff: WorkflowHandoff): boolean {
@@ -742,6 +751,39 @@ export async function supplementWorkflowTask(cwd: string, name: string, rawInten
     state.dispatchSupplements = [...(state.dispatchSupplements ?? []), receipt];
   });
 }
+/** Append one attributed review-budget extension without changing consumed review history or dispatching work. */
+export async function extendWorkflowReviewBudget(cwd: string, name: string, rawIntent: unknown): Promise<WorkflowState> {
+  const input: WorkflowReviewBudgetExtensionIntent = parseWorkflowReviewBudgetExtensionIntent(rawIntent);
+  if (redactWorkflowText(JSON.stringify(input)) !== JSON.stringify(input)) throw new Error('workflow_sensitive_input_rejected');
+  return mutate(cwd, name, async (state, active) => {
+    const existing = state.reviewBudgetExtensions?.find(entry => entry.requestId === input.requestId);
+    if (existing) {
+      const replay = existing.head === input.expectedHead && existing.oldCeiling === input.expectedCeiling
+        && existing.newCeiling === input.expectedCeiling + input.increment
+        && existing.actor.id === input.actor.id && existing.actor.model === input.actor.model
+        && existing.authorityRef === input.authorityRef && existing.reason === input.reason;
+      if (replay) return false;
+      throw new Error('workflow_review_budget_extension_request_conflict');
+    }
+    assertMutable(state);
+    if (input.actor.id !== 'unknown' && state.schemaVersion === 2
+      && (input.actor.id !== state.bindings.lead.id || input.actor.model !== state.bindings.lead.model)) {
+      throw new Error('workflow_review_budget_extension_actor_mismatch');
+    }
+    const head = assertLeader(state);
+    if (head !== input.expectedHead) throw new Error('workflow_review_budget_extension_head_mismatch');
+    if (state.tasks.some(entry => entry.status === 'running')) throw new Error('workflow_controller_not_idle');
+    assertNoIncompleteTaskInvocations(state);
+    assertNoIncompleteReviewInvocations(state);
+    const oldCeiling = workflowReviewCeiling(state);
+    if (input.expectedCeiling !== oldCeiling) throw new Error('workflow_review_budget_extension_stale');
+    if (state.reviewPasses !== oldCeiling) throw new Error('workflow_review_budget_not_exhausted');
+    const receipt = parseWorkflowReviewBudgetExtension({ sequence: (state.reviewBudgetExtensions?.length ?? 0) + 1,
+      requestId: input.requestId, oldCeiling, newCeiling: oldCeiling + input.increment, head,
+      orchestrationHost: active.host, actor: input.actor, authorityRef: input.authorityRef, reason: input.reason, at: now() });
+    state.reviewBudgetExtensions = [...(state.reviewBudgetExtensions ?? []), receipt];
+  }, { allowComplete: true });
+}
 /** Adopt one explicit lead-authored direct child of the saved integration head. */
 export async function integrateWorkflowLeadCommit(cwd: string, name: string, rawIntent: unknown): Promise<WorkflowState> {
   const input: WorkflowLeadIntegrationIntent = parseWorkflowLeadIntegrationIntent(rawIntent);
@@ -750,7 +792,7 @@ export async function integrateWorkflowLeadCommit(cwd: string, name: string, raw
     integrated(state);
     if (state.reviews.some(review => review.findings.some(finding => !finding.disposition
       || finding.disposition === 'fix' && !finding.fixedBy))) throw new Error('workflow_findings_require_adjudication_or_fix');
-    if (state.reviewPasses >= state.options.maxReviewPasses) throw new Error('workflow_review_limit_reached');
+    if (state.reviewPasses >= workflowReviewCeiling(state)) throw new Error('workflow_review_limit_reached');
     if (git(cwd, ['branch', '--show-current']) !== state.plan.integrationBranch) throw new Error('workflow_integration_branch_mismatch');
     if (!clean(cwd)) throw new Error('workflow_integration_worktree_dirty');
     if (input.expectedParent !== state.integrationHead) throw new Error('workflow_lead_integration_parent_mismatch');
@@ -895,7 +937,7 @@ export async function reviewWorkflow(cwd: string, name: string, runtime?: Workfl
   return mutate(cwd, name, async (state, active) => {
     const head = verificationGate(state);
     const refs = git(cwd, ['for-each-ref', '--format=%(refname) %(objectname)']);
-    if (state.reviewPasses >= state.options.maxReviewPasses) throw new Error('workflow_review_limit_reached');
+    if (state.reviewPasses >= workflowReviewCeiling(state)) throw new Error('workflow_review_limit_reached');
     if (state.reviews.some(review => review.findings.some(finding => !finding.disposition || finding.disposition === 'fix' && !finding.fixedBy))) throw new Error('workflow_findings_require_adjudication_or_fix');
     const prepared = state.schemaVersion === 2 ? prepareBinding(state, state.bindings.reviewer, runtime) : undefined;
     const context = state.schemaVersion === 2 ? reviewContext(state) : undefined;
@@ -920,7 +962,7 @@ export async function reviewWorkflow(cwd: string, name: string, runtime?: Workfl
           severity: { type: 'string', enum: ['P0', 'P1', 'P2', 'P3'] }, message: { type: 'string', maxLength: 2000 },
           file: { type: ['string', 'null'], minLength: 1, maxLength: 400,
             // Provider regex subsets reject lookarounds; scopePath enforces traversal and reserved scopes locally.
-            pattern: '^[^\\\\/:*?\\[\\]{}\\r\\n]+(/[^\\\\/:*?\\[\\]{}\\r\\n]+)*$' },
+            pattern: '^[^\\\\/:*?\\r\\n]+(/[^\\\\/:*?\\r\\n]+)*$' },
           line: { type: ['integer', 'null'] },
         } } },
       } });
@@ -1038,8 +1080,15 @@ export function workflowStatus(cwd: string, name: string): Record<string, unknow
       taskId: entry.taskId, expectedInputHead: entry.expectedInputHead, orchestrationHost: entry.orchestrationHost,
       actor: entry.actor, authorityRef: entry.authorityRef.slice(0, 200), reason: entry.reason.slice(0, 200),
       contentSha256: entry.contentSha256, at: entry.at })),
+    reviewBudgetExtensionCount: state.reviewBudgetExtensions?.length ?? 0,
+    omittedReviewBudgetExtensions: Math.max(0, (state.reviewBudgetExtensions?.length ?? 0) - 3),
+    reviewBudgetExtensions: (state.reviewBudgetExtensions ?? []).slice(-3).map(entry => ({ sequence: entry.sequence,
+      requestId: entry.requestId, oldCeiling: entry.oldCeiling, newCeiling: entry.newCeiling, head: entry.head,
+      orchestrationHost: entry.orchestrationHost, actor: entry.actor, authorityRef: entry.authorityRef.slice(0, 200),
+      reason: entry.reason.slice(0, 200), at: entry.at })),
     verification: state.verification ? { head: state.verification.head, passed: state.verification.passed } : null,
-    reviewPasses: state.reviewPasses, maxReviewPasses: state.options.maxReviewPasses,
+    reviewPasses: state.reviewPasses, initialMaxReviewPasses: state.options.maxReviewPasses,
+    maxReviewPasses: workflowReviewCeiling(state),
     findings: (state.reviews.at(-1)?.findings ?? []).map(finding => ({ ...finding, message: finding.message.slice(0, 300), reason: finding.reason?.slice(0, 200) })),
     omittedTasks: 0, omittedFindings: 0, stateFile: statePath(cwd, name),
     tasks: state.tasks.map(entry => {
@@ -1081,6 +1130,9 @@ export function workflowStatus(cwd: string, name: string): Record<string, unknow
   }
   while (Buffer.byteLength(JSON.stringify(result)) > 16 * 1024 && result.dispatchSupplements.length) {
     result.dispatchSupplements.shift(); result.omittedDispatchSupplements++;
+  }
+  while (Buffer.byteLength(JSON.stringify(result)) > 16 * 1024 && result.reviewBudgetExtensions.length) {
+    result.reviewBudgetExtensions.shift(); result.omittedReviewBudgetExtensions++;
   }
   while (Buffer.byteLength(JSON.stringify(result)) > 16 * 1024 && result.tasks.length) {
     result.tasks.pop(); result.omittedTasks++;

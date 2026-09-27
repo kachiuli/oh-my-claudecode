@@ -5,15 +5,15 @@
   "provenance": {
     "base": "05c800f40d1ad53b42a78609d2667ef4f726808b",
     "planningHead": "0a91273e61dbbd47eb0af4c02844409251e08398",
-    "head": "cf3af859149689da4692311f925cf56a09ae66e7",
-    "sourceSha256": "6d0bc25c9beee246ec19a46c45e7c6e6ff5b05d0a7115f4062edfa97b93bbf0f",
+    "head": "2d48f7b4ffad86a6b86ba775ec0562cf603cce7c",
+    "sourceSha256": "ad526bc1d2537fad652af46dbfa19732159fcca89ba459db90ecf552e6e7dd2b",
     "generatedAt": null,
     "generator": "scripts/generate-inventory-graph.mjs"
   },
   "base": "05c800f40d1ad53b42a78609d2667ef4f726808b",
   "planningHead": "0a91273e61dbbd47eb0af4c02844409251e08398",
-  "head": "cf3af859149689da4692311f925cf56a09ae66e7",
-  "sourceSha256": "6d0bc25c9beee246ec19a46c45e7c6e6ff5b05d0a7115f4062edfa97b93bbf0f",
+  "head": "2d48f7b4ffad86a6b86ba775ec0562cf603cce7c",
+  "sourceSha256": "ad526bc1d2537fad652af46dbfa19732159fcca89ba459db90ecf552e6e7dd2b",
   "counts": {
     "public": {
       "skills": 43,
@@ -28,8 +28,8 @@
       "toolFiles": 61,
       "libFiles": 44,
       "templateHooks": 22,
-      "srcFiles": 1448,
-      "total": 1470
+      "srcFiles": 1449,
+      "total": 1471
     },
     "generated": {
       "distFiles": 5094,
@@ -41158,6 +41158,11 @@
         "path": "src/team/__tests__/workflow-report.test.ts"
       },
       {
+        "id": "src/team/__tests__/workflow-review-budget-extension.test.ts",
+        "kind": "src",
+        "path": "src/team/__tests__/workflow-review-budget-extension.test.ts"
+      },
+      {
         "id": "src/team/__tests__/workflow-review-paths.test.ts",
         "kind": "src",
         "path": "src/team/__tests__/workflow-review-paths.test.ts"
@@ -76740,6 +76745,51 @@
         "kind": "imports"
       },
       {
+        "from": "src/team/__tests__/workflow-review-budget-extension.test.ts",
+        "to": "external:node:fs",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-review-budget-extension.test.ts",
+        "to": "external:node:path",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-review-budget-extension.test.ts",
+        "to": "external:node:url",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-review-budget-extension.test.ts",
+        "to": "external:vitest",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-review-budget-extension.test.ts",
+        "to": "src/orchestration/selection.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-review-budget-extension.test.ts",
+        "to": "src/team/__tests__/helpers/workflow-fixture.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-review-budget-extension.test.ts",
+        "to": "src/team/__tests__/helpers/workflow-v2-fixture.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-review-budget-extension.test.ts",
+        "to": "src/team/workflow-contracts.ts",
+        "kind": "type-imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-review-budget-extension.test.ts",
+        "to": "src/team/workflow.ts",
+        "kind": "imports"
+      },
+      {
         "from": "src/team/__tests__/workflow-review-paths.test.ts",
         "to": "external:ajv",
         "kind": "imports"
@@ -83831,12 +83881,12 @@
       }
     ],
     "stats": {
-      "nodeCount": 7185,
-      "edgeCount": 8275,
-      "importEdgeCount": 6828,
+      "nodeCount": 7186,
+      "edgeCount": 8284,
+      "importEdgeCount": 6836,
       "registerEdgeCount": 64
     }
   },
-  "inventorySha256": "386b8535b532f822efabeb43a0f478fa0075f103cac98294f3101fbd7af57cec",
-  "manifestSha256": "5b5ba358ea07e6bde977b15002f7aabeb327bf2cf1388eef6492c51a7e441370"
+  "inventorySha256": "92c1d90b1b2b864446c6b5ccabf2252dc1ba520a881fdf1f0cfcf1a679b15970",
+  "manifestSha256": "e752d7ac749cfcbe426ec569e563a56211c87e066a64f354ed656589b46e5e7a"
 }

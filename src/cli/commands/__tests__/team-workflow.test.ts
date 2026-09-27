@@ -11,6 +11,7 @@ const api = vi.hoisted(() => ({
   substituteWorkflowBinding: vi.fn(),
   supplementWorkflowTask: vi.fn(),
   integrateWorkflowLeadCommit: vi.fn(),
+  extendWorkflowReviewBudget: vi.fn(),
   runWorkflow: vi.fn(), acceptWorkflowTask: vi.fn(), rejectWorkflowTask: vi.fn(),
   resumeWorkflowTask: vi.fn(), readWorkflow: vi.fn(),
   verifyWorkflow: vi.fn(), reviewWorkflow: vi.fn(), adjudicateWorkflow: vi.fn(),
@@ -484,6 +485,22 @@ describe('team workflow CLI', () => {
     await expect(workflowCommand(['integrate-lead', 'feature', '--file', join(root, 'missing.json')], root))
       .rejects.toThrow();
     expect(api.integrateWorkflowLeadCommit).not.toHaveBeenCalled();
+  });
+
+  it('forwards an attributed review-budget extension file and documents the operation', async () => {
+    const file = join(root, 'review-budget-extension.json');
+    const intent = { requestId: 'review-budget-3', expectedHead: 'a'.repeat(40), expectedCeiling: 2, increment: 1,
+      actor: { id: 'unknown', model: 'unknown' }, authorityRef: 'issue-44', reason: 'Authorize one more correction cycle' };
+    writeFileSync(file, JSON.stringify(intent));
+    await workflowCommand(['extend-review-budget', 'feature', '--file', file], root);
+    expect(api.extendWorkflowReviewBudget).toHaveBeenCalledWith(root, 'feature', intent);
+    await workflowCommand(['--help'], root);
+    expect(console.log).toHaveBeenCalledWith(expect.stringContaining('extend-review-budget <name> --file <intent.json>'));
+  });
+
+  it('requires an explicit review-budget extension input file', async () => {
+    await expect(workflowCommand(['extend-review-budget', 'feature'], root)).rejects.toThrow('workflow_input_file_required');
+    expect(api.extendWorkflowReviewBudget).not.toHaveBeenCalled();
   });
 
   it('bounds input before passing it to the controller', async () => {
