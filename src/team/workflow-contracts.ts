@@ -119,6 +119,8 @@ export interface WorkflowInvocation {
   reason?: string;
   artifacts: ArtifactDescriptor[];
   telemetry: WorkflowTelemetry;
+  /** Output-free observation captured from the provider process before result validation. */
+  readonly processResult?: WorkflowProcessResultSnapshot;
   /** Provider process identity captured at spawn; lets explicit recovery prove an interrupted attempt is dead. */
   process?: WorkflowProviderProcessIdentity;
   /** Controller process identity captured when the attempt was reserved, for crashes before the provider spawned. */
@@ -138,6 +140,23 @@ export interface WorkflowReviewAttempt {
   error?: string;
   artifacts: ArtifactDescriptor[];
   telemetry: WorkflowTelemetry;
+  /** Output-free observation captured from the provider process before result validation. */
+  readonly processResult?: WorkflowProcessResultSnapshot;
+}
+export interface WorkflowProcessResultSnapshot {
+  readonly passed: boolean;
+  readonly error?: 'launch_failed' | 'timeout' | 'interrupted' | 'process_failed' | 'throttled' | 'protocol_failed' | 'output_incomplete';
+  readonly parentExitedSuccessfully: boolean;
+  readonly stdoutTruncated: boolean;
+  readonly settlement?: WorkflowProcessSettlementSnapshot;
+}
+export interface WorkflowProcessSettlementSnapshot {
+  readonly parentExitCode: number | null;
+  readonly parentExitSignal: string | null;
+  readonly outputComplete: boolean;
+  readonly termination: 'not-requested' | 'attempted' | 'failed';
+  readonly directChild: 'not-started' | 'exited' | 'unconfirmed';
+  readonly descendants: 'not-started' | 'unverified' | 'cleaned';
 }
 export interface WorkflowFinding {
   id: string;
@@ -556,6 +575,47 @@ function parseArtifactDescriptor(value: unknown, expectedKind?: string): Artifac
     sizeBytes: integer(raw.sizeBytes, 0, Number.MAX_SAFE_INTEGER), retention: retention as ArtifactDescriptor['retention'],
     ...(raw.expiresAt === undefined ? {} : { expiresAt: timestamp(raw.expiresAt) }) });
 }
+function parseWorkflowProcessResultSnapshot(value: unknown): WorkflowProcessResultSnapshot {
+  const raw = exactObject(value, ['passed', 'error', 'parentExitedSuccessfully', 'stdoutTruncated', 'settlement']);
+  if (typeof raw.passed !== 'boolean' || typeof raw.parentExitedSuccessfully !== 'boolean'
+    || typeof raw.stdoutTruncated !== 'boolean') throw new Error('workflow_invalid_process_result');
+  const errors: NonNullable<WorkflowProcessResultSnapshot['error']>[] = [
+    'launch_failed', 'timeout', 'interrupted', 'process_failed', 'throttled', 'protocol_failed', 'output_incomplete',
+  ];
+  if (raw.error !== undefined && !errors.includes(raw.error as NonNullable<WorkflowProcessResultSnapshot['error']>)
+    || raw.passed === (raw.error !== undefined) || raw.passed && !raw.parentExitedSuccessfully) {
+    throw new Error('workflow_invalid_process_result');
+  }
+  let settlement: WorkflowProcessSettlementSnapshot | undefined;
+  if (raw.settlement !== undefined) {
+    const saved = exactObject(raw.settlement, ['parentExitCode', 'parentExitSignal', 'outputComplete', 'termination', 'directChild', 'descendants']);
+    if (saved.parentExitCode !== null && (!Number.isSafeInteger(saved.parentExitCode) || Number(saved.parentExitCode) < 0)
+      || saved.parentExitSignal !== null && (typeof saved.parentExitSignal !== 'string' || !/^SIG[A-Z0-9]+$/.test(saved.parentExitSignal))
+      || typeof saved.outputComplete !== 'boolean'
+      || !['not-requested', 'attempted', 'failed'].includes(String(saved.termination))
+      || !['not-started', 'exited', 'unconfirmed'].includes(String(saved.directChild))
+      || !['not-started', 'unverified', 'cleaned'].includes(String(saved.descendants))) {
+      throw new Error('workflow_invalid_process_result');
+    }
+    const parentExitedSuccessfully = saved.parentExitCode === 0 && saved.parentExitSignal === null && saved.directChild === 'exited';
+    const notStarted = saved.directChild === 'not-started';
+    if (raw.parentExitedSuccessfully !== parentExitedSuccessfully
+      || raw.passed && saved.outputComplete === false
+      || saved.descendants === 'cleaned' && (!parentExitedSuccessfully || saved.outputComplete === false)
+      || (saved.descendants === 'not-started') !== notStarted
+      || notStarted && (saved.parentExitCode !== null || saved.parentExitSignal !== null)) {
+      throw new Error('workflow_invalid_process_result');
+    }
+    settlement = Object.freeze({ parentExitCode: saved.parentExitCode as number | null,
+      parentExitSignal: saved.parentExitSignal as string | null, outputComplete: saved.outputComplete,
+      termination: saved.termination as WorkflowProcessSettlementSnapshot['termination'],
+      directChild: saved.directChild as WorkflowProcessSettlementSnapshot['directChild'],
+      descendants: saved.descendants as WorkflowProcessSettlementSnapshot['descendants'] });
+  }
+  return Object.freeze({ passed: raw.passed, ...(raw.error === undefined ? {} : { error: raw.error as WorkflowProcessResultSnapshot['error'] }),
+    parentExitedSuccessfully: raw.parentExitedSuccessfully, stdoutTruncated: raw.stdoutTruncated,
+    ...(settlement === undefined ? {} : { settlement }) });
+}
 function boundAttempt(value: unknown, role: 'implementer' | 'reviewer', ordinal: number): Record<string, unknown> {
   const raw = object(value);
   validateOrchestrationHost(raw.orchestrationHost);
@@ -568,10 +628,13 @@ function boundAttempt(value: unknown, role: 'implementer' | 'reviewer', ordinal:
   const field = role === 'implementer' ? 'attempt' : 'pass';
   if (raw[field] !== ordinal) throw new Error('workflow_invocation_sequence_mismatch');
   if (role === 'implementer' && !['fresh', 'resume'].includes(String(raw.mode))) throw new Error('workflow_invalid_invocation_mode');
-  const parsed = { ...raw, startedAt: timestamp(raw.startedAt), binding, invocationId, telemetry };
+  const processResult = raw.processResult === undefined ? undefined : parseWorkflowProcessResultSnapshot(raw.processResult);
+  const parsed = { ...raw, startedAt: timestamp(raw.startedAt), binding, invocationId, telemetry,
+    ...(processResult === undefined ? {} : { processResult }) };
   // The outcome/telemetry may settle later; the reserved identity may not change.
   Object.defineProperties(parsed, { binding: { writable: false, configurable: false }, invocationId: { writable: false, configurable: false },
     telemetry: { writable: false, configurable: false },
+    ...(processResult === undefined ? {} : { processResult: { writable: false, configurable: false } }),
     ...(raw.orchestrationHost === undefined ? {} : { orchestrationHost: { writable: false, configurable: false } }) });
   return parsed;
 }
@@ -795,6 +858,7 @@ export function parseWorkflowState(value: unknown): VersionedWorkflowState {
   }
   let hasSetupHistory = false;
   let hasTelemetryEvidence = false;
+  let hasProcessResultEvidence = false;
   if (raw.schemaVersion === 1) {
     hasSetupHistory = raw.tasks.some(entry => object(entry).setupAttempts !== undefined);
     const attemptHasEvidence = (value: unknown): boolean => {
@@ -805,10 +869,15 @@ export function parseWorkflowState(value: unknown): VersionedWorkflowState {
       const invocations = object(entry).invocations;
       return Array.isArray(invocations) && invocations.some(attemptHasEvidence);
     }) || Array.isArray(raw.reviewAttempts) && raw.reviewAttempts.some(attemptHasEvidence);
+    const attemptHasProcessResult = (value: unknown): boolean => object(value).processResult !== undefined;
+    hasProcessResultEvidence = raw.tasks.some(entry => {
+      const invocations = object(entry).invocations;
+      return Array.isArray(invocations) && invocations.some(attemptHasProcessResult);
+    }) || Array.isArray(raw.reviewAttempts) && raw.reviewAttempts.some(attemptHasProcessResult);
     // Preserve the accepted legacy shape byte-for-byte before requiring fields introduced by newer controllers.
     if (!hasSetupHistory && raw.leadIntegrations === undefined && raw.dispatchSupplements === undefined
       && raw.reviewBudgetExtensions === undefined && raw.taskRecoveries === undefined
-      && raw.reviewBudgetBasis === undefined && !hasTelemetryEvidence) return value as WorkflowState;
+      && raw.reviewBudgetBasis === undefined && !hasTelemetryEvidence && !hasProcessResultEvidence) return value as WorkflowState;
   }
   if (raw.reviewBudgetExtensions !== undefined && !Array.isArray(raw.reviewBudgetExtensions)) {
     throw new Error('workflow_invalid_review_budget_extensions');
@@ -882,19 +951,23 @@ export function parseWorkflowState(value: unknown): VersionedWorkflowState {
     const implementerProvider: WorkflowProviderRoute = raw.profile === 'claude-mimo-codex' ? 'mimo' : 'glm';
     const parseLegacyAttempt = (value: unknown, expectedProvider: WorkflowProviderRoute): Record<string, unknown> => {
       const attempt = object(value);
-      const parsed = { ...attempt, telemetry: parseWorkflowTelemetry(attempt.telemetry, expectedProvider) };
+      const processResult = attempt.processResult === undefined ? undefined : parseWorkflowProcessResultSnapshot(attempt.processResult);
+      const parsed = { ...attempt, telemetry: parseWorkflowTelemetry(attempt.telemetry, expectedProvider),
+        ...(processResult === undefined ? {} : { processResult }) };
       Object.defineProperty(parsed, 'telemetry', { writable: false, configurable: false });
+      if (processResult !== undefined) Object.defineProperty(parsed, 'processResult', { writable: false, configurable: false });
       return parsed;
     };
+    const hasInvocationEvidence = hasTelemetryEvidence || hasProcessResultEvidence;
     return { ...raw, tasks: raw.tasks.map(entry => {
       const task = object(entry); const setupAttempts = parseWorkflowSetupAttempts(task.setupAttempts);
-      const invocations = hasTelemetryEvidence && task.invocations !== undefined
+      const invocations = hasInvocationEvidence && task.invocations !== undefined
         ? (() => { if (!Array.isArray(task.invocations)) throw new Error('workflow_invalid_invocation');
           return task.invocations.map(attempt => parseLegacyAttempt(attempt, implementerProvider)); })()
         : task.invocations;
       return { ...task, ...(task.setupAttempts === undefined ? {} : { setupAttempts: Object.freeze(setupAttempts) }),
         ...(task.invocations === undefined ? {} : { invocations }) };
-    }), ...(hasTelemetryEvidence && raw.reviewAttempts !== undefined
+    }), ...(hasInvocationEvidence && raw.reviewAttempts !== undefined
       ? { reviewAttempts: (() => { if (!Array.isArray(raw.reviewAttempts)) throw new Error('workflow_invalid_invocation');
         return raw.reviewAttempts.map(attempt => parseLegacyAttempt(attempt, 'codex')); })() } : {}),
     ...(raw.leadIntegrations === undefined ? {} : { leadIntegrations: Object.freeze(leadIntegrations) }),
@@ -1001,6 +1074,22 @@ export function validateWorkflowStateTransition(previous: unknown, next: unknown
   const persistedEqual = (left: unknown, right: unknown): boolean => isDeepStrictEqual(
     left === undefined ? undefined : JSON.parse(JSON.stringify(left)),
     right === undefined ? undefined : JSON.parse(JSON.stringify(right)));
+  const preserveProcessResult = (entry: WorkflowInvocation | WorkflowReviewAttempt,
+    replacement: WorkflowInvocation | WorkflowReviewAttempt, index: number,
+    old: ReadonlyArray<WorkflowInvocation | WorkflowReviewAttempt>,
+    current: ReadonlyArray<WorkflowInvocation | WorkflowReviewAttempt>): void => {
+    if (entry.processResult !== undefined) {
+      if (!persistedEqual(entry.processResult, replacement.processResult)) {
+        throw new Error('workflow_process_result_history_rewritten');
+      }
+      return;
+    }
+    if (replacement.processResult !== undefined
+      && (entry.error !== 'workflow_invocation_incomplete' || replacement.error !== 'workflow_invocation_incomplete'
+        || index !== old.length - 1 || current.length !== old.length)) {
+      throw new Error('workflow_process_result_history_rewritten');
+    }
+  };
   if (before.schemaVersion !== after.schemaVersion) throw new Error('workflow_implicit_migration_forbidden');
   // The initialization budget remains immutable in both schemas; extensions live only in their attributed ledger.
   if (before.options.maxReviewPasses !== after.options.maxReviewPasses
@@ -1166,6 +1255,7 @@ export function validateWorkflowStateTransition(previous: unknown, next: unknown
           || 'pass' in entry && (!('pass' in replacement) || entry.pass !== replacement.pass || entry.head !== replacement.head)) {
           throw new Error('workflow_invocation_identity_rewritten');
         }
+        preserveProcessResult(entry, replacement, index, old, current);
         if (entry.telemetry.evidence !== undefined && !persistedEqual(entry.telemetry, replacement.telemetry)) {
           throw new Error('workflow_invocation_history_rewritten');
         }
@@ -1205,6 +1295,7 @@ export function validateWorkflowStateTransition(previous: unknown, next: unknown
         || entry.startedAt !== replacement.startedAt || entry.model !== replacement.model) throw new Error('workflow_invocation_identity_rewritten');
       if ('mode' in entry && (!('mode' in replacement) || entry.mode !== replacement.mode)
         || 'head' in entry && (!('head' in replacement) || entry.head !== replacement.head || !isDeepStrictEqual(entry.provenance, replacement.provenance))) throw new Error('workflow_invocation_identity_rewritten');
+      preserveProcessResult(entry, replacement, index, old, current);
       if (entry.telemetry.evidence !== undefined && !persistedEqual(entry.telemetry, replacement.telemetry)) {
         throw new Error('workflow_invocation_history_rewritten');
       }
