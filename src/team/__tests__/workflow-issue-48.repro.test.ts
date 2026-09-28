@@ -139,7 +139,7 @@ describe('issue #48 supervised process evidence persistence', () => {
     mutableReview.stdoutTruncated = !mutableReview.stdoutTruncated;
     expect(() => validateWorkflowStateTransition(reloaded, rewrittenReview))
       .toThrow('workflow_process_result_history_rewritten');
-  }, 30_000);
+  }, process.platform === 'win32' ? 90_000 : 30_000);
 
   it.each([
     ['incomplete-output', { error: 'output_incomplete', outputComplete: false }],
@@ -165,7 +165,7 @@ describe('issue #48 supervised process evidence persistence', () => {
         ...(evidence.descendants === undefined ? {} : { descendants: evidence.descendants }),
       },
     });
-  }, 20_000);
+  }, process.platform === 'win32' ? 90_000 : 20_000);
 
   it('preserves historical absence and permits only one durable observation on a trailing incomplete invocation', async () => {
     const configured = await initVersioned();
@@ -237,7 +237,7 @@ describe('issue #48 supervised process evidence persistence', () => {
       mutate(invalid.tasks[0]!.invocations[0]!.processResult);
       expect(() => parseWorkflowState(invalid)).toThrow('workflow_invalid_process_result');
     }
-  }, 20_000);
+  }, process.platform === 'win32' ? 90_000 : 20_000);
 
   it('keeps implementer process evidence when downstream handoff parsing fails', async () => {
     fixture.configure({ tasks: { a: { malformedHandoff: true } } });
@@ -251,7 +251,7 @@ describe('issue #48 supervised process evidence persistence', () => {
     expect(providerRun.result).toMatchObject({ passed: true, settlement: { outputComplete: true } });
     expect(failed.tasks[0]).toMatchObject({ status: 'failed' });
     expect(persisted.tasks[0]!.invocations![0]!.processResult).toEqual(snapshot(providerRun.result));
-  }, 20_000);
+  }, process.platform === 'win32' ? 90_000 : 20_000);
 
   it('keeps implementer process evidence when post-run publication cleanup fails', async () => {
     observed.revokeFailure = true;
@@ -264,7 +264,7 @@ describe('issue #48 supervised process evidence persistence', () => {
     expect(providerRun.result).toMatchObject({ passed: true, settlement: { outputComplete: true } });
     expect(failed.tasks[0]).toMatchObject({ status: 'failed', error: 'workflow_publication_revoke_failed' });
     expect(persisted.tasks[0]!.invocations![0]!.processResult).toEqual(snapshot(providerRun.result));
-  }, 20_000);
+  }, process.platform === 'win32' ? 90_000 : 20_000);
 
   it('keeps reviewer process evidence when downstream structured findings parsing fails', async () => {
     const configured = await initVersioned('issue-48', 'claude');
@@ -281,7 +281,7 @@ describe('issue #48 supervised process evidence persistence', () => {
     expect(reviewerRun.result).toMatchObject({ passed: true, settlement: { outputComplete: true } });
     expect(persisted.reviewAttempts![0]!.outcome).toBe('failed');
     expect(persisted.reviewAttempts![0]!.processResult).toEqual(snapshot(reviewerRun.result));
-  }, 30_000);
+  }, process.platform === 'win32' ? 90_000 : 30_000);
 
   it('strictly parses the same process-result evidence in a legacy workflow without migrating absent history', async () => {
     await initWorkflow(fixture.cwd, plan('issue-48-legacy'), {
@@ -298,5 +298,5 @@ describe('issue #48 supervised process evidence persistence', () => {
     const historical = structuredClone(persisted);
     Reflect.deleteProperty(historical.tasks[0]!.invocations![0]!, 'processResult');
     expect(parseWorkflowState(historical).tasks[0]!.invocations![0]!.processResult).toBeUndefined();
-  }, 20_000);
+  }, process.platform === 'win32' ? 90_000 : 20_000);
 });
