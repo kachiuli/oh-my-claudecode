@@ -477,8 +477,11 @@ function parseWorkflowTelemetryEvidence(value: unknown, telemetry: WorkflowTelem
     throw new Error('workflow_telemetry_evidence_mismatch');
   }
   if (evidence.accountingEvidenceComplete) {
-    if (!evidence.eventStreamComplete || evidence.terminalEventCount !== 1 || telemetry.terminal !== 'success'
+    if (!evidence.eventStreamComplete || evidence.terminalEventCount < 1 || telemetry.terminal !== 'success'
       || requiredCounters.some(count => count === undefined)
+      || telemetry.provider === 'codex' && evidence.terminalEventCount !== 1
+      || telemetry.provider !== 'codex' && evidence.terminalEventCount > 1
+        && (!evidence.identityEvidenceComplete || !evidence.identityConsistent)
       || telemetry.provider === 'codex' && telemetry.scope !== 'turn'
       || telemetry.provider !== 'codex' && telemetry.scope !== 'all-models'
       || telemetry.provider === 'codex' && (telemetry.cacheReadTokens! > telemetry.inputTokens!
@@ -486,7 +489,8 @@ function parseWorkflowTelemetryEvidence(value: unknown, telemetry: WorkflowTelem
       throw new Error('workflow_telemetry_evidence_mismatch');
     }
     if (telemetry.provider !== 'codex') {
-      const completeBuckets = terminalUsageBuckets.length > 0 && terminalUsageBuckets.every(bucket => bucket.observations === 1
+      const completeBuckets = terminalUsageBuckets.length > 0
+        && terminalUsageBuckets.every(bucket => bucket.observations === evidence.terminalEventCount
         && bucket.inputTokens !== undefined && bucket.outputTokens !== undefined
         && bucket.cacheReadInputTokens !== undefined && bucket.cacheCreationInputTokens !== undefined);
       const countForModel = (model: string) => terminalUsageBuckets.filter(bucket => bucket.model === model).length;
@@ -494,9 +498,9 @@ function parseWorkflowTelemetryEvidence(value: unknown, telemetry: WorkflowTelem
       const modelCountsMatch = bucketModels.size === terminalUsageBuckets.length
         && models.every(model => model.terminalUsageBuckets === undefined
           ? countForModel(model.value) === 0
-          : model.terminalUsageBuckets === 1 && countForModel(model.value) === 1)
+          : model.terminalUsageBuckets === evidence.terminalEventCount && countForModel(model.value) === 1)
         && terminalUsageBuckets.every(bucket => models.some(model => model.value === bucket.model
-          && model.terminalUsageBuckets === 1));
+          && model.terminalUsageBuckets === evidence.terminalEventCount));
       const sum = (values: number[]): number | undefined => {
         const result = values.reduce((total, value) => total + value, 0);
         return Number.isSafeInteger(result) ? result : undefined;
@@ -514,7 +518,8 @@ function parseWorkflowTelemetryEvidence(value: unknown, telemetry: WorkflowTelem
   }
   const primaryModels = models.filter(entry => (entry.initEvents ?? 0) + (entry.assistantEvents ?? 0) > 0);
   const terminalSessionEvents = sessions.reduce((total, session) => total + (session.terminalEvents ?? 0), 0);
-  if (evidence.identityEvidenceComplete && (!evidence.eventStreamComplete || evidence.terminalEventCount !== 1
+  if (evidence.identityEvidenceComplete && (!evidence.eventStreamComplete || evidence.terminalEventCount < 1
+    || telemetry.provider === 'codex' && evidence.terminalEventCount !== 1
     || telemetry.provider === 'codex' && !sessions.some(entry => (entry.threadEvents ?? 0) > 0)
     || telemetry.provider !== 'codex' && (!sessions.some(entry => (entry.initEvents ?? 0) > 0)
       || terminalSessionEvents !== evidence.terminalEventCount || models.length === 0))) {

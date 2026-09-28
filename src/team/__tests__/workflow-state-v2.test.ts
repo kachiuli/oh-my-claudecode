@@ -630,6 +630,25 @@ describe('versioned workflow contracts', () => {
     expect(() => Object.assign(parsed.tasks[0]!.invocations![0]!.telemetry.evidence!.models[0]!,
       { value: 'rewritten' })).toThrow();
   });
+  it('parses coherent repeated result evidence without multiplying cumulative usage', () => {
+    const repeated = legacyStateWithTelemetry();
+    const evidence = repeated.tasks[0]!.invocations[0]!.telemetry.evidence;
+    evidence.terminalEventCount = 4;
+    Object.assign(evidence.sessions[0]!, { terminalEvents: 4 });
+    evidence.models[0]!.terminalUsageBuckets = 4;
+    evidence.terminalUsageBuckets[0]!.observations = 4;
+
+    const parsed = parseWorkflowState(repeated);
+    const telemetry = parsed.tasks[0]!.invocations![0]!.telemetry;
+    expect(telemetry).toMatchObject({ status: 'measured', inputTokens: 10, outputTokens: 5 });
+    expect(telemetry.evidence).toMatchObject({ terminalEventCount: 4,
+      sessions: [{ initEvents: 1, terminalEvents: 4 }],
+      models: [{ terminalUsageBuckets: 4 }], terminalUsageBuckets: [{ observations: 4 }] });
+
+    const inconsistent = structuredClone(repeated);
+    inconsistent.tasks[0]!.invocations[0]!.telemetry.evidence.terminalUsageBuckets[0]!.observations = 3;
+    expect(() => parseWorkflowState(inconsistent)).toThrow('workflow_telemetry_evidence_mismatch');
+  });
   it('rejects malformed or contradictory telemetry evidence and settled legacy rewrites', () => {
     const unknown = legacyStateWithTelemetry();
     Object.assign(unknown.tasks[0]!.invocations[0]!.telemetry.evidence, { transcript: 'private' });
