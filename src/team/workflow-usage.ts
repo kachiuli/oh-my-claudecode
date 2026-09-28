@@ -55,8 +55,10 @@ const MAX_LINE_BYTES = 256 * 1024;
 const MAX_EVIDENCE_IDENTITIES = 8;
 const MAX_TERMINAL_USAGE_BUCKETS = 8;
 const MAX_TERMINAL_USAGE_INPUT_MODELS = 64;
+const MAX_TASKS = 64;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,159}(?:\[[A-Za-z0-9._+-]+\])?$/;
+const TASK_ID = /^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,159}$/;
 const SENSITIVE_IDENTITY = /(?:key|token|secret|password|credential|authorization)/i;
 const COUNTERS = ['inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheWriteTokens'] as const;
 type IdentitySource = Exclude<keyof WorkflowIdentityEvidence, 'value'>;
@@ -87,6 +89,9 @@ export function createWorkflowUsageCollector(provider: WorkflowTelemetry['provid
   const sessions = new Map<string, WorkflowIdentityEvidence>();
   const models = new Map<string, WorkflowIdentityEvidence>();
   const terminalUsageBuckets = new Map<string, WorkflowTerminalUsageEvidence>();
+  const tasks = new Map<string, { status: 'running' | 'completed' | 'failed'; sessionId: string; toolUseId?: string;
+    notificationSeen: boolean; notificationConsumed: boolean }>();
+  const pendingTaskNotifications: string[] = [];
   let line = ''; let lineBytes = 0; let discarding = false;
   let counters: Counters = {};
   let scope: WorkflowTelemetry['scope'] = 'unknown';
@@ -102,6 +107,10 @@ export function createWorkflowUsageCollector(provider: WorkflowTelemetry['provid
   let accountingEvidenceValid = true;
   let metadataEvidenceComplete = true;
   let terminalEventCount = 0;
+  let mainResultCount = 0;
+  let notificationResultCount = 0;
+  let taskEvidenceValid = true;
+  let missingInitModel = false;
   let initSessionObserved = false;
   let terminalSessionObserved = false;
 
@@ -131,26 +140,150 @@ export function createWorkflowUsageCollector(provider: WorkflowTelemetry['provid
     return true;
   }
 
-  function session(value: unknown, source: IdentitySource): void {
+  function session(value: unknown, source?: IdentitySource): string | undefined {
     if (value === undefined || value === null) {
-      identityEvidenceValid = false; diagnostics.add('missing_session_id'); return;
+      identityEvidenceValid = false; diagnostics.add('missing_session_id'); return undefined;
     }
     if (typeof value !== 'string' || !UUID.test(value)) {
       invalidSession = true; identityEvidenceValid = false; identityConsistent = false;
-      diagnostics.add('session_identity_invalid'); return;
+      diagnostics.add('session_identity_invalid'); return undefined;
     }
     const normalized = value.toLowerCase();
     if (!retain(normalized)) {
       invalidSession = true; identityEvidenceValid = false; identityConsistent = false;
-      diagnostics.add('session_identity_invalid'); diagnostics.add('session_identity_redacted'); return;
+      diagnostics.add('session_identity_invalid'); diagnostics.add('session_identity_redacted'); return undefined;
     }
     if (sessionId && sessionId !== normalized) {
       invalidSession = true; identityConsistent = false; diagnostics.add('session_identity_conflict');
     } else sessionId = normalized;
-    if (observe(sessions, normalized, source, 'session_identity_evidence_overflow')) {
+    if (source && observe(sessions, normalized, source, 'session_identity_evidence_overflow')) {
       if (source === 'initEvents') initSessionObserved = true;
       if (source === 'terminalEvents') terminalSessionObserved = true;
     }
+    return normalized;
+  }
+
+  function invalidateTask(diagnostic: string): void {
+    taskEvidenceValid = false; identityEvidenceValid = false; accountingEvidenceValid = false;
+    diagnostics.add(diagnostic);
+  }
+
+  function taskIdentity(value: unknown): string | undefined {
+    if (typeof value !== 'string' || !TASK_ID.test(value)) {
+      invalidateTask('task_identity_invalid'); return undefined;
+    }
+    return value;
+  }
+
+  function optionalTaskReference(value: unknown, diagnostic: string): string | undefined {
+    if (value === undefined) return undefined;
+    if (typeof value !== 'string' || !TASK_ID.test(value)) {
+      invalidateTask(diagnostic); return undefined;
+    }
+    return value;
+  }
+
+  function taskStarted(event: RecordValue): void {
+    const expectedSessionId = sessionId;
+    const taskSessionId = session(event.session_id);
+    const id = taskIdentity(event.task_id);
+    const toolUseId = optionalTaskReference(event.tool_use_id, 'task_tool_use_identity_invalid');
+    if (!taskSessionId) invalidateTask('task_session_invalid');
+    else if (expectedSessionId && taskSessionId !== expectedSessionId) invalidateTask('task_session_conflict');
+    if (!id || !taskSessionId || event.tool_use_id !== undefined && !toolUseId) return;
+    if (tasks.has(id)) { invalidateTask('duplicate_task_started'); return; }
+    if (tasks.size >= MAX_TASKS) { invalidateTask('task_evidence_overflow'); return; }
+    tasks.set(id, { status: 'running', sessionId: taskSessionId, ...(toolUseId ? { toolUseId } : {}),
+      notificationSeen: false, notificationConsumed: false });
+  }
+
+  function taskUpdated(event: RecordValue): void {
+    const id = taskIdentity(event.task_id);
+    if (!id) return;
+    const task = tasks.get(id);
+    if (!task) { invalidateTask('unknown_task_update'); return; }
+    if (event.session_id !== undefined && session(event.session_id) !== task.sessionId) {
+      invalidateTask('task_session_conflict'); return;
+    }
+    const patch = event.patch === undefined ? undefined : record(event.patch);
+    if (event.patch !== undefined && !patch) { invalidateTask('invalid_task_update'); return; }
+    const patchStatus = patch?.status;
+    const topLevelStatus = event.status;
+    if (patchStatus !== undefined && topLevelStatus !== undefined && patchStatus !== topLevelStatus) {
+      invalidateTask('task_status_conflict'); return;
+    }
+    const status = patchStatus ?? topLevelStatus;
+    if (status === undefined) return;
+    if (!['pending', 'running', 'paused', 'completed', 'failed', 'stopped', 'killed'].includes(String(status))) {
+      invalidateTask('invalid_task_status'); return;
+    }
+    if (status === 'completed') {
+      if (task.status === 'failed') invalidateTask('task_status_conflict');
+      else task.status = 'completed';
+    } else if (status === 'failed' || status === 'stopped' || status === 'killed') {
+      task.status = 'failed'; invalidateTask('task_failed');
+    } else if (task.status !== 'running') {
+      invalidateTask('task_status_conflict');
+    }
+  }
+
+  function taskNotification(event: RecordValue): void {
+    const id = taskIdentity(event.task_id);
+    if (!id) return;
+    const task = tasks.get(id);
+    if (!task) { invalidateTask('unknown_task_notification'); return; }
+    const toolUseId = optionalTaskReference(event.tool_use_id, 'task_tool_use_identity_invalid');
+    if (event.tool_use_id !== undefined && !toolUseId) return;
+    if (toolUseId && task.toolUseId && toolUseId !== task.toolUseId) {
+      invalidateTask('task_tool_use_identity_conflict'); return;
+    }
+    if (session(event.session_id) !== task.sessionId) {
+      invalidateTask('task_session_conflict'); return;
+    }
+    if (task.notificationSeen) { invalidateTask('duplicate_task_notification'); return; }
+    task.notificationSeen = true;
+    if (event.status !== 'completed') {
+      task.status = 'failed'; invalidateTask(event.status === 'failed' || event.status === 'stopped'
+        ? 'task_notification_failed' : 'invalid_task_status');
+      return;
+    }
+    if (task.status === 'failed') { invalidateTask('task_status_conflict'); return; }
+    task.status = 'completed'; pendingTaskNotifications.push(id);
+  }
+
+  function classifyClaudeResult(event: RecordValue): boolean {
+    const origin = event.origin;
+    const parsedOrigin = record(origin);
+    if (origin === undefined || origin === null || parsedOrigin?.kind === 'human') {
+      mainResultCount++;
+      if (mainResultCount > 1) invalidateTask('duplicate_terminal_events');
+      return false;
+    }
+    if (!parsedOrigin || parsedOrigin.kind !== 'task-notification'
+      || parsedOrigin.subkind !== undefined || parsedOrigin.fireReason !== undefined) {
+      invalidateTask('unknown_result_origin'); return false;
+    }
+    if (mainResultCount !== 1) {
+      invalidateTask('missing_main_result'); return false;
+    }
+    if (pendingTaskNotifications.length !== 1) {
+      invalidateTask(pendingTaskNotifications.length === 0
+        ? 'unresolved_task_notification_result' : 'ambiguous_task_notification_result');
+      return false;
+    }
+    const id = pendingTaskNotifications[0]!;
+    const task = tasks.get(id)!;
+    const originTaskId = optionalTaskReference(parsedOrigin.task_id, 'task_identity_invalid');
+    if (parsedOrigin.task_id !== undefined && !originTaskId) return false;
+    if (originTaskId && originTaskId !== id) {
+      invalidateTask('task_notification_origin_mismatch'); return false;
+    }
+    if (session(event.session_id) !== task.sessionId) {
+      invalidateTask('task_session_conflict'); return false;
+    }
+    pendingTaskNotifications.shift();
+    task.notificationConsumed = true; notificationResultCount++;
+    return true;
   }
 
   function model(value: unknown, source: IdentitySource, primary = false): string | undefined {
@@ -244,19 +377,19 @@ export function createWorkflowUsageCollector(provider: WorkflowTelemetry['provid
     return { counters: parsed.counters, scope: 'main-loop', signature: JSON.stringify(parsed.bucket) };
   }
 
-  function observeTerminal(): void {
+  function observeTerminal(allowAdditional = false): void {
     if (terminalEventCount === Number.MAX_SAFE_INTEGER) {
       accountingEvidenceValid = false; metadataEvidenceComplete = false; diagnostics.add('terminal_event_overflow'); return;
     }
     terminalEventCount++;
-    if (terminalEventCount > 1) {
+    if (terminalEventCount > 1 && !allowAdditional) {
       accountingEvidenceValid = false; diagnostics.add('duplicate_terminal_events');
     }
   }
 
   function complete(event: RecordValue, nextTerminal: 'success' | 'failure', nextCounters: Counters,
-    nextScope: WorkflowTelemetry['scope'], usageSignature = ''): void {
-    observeTerminal();
+    nextScope: WorkflowTelemetry['scope'], usageSignature = '', allowAdditional = false): void {
+    observeTerminal(allowAdditional);
     const signature = JSON.stringify({ terminal: nextTerminal, counters: nextCounters, scope: nextScope, usageSignature });
     if (terminalSignature && terminalSignature !== signature) {
       conflictingTerminal = true; accountingEvidenceValid = false; diagnostics.add('conflicting_terminal_events');
@@ -282,7 +415,14 @@ export function createWorkflowUsageCollector(provider: WorkflowTelemetry['provid
     if (provider !== 'codex') {
       if (event.type === 'system' && event.subtype === 'init') {
         session(event.session_id, 'initEvents');
-        if (event.model !== undefined) model(event.model, 'initEvents', true);
+        if (event.model === undefined) missingInitModel = true;
+        else model(event.model, 'initEvents', true);
+      } else if (event.type === 'system' && event.subtype === 'task_started') {
+        taskStarted(event);
+      } else if (event.type === 'system' && event.subtype === 'task_updated') {
+        taskUpdated(event);
+      } else if (event.type === 'system' && event.subtype === 'task_notification') {
+        taskNotification(event);
       } else if (event.type === 'assistant') {
         session(event.session_id, 'assistantEvents');
         const message = record(event.message);
@@ -290,8 +430,10 @@ export function createWorkflowUsageCollector(provider: WorkflowTelemetry['provid
         model(assistantModel, 'assistantEvents', true);
       }
       if (event.type !== 'result') return;
+      const allowAdditional = classifyClaudeResult(event);
       const usage = claudeUsage(event);
-      complete(event, event.subtype === 'success' && event.is_error !== true ? 'success' : 'failure', usage.counters, usage.scope, usage.signature);
+      complete(event, event.subtype === 'success' && event.is_error !== true ? 'success' : 'failure',
+        usage.counters, usage.scope, usage.signature, allowAdditional);
     } else {
       if (event.type === 'thread.started') session(event.thread_id, 'threadEvents');
       if (event.type === 'turn.completed') {
@@ -350,6 +492,14 @@ export function createWorkflowUsageCollector(provider: WorkflowTelemetry['provid
       if (!terminal) diagnostics.add('missing_terminal_event');
       if (!sessionId) diagnostics.add('missing_session_id');
       if (!outcome.passed) diagnostics.add('process_failed');
+      if (provider !== 'codex') {
+        if (terminalEventCount > 0 && mainResultCount === 0) invalidateTask('missing_main_result');
+        for (const task of tasks.values()) {
+          if (task.status !== 'completed' || task.notificationSeen && !task.notificationConsumed) {
+            invalidateTask('unresolved_task');
+          }
+        }
+      }
       if (conflictingTerminal) { counters = {}; scope = 'unknown'; }
       const failed = !outcome.passed || terminal !== 'success';
       // Providers may emit zero-filled error usage after a crash. That is not evidence of free work.
@@ -360,16 +510,25 @@ export function createWorkflowUsageCollector(provider: WorkflowTelemetry['provid
       const required = provider !== 'codex' ? COUNTERS : COUNTERS.slice(0, 3);
       const completeCounts = required.every(key => counters[key] !== undefined);
       const eventStreamComplete = outcome.eventStreamComplete ?? true;
+      if (!eventStreamComplete) diagnostics.add('incomplete_event_stream');
+      if (provider !== 'codex' && terminalEventCount > 1 && taskEvidenceValid) {
+        if (!initSessionObserved) invalidateTask('missing_init_event');
+        else if (missingInitModel) invalidateTask('missing_model_id');
+      }
+      const terminalFramingComplete = provider === 'codex' ? terminalEventCount === 1
+        : taskEvidenceValid && mainResultCount === 1 && terminalEventCount === 1 + notificationResultCount
+          && pendingTaskNotifications.length === 0
+          && (terminalEventCount === 1 || initSessionObserved && identityEvidenceValid && identityConsistent);
       const evidence: WorkflowTelemetryEvidence = {
         version: 1,
         diagnosticLogComplete: outcome.diagnosticLogComplete ?? true,
         eventStreamComplete,
         identityEvidenceComplete: eventStreamComplete && metadataEvidenceComplete && identityEvidenceValid
-          && terminalEventCount === 1 && sessions.size > 0
+          && terminalFramingComplete && sessions.size > 0
           && (provider === 'codex' || initSessionObserved && terminalSessionObserved && models.size > 0),
         identityConsistent,
         accountingEvidenceComplete: eventStreamComplete && metadataEvidenceComplete && accountingEvidenceValid
-          && outcome.passed && terminal === 'success' && terminalEventCount === 1 && !conflictingTerminal
+          && outcome.passed && terminal === 'success' && terminalFramingComplete && !conflictingTerminal
           && completeCounts && scope !== 'main-loop',
         terminalEventCount,
         sessions: [...sessions.values()].sort((a, b) => a.value.localeCompare(b.value)),

@@ -80,6 +80,189 @@ describe('workflow terminal usage accounting', () => {
       terminalUsageBuckets: [{ model: 'glm', observations: 2 }] });
   });
 
+  it('accepts correlated task-notification results with identical cumulative usage', () => {
+    const events: unknown[] = [
+      { type: 'system', subtype: 'init', session_id: sessionId, model: 'glm-5.3' },
+      { type: 'assistant', session_id: sessionId, message: { model: 'glm-5.3' } },
+      ...[1, 2, 3].map(index => ({ type: 'system', subtype: 'task_started',
+        task_id: `task-${index}`, description: `Synthetic task ${index}`, session_id: sessionId })),
+      { ...result, modelUsage: { 'glm-5.3': modelUsage.glm } },
+    ];
+    for (const index of [1, 2, 3]) {
+      events.push(
+        { type: 'system', subtype: 'task_updated', task_id: `task-${index}`,
+          patch: { status: 'completed' }, session_id: sessionId },
+        { type: 'system', subtype: 'task_notification', task_id: `task-${index}`,
+          status: 'completed', session_id: sessionId },
+        { type: 'system', subtype: 'init', session_id: sessionId, model: 'glm-5.3' },
+        { type: 'assistant', session_id: sessionId, message: { model: 'glm-5.3' } },
+        { ...result, origin: { kind: 'task-notification' }, modelUsage: { 'glm-5.3': modelUsage.glm } },
+      );
+    }
+
+    const telemetry = collect(events);
+    expect(telemetry).toMatchObject({ status: 'measured', scope: 'all-models', inputTokens: 200,
+      outputTokens: 30, cacheReadTokens: 80, cacheWriteTokens: 20, terminal: 'success' });
+    expect(telemetry.diagnostics).toBeUndefined();
+    expect(telemetry.evidence).toMatchObject({ terminalEventCount: 4, identityEvidenceComplete: true,
+      identityConsistent: true, accountingEvidenceComplete: true,
+      sessions: [{ value: sessionId, initEvents: 4, assistantEvents: 4, terminalEvents: 4 }],
+      models: [{ value: 'glm-5.3', initEvents: 4, assistantEvents: 4, terminalUsageBuckets: 4 }],
+      terminalUsageBuckets: [{ model: 'glm-5.3', observations: 4 }] });
+  });
+
+  it('accepts a complete notification stream with one process init frame', () => {
+    const telemetry = collect([
+      { type: 'system', subtype: 'init', session_id: sessionId, model: 'glm-5.3' },
+      { type: 'system', subtype: 'task_started', task_id: 'task-1', tool_use_id: 'toolu-task-1',
+        description: 'Synthetic task', session_id: sessionId },
+      { ...result, modelUsage: { 'glm-5.3': modelUsage.glm } },
+      { type: 'system', subtype: 'task_notification', task_id: 'task-1', tool_use_id: 'toolu-task-1',
+        status: 'completed', session_id: sessionId },
+      { ...result, origin: { kind: 'task-notification', task_id: 'task-1', delivery_id: 'synthetic-delivery' },
+        modelUsage: { 'glm-5.3': modelUsage.glm } },
+    ]);
+    expect(telemetry).toMatchObject({ status: 'measured', inputTokens: 200, outputTokens: 30 });
+    expect(telemetry.evidence).toMatchObject({ identityEvidenceComplete: true,
+      accountingEvidenceComplete: true, terminalEventCount: 2,
+      sessions: [{ initEvents: 1, terminalEvents: 2 }],
+      models: [{ initEvents: 1, terminalUsageBuckets: 2 }],
+      terminalUsageBuckets: [{ observations: 2 }] });
+  });
+
+  it('rejects inconsistent cumulative usage on a correlated notification result', () => {
+    const telemetry = collect([
+      { type: 'system', subtype: 'init', session_id: sessionId, model: 'glm-5.3' },
+      { type: 'system', subtype: 'task_started', task_id: 'task-1',
+        description: 'Synthetic task', session_id: sessionId },
+      { ...result, modelUsage: { 'glm-5.3': modelUsage.glm } },
+      { type: 'system', subtype: 'task_notification', task_id: 'task-1',
+        status: 'completed', session_id: sessionId },
+      { ...result, origin: { kind: 'task-notification' }, modelUsage: { 'glm-5.3': {
+        ...modelUsage.glm, inputTokens: 101 } } },
+    ]);
+    expect(telemetry).toMatchObject({ status: 'unknown', scope: 'unknown',
+      diagnostics: expect.arrayContaining(['conflicting_terminal_events']) });
+    expect(telemetry.evidence).toMatchObject({ accountingEvidenceComplete: false, terminalEventCount: 2 });
+  });
+
+  it('rejects a later init without model identity in a multi-result stream', () => {
+    const telemetry = collect([
+      { type: 'system', subtype: 'init', session_id: sessionId, model: 'glm-5.3' },
+      { type: 'system', subtype: 'task_started', task_id: 'task-1',
+        description: 'Synthetic task', session_id: sessionId },
+      { ...result, modelUsage: { 'glm-5.3': modelUsage.glm } },
+      { type: 'system', subtype: 'task_notification', task_id: 'task-1',
+        status: 'completed', session_id: sessionId },
+      { type: 'system', subtype: 'init', session_id: sessionId },
+      { ...result, origin: { kind: 'task-notification' }, modelUsage: { 'glm-5.3': modelUsage.glm } },
+    ]);
+    expect(telemetry).toMatchObject({ status: 'partial', diagnostics: ['missing_model_id'] });
+    expect(telemetry.evidence).toMatchObject({ identityEvidenceComplete: false,
+      accountingEvidenceComplete: false, terminalEventCount: 2 });
+  });
+
+  it('rejects a multi-result stream with no init event', () => {
+    const telemetry = collect([
+      { type: 'system', subtype: 'task_started', task_id: 'task-1',
+        description: 'Synthetic task', session_id: sessionId },
+      { ...result, modelUsage: { 'glm-5.3': modelUsage.glm } },
+      { type: 'system', subtype: 'task_notification', task_id: 'task-1',
+        status: 'completed', session_id: sessionId },
+      { ...result, origin: { kind: 'task-notification' }, modelUsage: { 'glm-5.3': modelUsage.glm } },
+    ]);
+    expect(telemetry).toMatchObject({ status: 'partial', diagnostics: ['missing_init_event'] });
+    expect(telemetry.evidence).toMatchObject({ identityEvidenceComplete: false,
+      accountingEvidenceComplete: false, terminalEventCount: 2 });
+  });
+
+  it('rejects conflicting task tool-use identities', () => {
+    const telemetry = collect([
+      { type: 'system', subtype: 'init', session_id: sessionId, model: 'glm-5.3' },
+      { type: 'system', subtype: 'task_started', task_id: 'task-1', tool_use_id: 'toolu-start',
+        description: 'Synthetic task', session_id: sessionId },
+      { ...result, modelUsage: { 'glm-5.3': modelUsage.glm } },
+      { type: 'system', subtype: 'task_notification', task_id: 'task-1', tool_use_id: 'toolu-other',
+        status: 'completed', session_id: sessionId },
+    ]);
+    expect(telemetry).toMatchObject({ status: 'partial',
+      diagnostics: expect.arrayContaining(['task_tool_use_identity_conflict']) });
+    expect(telemetry.evidence).toMatchObject({ identityEvidenceComplete: false,
+      accountingEvidenceComplete: false });
+  });
+
+  it.each([
+    { name: 'unknown result origin', events: [
+      { ...result, origin: { kind: 'coordinator' } },
+    ], diagnostic: 'unknown_result_origin' },
+    { name: 'notification result without a completed task notification', events: [
+      result, { ...result, origin: { kind: 'task-notification' } },
+    ], diagnostic: 'unresolved_task_notification_result' },
+    { name: 'notification result with a mismatched optional task identity', events: [
+      { type: 'system', subtype: 'task_started', task_id: 'task-1', description: 'Synthetic task', session_id: sessionId },
+      result,
+      { type: 'system', subtype: 'task_notification', task_id: 'task-1', status: 'completed', session_id: sessionId },
+      { ...result, origin: { kind: 'task-notification', task_id: 'task-other' } },
+    ], diagnostic: 'task_notification_origin_mismatch' },
+    { name: 'notification for an unknown task', events: [
+      { type: 'system', subtype: 'task_notification', task_id: 'unknown-task',
+        status: 'completed', session_id: sessionId }, result,
+    ], diagnostic: 'unknown_task_notification' },
+    { name: 'failed task notification', events: [
+      { type: 'system', subtype: 'task_started', task_id: 'task-1', description: 'Synthetic task', session_id: sessionId },
+      result,
+      { type: 'system', subtype: 'task_notification', task_id: 'task-1', status: 'failed', session_id: sessionId },
+    ], diagnostic: 'task_notification_failed' },
+    { name: 'unresolved task', events: [
+      { type: 'system', subtype: 'task_started', task_id: 'task-1', description: 'Synthetic task', session_id: sessionId },
+      result,
+    ], diagnostic: 'unresolved_task' },
+    { name: 'ambiguous completed task notifications', events: [
+      { type: 'system', subtype: 'task_started', task_id: 'task-1', description: 'Synthetic task 1', session_id: sessionId },
+      { type: 'system', subtype: 'task_started', task_id: 'task-2', description: 'Synthetic task 2', session_id: sessionId },
+      result,
+      { type: 'system', subtype: 'task_notification', task_id: 'task-1', status: 'completed', session_id: sessionId },
+      { type: 'system', subtype: 'task_notification', task_id: 'task-2', status: 'completed', session_id: sessionId },
+      { ...result, origin: { kind: 'task-notification' } },
+    ], diagnostic: 'ambiguous_task_notification_result' },
+    { name: 'conflicting task update status', events: [
+      { type: 'system', subtype: 'task_started', task_id: 'task-1', description: 'Synthetic task', session_id: sessionId },
+      { type: 'system', subtype: 'task_updated', task_id: 'task-1',
+        patch: { status: 'completed' }, status: 'failed', session_id: sessionId },
+      result,
+    ], diagnostic: 'task_status_conflict' },
+    { name: 'task notification from another session', events: [
+      { type: 'system', subtype: 'task_started', task_id: 'task-1', description: 'Synthetic task', session_id: sessionId },
+      result,
+      { type: 'system', subtype: 'task_notification', task_id: 'task-1', status: 'completed',
+        session_id: '87654321-1234-4123-8123-123456789abc' },
+    ], diagnostic: 'task_session_conflict' },
+  ])('fails closed for $name', ({ events, diagnostic }) => {
+    const telemetry = collect(events);
+    expect(telemetry.status).not.toBe('measured');
+    expect(telemetry.diagnostics).toContain(diagnostic);
+    expect(telemetry.evidence).toMatchObject({ identityEvidenceComplete: false,
+      accountingEvidenceComplete: false });
+  });
+
+  it('keeps explicit null and human origins compatible with the single-main-result path', () => {
+    expect(collect([{ ...result, origin: null }])).toMatchObject({ status: 'measured', terminal: 'success' });
+    expect(collect([{ ...result, origin: { kind: 'human', delivery_id: 'synthetic-delivery' } }]))
+      .toMatchObject({ status: 'measured', terminal: 'success' });
+  });
+
+  it('accepts a task_updated-only completion when its optional session ID is absent', () => {
+    const telemetry = collect([
+      { type: 'system', subtype: 'init', session_id: sessionId, model: 'glm-5.3' },
+      { type: 'system', subtype: 'task_started', task_id: 'task-1',
+        description: 'Synthetic foreground task', session_id: sessionId },
+      { type: 'system', subtype: 'task_updated', task_id: 'task-1', patch: { status: 'completed' } },
+      { ...result, modelUsage: { 'glm-5.3': modelUsage.glm } },
+    ]);
+    expect(telemetry).toMatchObject({ status: 'measured', terminal: 'success' });
+    expect(telemetry.diagnostics).toBeUndefined();
+  });
+
   it('does not subtract usage from previous invocations of a resumed session', () => {
     expect(collect([result]).inputTokens).toBe(200);
     expect(collect([result]).inputTokens).toBe(200);
@@ -248,6 +431,7 @@ describe('workflow terminal usage accounting', () => {
     const collector = createWorkflowUsageCollector('glm');
     collector.write(Buffer.from(JSON.stringify({ ...result, modelUsage: { 'glm-5.3': modelUsage.glm } })));
     const telemetry = collector.finish({ durationMs: 1, passed: true, eventStreamComplete: false });
+    expect(telemetry).toMatchObject({ status: 'partial', diagnostics: ['incomplete_event_stream'] });
     expect(telemetry.evidence).toMatchObject({ eventStreamComplete: false,
       identityEvidenceComplete: false, accountingEvidenceComplete: false });
   });
