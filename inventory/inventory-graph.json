@@ -5,15 +5,15 @@
   "provenance": {
     "base": "05c800f40d1ad53b42a78609d2667ef4f726808b",
     "planningHead": "0a91273e61dbbd47eb0af4c02844409251e08398",
-    "head": "4ebff4aa57e69c14ee6c04a3385ca66573ccd68d",
-    "sourceSha256": "eca944b1e93767bcdf090afe4b9772726baad0067717c7a8d3b8a8d1d61d287b",
+    "head": "e89d19f2b340c95891481813dc96b89d48da5179",
+    "sourceSha256": "33e538d7057d4d97e5b4c1d9b7a46fa844cbf534b9b43ffce9962744cff10e25",
     "generatedAt": null,
     "generator": "scripts/generate-inventory-graph.mjs"
   },
   "base": "05c800f40d1ad53b42a78609d2667ef4f726808b",
   "planningHead": "0a91273e61dbbd47eb0af4c02844409251e08398",
-  "head": "4ebff4aa57e69c14ee6c04a3385ca66573ccd68d",
-  "sourceSha256": "eca944b1e93767bcdf090afe4b9772726baad0067717c7a8d3b8a8d1d61d287b",
+  "head": "e89d19f2b340c95891481813dc96b89d48da5179",
+  "sourceSha256": "33e538d7057d4d97e5b4c1d9b7a46fa844cbf534b9b43ffce9962744cff10e25",
   "counts": {
     "public": {
       "skills": 43,
@@ -33086,6 +33086,11 @@
         "id": "docs/WORKFLOW-V1.6.1-RELEASE-NOTES.md",
         "kind": "other",
         "path": "docs/WORKFLOW-V1.6.1-RELEASE-NOTES.md"
+      },
+      {
+        "id": "docs/WORKFLOW-V1.6.2-RELEASE-NOTES.md",
+        "kind": "other",
+        "path": "docs/WORKFLOW-V1.6.2-RELEASE-NOTES.md"
       },
       {
         "id": "docs/adr/03487-named-autopilot-stage-profiles.md",
@@ -84226,12 +84231,12 @@
       }
     ],
     "stats": {
-      "nodeCount": 7195,
+      "nodeCount": 7196,
       "edgeCount": 8344,
       "importEdgeCount": 6883,
       "registerEdgeCount": 64
     }
   },
-  "inventorySha256": "d0a64b9e99650a095001727b53696cc57bdaadcbd749338713770c49d9d9479a",
-  "manifestSha256": "d6314fe24546d25d4aca4b9ed5b4a6a5d2ff276de5211a6343be1450131448ce"
+  "inventorySha256": "28293f5c2e7511ac05e9dd59ca69537ecc490a928c4dee27c670c4cdb36940d5",
+  "manifestSha256": "c382fa8fa3bcdaf49234bf97f3d1821d677715575cfb66b517f076d80e4683c2"
 }
