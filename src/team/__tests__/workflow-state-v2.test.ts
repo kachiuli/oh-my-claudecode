@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
 import { assertWorkflowResumeBinding, parseWorkflowBinding, parseWorkflowDispatchSupplementIntent,
-  parseWorkflowLeadIntegrationIntent, parseWorkflowReviewBudgetExtensionIntent, parseWorkflowState,
+  parseWorkflowFindings, parseWorkflowHandoff, parseWorkflowLeadIntegrationIntent, parseWorkflowReviewBudgetExtensionIntent, parseWorkflowState,
+  parseWorkflowTask,
   validateWorkflowStateTransition, workflowReviewBudgetUsed, workflowReviewCeiling } from '../workflow-contracts.js';
 import type { WorkflowSetupAttempt, WorkflowTask } from '../workflow-contracts.js';
 
@@ -302,13 +303,13 @@ describe('versioned workflow contracts', () => {
     expect(() => validateWorkflowStateTransition(completedState('supervised'), completedState('unbounded-provider-timeout')))
       .toThrow('workflow_policy_change_forbidden');
   });
-  it('parses a strict frozen lead-integration intent and append-only evidence in both schemas', () => {
+  it.each(['src/registry.ts', '.omc/routing.md'])('parses strict frozen lead-integration evidence for %s in both schemas', path => {
     const mutableCheck = { command: 'node', args: ['check.mjs'] };
     const parsedIntent = parseWorkflowLeadIntegrationIntent({ expectedParent: 'b'.repeat(40), expectedHead: 'c'.repeat(40),
       actor: { id: 'unknown', model: 'unknown' }, authorityRef: 'issue-39', reason: 'Authorized registry pin',
-      paths: ['src/registry.ts'], checks: [mutableCheck] });
+      paths: [path], checks: [mutableCheck] });
     expect(parsedIntent).toMatchObject({
-      expectedParent: 'b'.repeat(40), paths: ['src/registry.ts'] });
+      expectedParent: 'b'.repeat(40), paths: [path] });
     expect(Object.isFrozen(parsedIntent.checks[0])).toBe(true);
     expect(Object.isFrozen(parsedIntent.checks[0]!.args)).toBe(true);
     mutableCheck.args[0] = 'mutated.mjs';
@@ -316,10 +317,11 @@ describe('versioned workflow contracts', () => {
     for (const build of [legacyState, state]) {
       const artifact = setupAttempt().artifact!;
       const record = leadIntegration();
+      record.changedFiles = [path];
       const raw = { ...build(), leadIntegrations: [{ ...record,
         checks: [{ ...record.checks[0]!, artifacts: [artifact] }] }] };
       const parsed = parseWorkflowState(raw);
-      expect(parsed.leadIntegrations?.[0]).toMatchObject({ sequence: 1, parent: 'b'.repeat(40), head: 'c'.repeat(40) });
+      expect(parsed.leadIntegrations?.[0]).toMatchObject({ sequence: 1, parent: 'b'.repeat(40), head: 'c'.repeat(40), changedFiles: [path] });
       expect(() => Object.assign(parsed.leadIntegrations![0]!, { reason: 'rewritten' })).toThrow();
       expect(Object.isFrozen(parsed.leadIntegrations![0]!.checks[0]!.command)).toBe(true);
       expect(Object.isFrozen(parsed.leadIntegrations![0]!.checks[0]!.command.args)).toBe(true);
@@ -350,6 +352,29 @@ describe('versioned workflow contracts', () => {
         command: { command: 'node', args: Array.from({ length: 10 }, () => 'x'.repeat(500)) },
         passed: true, artifacts: [],
       })) }] })).toThrow('workflow_lead_integration_too_large');
+  });
+  it('allows only the exact root routing policy in lead evidence and review metadata, never worker ownership or output', () => {
+    const intent = { expectedParent: 'b'.repeat(40), expectedHead: 'c'.repeat(40),
+      actor: { id: 'unknown', model: 'unknown' }, authorityRef: 'issue-58', reason: 'Adopt repository routing policy',
+      paths: ['.omc/routing.md'], checks: [{ command: 'node', args: ['check.mjs'] }] };
+    expect(parseWorkflowLeadIntegrationIntent(intent).paths).toEqual(['.omc/routing.md']);
+    const findings = (file: string) => ({ findings: [{ severity: 'P2', message: 'Check routing policy.', file }] });
+    expect(parseWorkflowFindings(findings('.omc/routing.md'), 1)[0]?.file).toBe('.omc/routing.md');
+    for (const path of ['.omc', '.omc/**', '.omc/state/workflow.json', '.omc/logs/log.txt', '.omc/notepad.md',
+      'nested/.omc/routing.md', './.omc/routing.md', '.omc/../routing.md', '.omc//routing.md',
+      '.omc\\routing.md', '.OMC/routing.md', '.omc/Routing.md', '.omc./routing.md', '.omc /routing.md',
+      '.omc/routing.md/', '.omc/routing.md/**', '.omc/routing.md.bak', '/.omc/routing.md']) {
+      expect(() => parseWorkflowLeadIntegrationIntent({ ...intent, paths: [path] }), path).toThrow('workflow_invalid_scope');
+      expect(() => parseWorkflowState({ ...legacyState(), leadIntegrations: [{ ...leadIntegration(), changedFiles: [path] }] }), path)
+        .toThrow('workflow_invalid_scope');
+      expect(() => parseWorkflowFindings(findings(path), 1), path).toThrow('workflow_invalid_scope');
+    }
+    for (const scope of ['writeScope', 'readScope', 'prohibitedScope']) {
+      expect(() => parseWorkflowTask({ ...legacyState().tasks[0]!.task, [scope]: ['.omc/routing.md'] }))
+        .toThrow('workflow_invalid_scope');
+    }
+    expect(() => parseWorkflowHandoff({ taskId: 'one', outcome: 'completed', changedFiles: ['.omc/routing.md'],
+      tests: [], interfaceChanges: [], assumptions: [], risks: [], summary: 'Done.' }, 'one')).toThrow('workflow_invalid_scope');
   });
   it('allows one exact lead-integration append and refuses origin, ledger, or workflow-history rewrites', () => {
     for (const build of [legacyState, state]) {

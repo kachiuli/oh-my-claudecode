@@ -923,6 +923,27 @@ export async function extendWorkflowReviewBudget(cwd: string, name: string, rawI
     state.reviewBudgetExtensions = [...(state.reviewBudgetExtensions ?? []), receipt];
   }, { allowComplete: true });
 }
+/** The sole .omc source exception must stay a tracked regular file, separate from runtime storage. */
+function assertLeadRoutingPolicy(cwd: string, head: string): void {
+  try {
+    const repositoryRoot = realpathSync(cwd);
+    if (realpathSync(git(cwd, ['rev-parse', '--show-toplevel'])) !== repositoryRoot) throw new Error('invalid');
+    const entry = /^(100(?:644|755)) blob ([a-f0-9]{40}(?:[a-f0-9]{24})?)\t\.omc\/routing\.md\0$/
+      .exec(gitRaw(cwd, ['ls-tree', '-z', head, '--', '.omc/routing.md']));
+    if (!entry) throw new Error('invalid');
+    const root = join(repositoryRoot, '.omc');
+    if (!lstatSync(root).isDirectory()) throw new Error('invalid');
+    const policy = lstatSync(join(root, 'routing.md'));
+    if (!policy.isFile() || policy.nlink !== 1) throw new Error('invalid');
+    // Do not adopt a spelling that collides with the policy or runtime root on another platform.
+    if (readdirSync(cwd).some(name => name !== '.omc' && /^\.omc[. ]*$/i.test(name))
+      || readdirSync(root).some(name => name !== 'routing.md' && /^routing\.md[. ]*$/i.test(name))) throw new Error('invalid');
+    // Status alone can hide edits via index flags or a stale stat cache; hash using Git's clean filters.
+    if (gitRaw(cwd, ['ls-files', '--stage', '-z', '--', '.omc/routing.md']) !== `${entry[1]} ${entry[2]} 0\t.omc/routing.md\0`
+      || gitRaw(cwd, ['ls-files', '-v', '-z', '--', '.omc/routing.md']) !== 'H .omc/routing.md\0'
+      || git(cwd, ['hash-object', '--path=.omc/routing.md', '--', '.omc/routing.md']) !== entry[2]) throw new Error('invalid');
+  } catch { throw new Error('workflow_lead_integration_routing_policy_invalid'); }
+}
 /** Adopt one explicit lead-authored direct child of the saved integration head. */
 export async function integrateWorkflowLeadCommit(cwd: string, name: string, rawIntent: unknown): Promise<WorkflowState> {
   const input: WorkflowLeadIntegrationIntent = parseWorkflowLeadIntegrationIntent(rawIntent);
@@ -953,6 +974,8 @@ export async function integrateWorkflowLeadCommit(cwd: string, name: string, raw
       && (input.actor.id !== state.bindings.lead.id || input.actor.model !== state.bindings.lead.model)) {
       throw new Error('workflow_lead_integration_actor_mismatch');
     }
+    const includesRoutingPolicy = changedFiles.includes('.omc/routing.md');
+    if (includesRoutingPolicy) assertLeadRoutingPolicy(cwd, input.expectedHead);
     const refs = git(cwd, ['for-each-ref', '--format=%(refname) %(objectname)']);
     const checks = [];
     for (const [index, command] of input.checks.entries()) {
@@ -962,6 +985,7 @@ export async function integrateWorkflowLeadCommit(cwd: string, name: string, raw
         if (git(cwd, ['for-each-ref', '--format=%(refname) %(objectname)']) !== refs
           || git(cwd, ['branch', '--show-current']) !== state.plan.integrationBranch
           || git(cwd, ['rev-parse', 'HEAD']) !== input.expectedHead || !clean(cwd)) throw new Error('changed');
+        if (includesRoutingPolicy) assertLeadRoutingPolicy(cwd, input.expectedHead);
       } catch { throw new Error('workflow_lead_integration_repository_changed'); }
       if (!result.passed) throw new Error('workflow_lead_integration_check_failed');
       checks.push({ command, passed: true as const, artifacts: result.artifacts });
