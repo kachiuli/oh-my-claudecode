@@ -263,7 +263,8 @@ export function mergeManagedBlock(
       (afterEnd === existing.length ||
         existing[afterEnd] === "\n" ||
         existing.slice(afterEnd, afterEnd + 2) === "\r\n") &&
-      existing.slice(startIndex, afterEnd) === nextBlock
+      existing.slice(startIndex, afterEnd).replaceAll("\r\n", "\n") ===
+        nextBlock.replaceAll("\r\n", "\n")
     ) {
       return existing;
     }
@@ -271,6 +272,42 @@ export function mergeManagedBlock(
   }
   const base = existing.trimEnd();
   return `${base ? `${base}\n\n` : ""}${nextBlock}\n`;
+}
+
+/** Portable blocks compare LF/CRLF equally, but ownership always records real bytes. */
+export function mergePortableManagedBlock(
+  existing: string,
+  previous: AssetReceipt | undefined,
+  nextBlock: string,
+  start: string,
+  end: string,
+): { content: string; managedText: string } {
+  // Keep an unchanged adopted block byte-identical on subsequent setup runs.
+  const replacement =
+    previous?.managedText &&
+    previous.managedText.replaceAll("\r\n", "\n") ===
+      nextBlock.replaceAll("\r\n", "\n")
+      ? previous.managedText
+      : nextBlock;
+  const content = mergeManagedBlock(
+    existing,
+    previous,
+    replacement,
+    start,
+    end,
+    {
+      adoptExactBlock: true,
+    },
+  );
+  return {
+    content,
+    managedText: previous
+      ? replacement
+      : content.slice(
+          content.indexOf(start),
+          content.indexOf(end) + end.length,
+        ),
+  };
 }
 
 export function removeManagedBlock(

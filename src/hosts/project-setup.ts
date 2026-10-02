@@ -26,6 +26,7 @@ import {
   assetIssue,
   assertRelativePath,
   mergeManagedBlock,
+  mergePortableManagedBlock,
   mergedCodexMarketplace,
   mergedCodexHooks,
   parseReceipt,
@@ -202,15 +203,13 @@ function hostAssets(
     desired.push({
       path: instructionsPath,
       kind: "block",
-      content: mergeManagedBlock(
+      ...mergePortableManagedBlock(
         current,
         prior.get(instructionsPath),
         block,
         GUIDANCE_START,
         GUIDANCE_END,
-        { adoptExactBlock: true },
       ),
-      managedText: block,
     });
 
     const pluginRoot = join(".omc", "hosts", "claude", "plugin");
@@ -264,15 +263,13 @@ function hostAssets(
   desired.push({
     path: instructionsPath,
     kind: "block",
-    content: mergeManagedBlock(
+    ...mergePortableManagedBlock(
       instructions,
       prior.get(instructionsPath),
       block,
       GUIDANCE_START,
       GUIDANCE_END,
-      { adoptExactBlock: true },
     ),
-    managedText: block,
   });
 
   const pluginRoot = join(".omc", "hosts", "codex", "plugin");

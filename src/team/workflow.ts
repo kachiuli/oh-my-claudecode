@@ -926,8 +926,9 @@ export async function extendWorkflowReviewBudget(cwd: string, name: string, rawI
 /** The sole .omc source exception must stay a tracked regular file, separate from runtime storage. */
 function assertLeadRoutingPolicy(cwd: string, head: string): void {
   try {
-    const repositoryRoot = realpathSync(cwd);
-    if (realpathSync(git(cwd, ['rev-parse', '--show-toplevel'])) !== repositoryRoot) throw new Error('invalid');
+    // Native canonicalization expands Windows short names and drive/component casing.
+    const repositoryRoot = expandPathForCompare(cwd);
+    if (!repositoryRoot || expandPathForCompare(git(cwd, ['rev-parse', '--show-toplevel'])) !== repositoryRoot) throw new Error('invalid');
     const entry = /^(100(?:644|755)) blob ([a-f0-9]{40}(?:[a-f0-9]{24})?)\t\.omc\/routing\.md\0$/
       .exec(gitRaw(cwd, ['ls-tree', '-z', head, '--', '.omc/routing.md']));
     if (!entry) throw new Error('invalid');

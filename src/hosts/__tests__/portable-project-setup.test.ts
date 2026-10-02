@@ -14,7 +14,10 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  assetIssue,
   mergeManagedBlock,
+  mergePortableManagedBlock,
+  removeManagedBlock,
   parseReceipt,
   RECEIPT_PATH,
   sha256,
@@ -106,11 +109,22 @@ describe("portable project host fragments", () => {
     ).toBe(original);
   });
 
-  it.each(["claude", "codex"] as const)(
-    "plans %s adoption without writing or changing source bytes",
-    async (host) => {
+  it.each([
+    ["claude", "LF"],
+    ["claude", "CRLF"],
+    ["codex", "LF"],
+    ["codex", "CRLF"],
+  ] as const)(
+    "plans %s adoption with %s without writing or changing source bytes",
+    async (host, lineEnding) => {
       const root = temporaryRepository();
       const fragments = writePortableFragments(root);
+      for (const path of Object.keys(fragments)) {
+        fragments[path] = fragments[path]
+          .replaceAll("\r\n", "\n")
+          .replaceAll("\n", lineEnding === "CRLF" ? "\r\n" : "\n");
+        write(root, path, fragments[path]);
+      }
 
       const result = await setupProjectHosts(root, [host], {
         packageRoot: PACKAGE_ROOT,
@@ -130,138 +144,245 @@ describe("portable project host fragments", () => {
     },
   );
 
-  it("bootstraps a clone without copying receipts and supports update and uninstall", async () => {
-    const source = temporaryRepository();
-    const fragments = writePortableFragments(source);
-    await setupProjectHosts(source, ["claude", "codex"], {
-      packageRoot: PACKAGE_ROOT,
-    });
-    execFileSync(
-      "git",
-      ["add", "AGENTS.md", "CLAUDE.md", ".gitignore", ".omc/orchestrator.json"],
-      { cwd: source },
-    );
-    execFileSync(
-      "git",
-      [
-        "-c",
-        "user.name=OMC Test",
-        "-c",
-        "user.email=omc@example.invalid",
-        "commit",
-        "-qm",
-        "Portable project host guidance",
-      ],
-      { cwd: source },
-    );
-    const root = join(source, "clone");
-    execFileSync("git", ["clone", "-q", "--no-local", source, root]);
-    expect(existsSync(join(root, RECEIPT_PATH))).toBe(false);
-
-    const result = await setupProjectHosts(root, ["claude", "codex"], {
-      packageRoot: PACKAGE_ROOT,
-    });
-
-    expect(result.unchangedFiles).toEqual(
-      expect.arrayContaining(Object.keys(fragments)),
-    );
-    expect(result.changedFiles).toContain(RECEIPT_PATH);
-    expectFragmentsUnchanged(root, fragments);
-    const receipt = parseReceipt(root);
-    for (const [host, path] of [
-      ["claude", "CLAUDE.md"],
-      ["codex", "AGENTS.md"],
-    ] as const) {
-      expect(
-        receipt.hosts[host]?.assets.find((asset) => asset.path === path),
-      ).toEqual({
-        path,
-        kind: "block",
-        digest: sha256(GUIDANCE_BLOCK),
-        managedText: GUIDANCE_BLOCK,
+  it.each([false, true])(
+    "bootstraps a clone with autocrlf=%s and supports update and uninstall",
+    async (autocrlf) => {
+      const source = temporaryRepository();
+      const sourceFragments = writePortableFragments(source);
+      for (const [path, content] of Object.entries(sourceFragments)) {
+        write(source, path, content.replaceAll("\r\n", "\n"));
+      }
+      execFileSync("git", ["config", "core.autocrlf", "false"], {
+        cwd: source,
       });
-    }
-    expect(receipt.shared).toEqual([
-      {
-        path: ".gitignore",
-        kind: "block",
-        digest: sha256(IGNORE_BLOCK),
-        managedText: IGNORE_BLOCK,
-      },
-    ]);
-    expect(
-      (
-        await setupProjectHosts(root, ["claude", "codex"], {
-          packageRoot: PACKAGE_ROOT,
-        })
-      ).changedFiles,
-    ).toEqual([]);
-    expectFragmentsUnchanged(root, fragments);
-
-    const updatedPackage = join(source, "updated-package");
-    const updatedBlock = GUIDANCE_BLOCK.replace(
-      GUIDANCE_END,
-      `Additional package guidance.\n${GUIDANCE_END}`,
-    );
-    write(
-      updatedPackage,
-      "templates/hosts/orchestrator-guidance.md",
-      updatedBlock.slice(GUIDANCE_START.length + 1, -(GUIDANCE_END.length + 1)),
-    );
-    write(
-      updatedPackage,
-      "bridge/mcp-server.cjs",
-      readFileSync(join(PACKAGE_ROOT, "bridge", "mcp-server.cjs"), "utf8"),
-    );
-    write(
-      updatedPackage,
-      "package.json",
-      readFileSync(join(PACKAGE_ROOT, "package.json"), "utf8"),
-    );
-    cpSync(join(PACKAGE_ROOT, "agents"), join(updatedPackage, "agents"), {
-      recursive: true,
-    });
-
-    const updated = await setupProjectHosts(root, ["claude", "codex"], {
-      packageRoot: updatedPackage,
-    });
-    expect(updated.changedFiles).toEqual(
-      expect.arrayContaining(["AGENTS.md", "CLAUDE.md", RECEIPT_PATH]),
-    );
-    expectFragmentsUnchanged(
-      root,
-      Object.fromEntries(
-        Object.entries(fragments).map(([path, content]) => [
+      await setupProjectHosts(source, ["claude", "codex"], {
+        packageRoot: PACKAGE_ROOT,
+      });
+      execFileSync(
+        "git",
+        [
+          "add",
+          "AGENTS.md",
+          "CLAUDE.md",
+          ".gitignore",
+          ".omc/orchestrator.json",
+        ],
+        { cwd: source },
+      );
+      execFileSync(
+        "git",
+        [
+          "-c",
+          "user.name=OMC Test",
+          "-c",
+          "user.email=omc@example.invalid",
+          "commit",
+          "-qm",
+          "Portable project host guidance",
+        ],
+        { cwd: source },
+      );
+      const root = join(source, "clone");
+      execFileSync("git", [
+        "-c",
+        `core.autocrlf=${autocrlf}`,
+        "clone",
+        "-q",
+        "--no-local",
+        source,
+        root,
+      ]);
+      const fragments = Object.fromEntries(
+        Object.keys(sourceFragments).map((path) => [
           path,
-          content.replace(GUIDANCE_BLOCK, updatedBlock),
+          readFileSync(join(root, path), "utf8"),
         ]),
-      ),
-    );
-    expect(parseReceipt(root).hosts.codex?.installedAt).toBe(
-      receipt.hosts.codex?.installedAt,
+      );
+      const clonedGuidance = GUIDANCE_BLOCK.replaceAll("\r\n", "\n").replaceAll(
+        "\n",
+        autocrlf ? "\r\n" : "\n",
+      );
+      const clonedIgnore = IGNORE_BLOCK.replaceAll(
+        "\n",
+        autocrlf ? "\r\n" : "\n",
+      );
+      expect(fragments["CLAUDE.md"]).toBe(
+        `${clonedGuidance}${autocrlf ? "\r\n" : "\n"}`,
+      );
+      expect(existsSync(join(root, RECEIPT_PATH))).toBe(false);
+
+      const result = await setupProjectHosts(root, ["claude", "codex"], {
+        packageRoot: PACKAGE_ROOT,
+      });
+
+      expect(result.unchangedFiles).toEqual(
+        expect.arrayContaining(Object.keys(fragments)),
+      );
+      expect(result.changedFiles).toContain(RECEIPT_PATH);
+      expectFragmentsUnchanged(root, fragments);
+      const receipt = parseReceipt(root);
+      for (const [host, path] of [
+        ["claude", "CLAUDE.md"],
+        ["codex", "AGENTS.md"],
+      ] as const) {
+        expect(
+          receipt.hosts[host]?.assets.find((asset) => asset.path === path),
+        ).toEqual({
+          path,
+          kind: "block",
+          digest: sha256(clonedGuidance),
+          managedText: clonedGuidance,
+        });
+      }
+      for (const asset of [
+        ...(receipt.shared ?? []),
+        ...Object.values(receipt.hosts).flatMap((host) => host.assets),
+      ]) {
+        expect(assetIssue(root, asset)).toBeNull();
+      }
+      expect(receipt.shared).toEqual([
+        {
+          path: ".gitignore",
+          kind: "block",
+          digest: sha256(clonedIgnore),
+          managedText: clonedIgnore,
+        },
+      ]);
+      expect(
+        (
+          await setupProjectHosts(root, ["claude", "codex"], {
+            packageRoot: PACKAGE_ROOT,
+          })
+        ).changedFiles,
+      ).toEqual([]);
+      expectFragmentsUnchanged(root, fragments);
+
+      const updatedPackage = join(source, "updated-package");
+      const updatedBlock = GUIDANCE_BLOCK.replace(
+        GUIDANCE_END,
+        `Additional package guidance.\n${GUIDANCE_END}`,
+      );
+      write(
+        updatedPackage,
+        "templates/hosts/orchestrator-guidance.md",
+        updatedBlock.slice(
+          GUIDANCE_START.length + 1,
+          -(GUIDANCE_END.length + 1),
+        ),
+      );
+      write(
+        updatedPackage,
+        "bridge/mcp-server.cjs",
+        readFileSync(join(PACKAGE_ROOT, "bridge", "mcp-server.cjs"), "utf8"),
+      );
+      write(
+        updatedPackage,
+        "package.json",
+        readFileSync(join(PACKAGE_ROOT, "package.json"), "utf8"),
+      );
+      cpSync(join(PACKAGE_ROOT, "agents"), join(updatedPackage, "agents"), {
+        recursive: true,
+      });
+
+      const updated = await setupProjectHosts(root, ["claude", "codex"], {
+        packageRoot: updatedPackage,
+      });
+      expect(updated.changedFiles).toEqual(
+        expect.arrayContaining(["AGENTS.md", "CLAUDE.md", RECEIPT_PATH]),
+      );
+      expectFragmentsUnchanged(
+        root,
+        Object.fromEntries(
+          Object.entries(fragments).map(([path, content]) => [
+            path,
+            content.replace(clonedGuidance, updatedBlock),
+          ]),
+        ),
+      );
+      expect(parseReceipt(root).hosts.codex?.installedAt).toBe(
+        receipt.hosts.codex?.installedAt,
+      );
+      expect(
+        (
+          await setupProjectHosts(root, ["claude", "codex"], {
+            packageRoot: updatedPackage,
+          })
+        ).changedFiles,
+      ).toEqual([]);
+
+      const removed = await uninstallProjectHost(root, "codex");
+      expect(removed.remainingHosts).toEqual(["claude"]);
+      expect(removed.preservedFiles).toEqual([]);
+      const instructions = readFileSync(join(root, "AGENTS.md"), "utf8");
+      expect(instructions).not.toContain(GUIDANCE_START);
+      expect(instructions).toContain(
+        `# User guidance  ${autocrlf ? "\r\n" : "\n"}`,
+      );
+      expect(instructions).toContain("Keep this suffix");
+      expect(readFileSync(join(root, ".gitignore"), "utf8")).toBe(
+        fragments[".gitignore"],
+      );
+      expect(parseReceipt(root).hosts.codex).toBeUndefined();
+      expect(existsSync(join(root, ".codex", "agents", "executor.toml"))).toBe(
+        false,
+      );
+    },
+  );
+
+  it("keeps existing ownership on the replaced block despite unrelated marker text", () => {
+    const previous = {
+      path: "AGENTS.md",
+      kind: "block" as const,
+      digest: sha256(GUIDANCE_BLOCK),
+      managedText: GUIDANCE_BLOCK,
+    };
+    const prefix = `User discusses ${GUIDANCE_START} and ${GUIDANCE_END} here.\n`;
+    const updated = GUIDANCE_BLOCK.replace(
+      GUIDANCE_END,
+      `New guidance.\n${GUIDANCE_END}`,
     );
     expect(
-      (
-        await setupProjectHosts(root, ["claude", "codex"], {
-          packageRoot: updatedPackage,
-        })
-      ).changedFiles,
-    ).toEqual([]);
+      mergePortableManagedBlock(
+        `${prefix}${GUIDANCE_BLOCK}`,
+        previous,
+        updated,
+        GUIDANCE_START,
+        GUIDANCE_END,
+      ),
+    ).toEqual({
+      content: `${prefix}${updated}`,
+      managedText: updated,
+    });
+  });
 
-    const removed = await uninstallProjectHost(root, "codex");
-    expect(removed.remainingHosts).toEqual(["claude"]);
-    expect(removed.preservedFiles).toEqual([]);
+  it("uninstalls adopted CRLF blocks using their original receipt bytes", async () => {
+    const root = temporaryRepository();
+    const fragments = writePortableFragments(root);
+    for (const [path, content] of Object.entries(fragments)) {
+      write(
+        root,
+        path,
+        content.replaceAll("\r\n", "\n").replaceAll("\n", "\r\n"),
+      );
+    }
+    await setupProjectHosts(root, ["claude", "codex"], {
+      packageRoot: PACKAGE_ROOT,
+    });
+    expect((await uninstallProjectHost(root, "codex")).preservedFiles).toEqual(
+      [],
+    );
+
     const instructions = readFileSync(join(root, "AGENTS.md"), "utf8");
     expect(instructions).not.toContain(GUIDANCE_START);
     expect(instructions).toContain("# User guidance  \r\n");
     expect(instructions).toContain("Keep this suffix");
-    expect(readFileSync(join(root, ".gitignore"), "utf8")).toBe(
-      fragments[".gitignore"],
+    const ignore = removeManagedBlock(
+      readFileSync(join(root, ".gitignore"), "utf8"),
+      parseReceipt(root).shared![0],
     );
-    expect(parseReceipt(root).hosts.codex).toBeUndefined();
-    expect(existsSync(join(root, ".codex", "agents", "executor.toml"))).toBe(
-      false,
-    );
+    expect(ignore).not.toContain(IGNORE_START);
+    expect(ignore).toContain("user-cache/  \r\n");
+    expect(ignore).toContain("!user-cache/keep");
   });
 
   for (const dryRun of [true, false]) {
@@ -283,7 +404,17 @@ describe("portable project host fragments", () => {
           ["embedded start", `prefix${block}`],
           ["embedded end", `${block}suffix`],
           ["indented marker", ` ${block}`],
-          ["CRLF block", block.replaceAll("\n", "\r\n")],
+          [
+            "bare CR block",
+            block.replaceAll("\r\n", "\n").replaceAll("\n", "\r"),
+          ],
+          [
+            "CRLF edited body",
+            block
+              .replaceAll("\r\n", "\n")
+              .replaceAll("\n", "\r\n")
+              .replace("\r\n", "\r\nuser edit\r\n"),
+          ],
         ])(`rejects ${path} with %s`, async (_name, invalid) => {
           const root = temporaryRepository();
           const fragments = {

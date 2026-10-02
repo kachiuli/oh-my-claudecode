@@ -1,4 +1,5 @@
-import { linkSync, mkdirSync, readFileSync, readdirSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { realpathSync, linkSync, mkdirSync, readFileSync, readdirSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -8,6 +9,22 @@ import {
 } from '../workflow.js';
 import type { WorkflowLeadIntegrationIntent, WorkflowOptions, WorkflowPlan, WorkflowTask } from '../workflow-contracts.js';
 import { createWorkflowFixture } from './helpers/workflow-fixture.js';
+
+vi.mock('node:fs', async importOriginal => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  return { ...actual, realpathSync: Object.assign(vi.fn(actual.realpathSync), { native: vi.fn(actual.realpathSync.native) }) };
+});
+vi.mock('node:child_process', async importOriginal => {
+  const actual = await importOriginal<typeof import('node:child_process')>();
+  return { ...actual, execFileSync: vi.fn(actual.execFileSync) };
+});
+const originalFs = await vi.importActual<typeof import('node:fs')>('node:fs');
+const originalChildProcess = await vi.importActual<typeof import('node:child_process')>('node:child_process');
+afterEach(() => {
+  vi.mocked(realpathSync).mockImplementation(originalFs.realpathSync);
+  vi.mocked(realpathSync.native).mockImplementation(originalFs.realpathSync.native);
+  vi.mocked(execFileSync).mockImplementation(originalChildProcess.execFileSync);
+});
 
 const provider = fileURLToPath(new URL('./helpers/workflow-provider.cjs', import.meta.url));
 const passingCheck = { command: process.execPath, args: ['-e', 'process.exit(0)'] };
@@ -135,6 +152,22 @@ describe('attributed lead integration', () => {
     expect(readWorkflow(cwd, name).leadIntegrations).toBeUndefined();
   }, 60_000);
 
+  it('uses native filesystem identity when Git reports a Windows-style short-name alias', async () => {
+    await settle([task('a')]);
+    const change = commit('.omc/routing.md');
+    const alias = join(fixture.root, 'REPO~1');
+    symlinkSync(fixture.cwd, alias, process.platform === 'win32' ? 'junction' : 'dir');
+    // Model Windows realpath's preserved spelling versus native expanded identity on every OS.
+    vi.mocked(execFileSync).mockImplementation((file, args, options) => {
+      if (file === 'git' && args?.join(' ') === 'rev-parse --show-toplevel') return `${alias}\n`;
+      return originalChildProcess.execFileSync(file, args, options);
+    });
+    vi.mocked(realpathSync).mockImplementation((path, options) => path === alias
+      ? alias : originalFs.realpathSync(path, options));
+    expect((await integrateWorkflowLeadCommit(fixture.cwd, name, intent(change))).integrationHead).toBe(change.head);
+    expect(realpathSync.native).toHaveBeenCalledWith(alias);
+  }, 60_000);
+
   it('refuses undeclared files and failing checks when adopting a routing policy', async () => {
     await settle([task('a')]);
     const change = commit('.omc/routing.md');
@@ -181,7 +214,9 @@ describe('attributed lead integration', () => {
     const marker = join(fixture.root, 'check-ran');
     await expect(integrateWorkflowLeadCommit(fixture.cwd, name, intent(change, {
       checks: [{ command: process.execPath, args: ['-e', `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'ran')`] }],
-    }))).rejects.toThrow(hazard === 'parent symlink' ? 'workflow_integration_worktree_dirty' : 'workflow_lead_integration_routing_policy_invalid');
+    }))).rejects.toThrow(hazard === 'parent symlink'
+      ? /workflow_(?:integration_worktree_dirty|lead_integration_routing_policy_invalid)/
+      : 'workflow_lead_integration_routing_policy_invalid');
     expect(() => readFileSync(marker)).toThrow();
     expect(readWorkflow(fixture.cwd, name).integrationHead).toBe(change.parent);
   });

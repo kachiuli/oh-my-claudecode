@@ -15,7 +15,7 @@ Select `--host codex` and `omc orchestrator use codex` for a Codex-only project.
 
 ## Portable project setup
 
-Ordinary project setup can establish a fresh machine-local ownership receipt when a repository already contains exactly the current generated project guidance or project-state ignore block. It preserves the existing file bytes during adoption, and dry-run remains non-mutating. There is no need to copy another machine's receipt or temporarily remove tracked blocks.
+Ordinary project setup can establish a fresh machine-local ownership receipt when a repository already contains exactly the current generated project guidance or project-state ignore block, allowing LF/CRLF line-ending conversion by Git. It preserves the existing file bytes during adoption and records those actual block bytes in the local receipt; dry-run remains non-mutating. There is no need to copy another machine's receipt or temporarily remove tracked blocks.
 
 This applies only to portable guidance and project ignore fragments. It does not adopt arbitrary generated files or machine-specific MCP configuration. Modified, unknown, duplicated, incomplete, embedded or non-matching fragments still fail closed, as do malformed receipts, unsafe filesystem targets and generated-file collisions. Templates from a different release are not assumed to be equivalent.
 
