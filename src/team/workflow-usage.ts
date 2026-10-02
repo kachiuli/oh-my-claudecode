@@ -90,7 +90,7 @@ export function createWorkflowUsageCollector(provider: WorkflowTelemetry['provid
   const models = new Map<string, WorkflowIdentityEvidence>();
   const terminalUsageBuckets = new Map<string, WorkflowTerminalUsageEvidence>();
   const tasks = new Map<string, { status: 'running' | 'completed' | 'failed'; sessionId: string; toolUseId?: string;
-    notificationSeen: boolean; notificationConsumed: boolean }>();
+    foregroundBash: boolean; notificationSeen: boolean; notificationConsumed: boolean }>();
   const pendingTaskNotifications: string[] = [];
   let line = ''; let lineBytes = 0; let discarding = false;
   let counters: Counters = {};
@@ -109,6 +109,7 @@ export function createWorkflowUsageCollector(provider: WorkflowTelemetry['provid
   let terminalEventCount = 0;
   let mainResultCount = 0;
   let notificationResultCount = 0;
+  let foregroundBashCompleted = false;
   let taskEvidenceValid = true;
   let missingInitModel = false;
   let initSessionObserved = false;
@@ -194,6 +195,7 @@ export function createWorkflowUsageCollector(provider: WorkflowTelemetry['provid
     if (tasks.has(id)) { invalidateTask('duplicate_task_started'); return; }
     if (tasks.size >= MAX_TASKS) { invalidateTask('task_evidence_overflow'); return; }
     tasks.set(id, { status: 'running', sessionId: taskSessionId, ...(toolUseId ? { toolUseId } : {}),
+      foregroundBash: event.task_type === 'local_bash' && event.is_backgrounded === false,
       notificationSeen: false, notificationConsumed: false });
   }
 
@@ -207,6 +209,11 @@ export function createWorkflowUsageCollector(provider: WorkflowTelemetry['provid
     }
     const patch = event.patch === undefined ? undefined : record(event.patch);
     if (event.patch !== undefined && !patch) { invalidateTask('invalid_task_update'); return; }
+    if (task.foregroundBash && [event, patch].some(update => update
+      && (update.task_type !== undefined && update.task_type !== 'local_bash'
+        || update.is_backgrounded !== undefined && update.is_backgrounded !== false))) {
+      invalidateTask('task_classification_conflict'); return;
+    }
     const patchStatus = patch?.status;
     const topLevelStatus = event.status;
     if (patchStatus !== undefined && topLevelStatus !== undefined && patchStatus !== topLevelStatus) {
@@ -234,6 +241,9 @@ export function createWorkflowUsageCollector(provider: WorkflowTelemetry['provid
     if (!task) { invalidateTask('unknown_task_notification'); return; }
     const toolUseId = optionalTaskReference(event.tool_use_id, 'task_tool_use_identity_invalid');
     if (event.tool_use_id !== undefined && !toolUseId) return;
+    if (task.foregroundBash && (!toolUseId || !task.toolUseId)) {
+      invalidateTask('task_tool_use_identity_invalid'); return;
+    }
     if (toolUseId && task.toolUseId && toolUseId !== task.toolUseId) {
       invalidateTask('task_tool_use_identity_conflict'); return;
     }
@@ -248,7 +258,11 @@ export function createWorkflowUsageCollector(provider: WorkflowTelemetry['provid
       return;
     }
     if (task.status === 'failed') { invalidateTask('task_status_conflict'); return; }
-    task.status = 'completed'; pendingTaskNotifications.push(id);
+    task.status = 'completed';
+    // Foreground shell completion carries no model continuation or additional token usage.
+    if (task.foregroundBash) {
+      task.notificationConsumed = true; foregroundBashCompleted = true;
+    } else pendingTaskNotifications.push(id);
   }
 
   function classifyClaudeResult(event: RecordValue): boolean {
@@ -511,14 +525,15 @@ export function createWorkflowUsageCollector(provider: WorkflowTelemetry['provid
       const completeCounts = required.every(key => counters[key] !== undefined);
       const eventStreamComplete = outcome.eventStreamComplete ?? true;
       if (!eventStreamComplete) diagnostics.add('incomplete_event_stream');
-      if (provider !== 'codex' && terminalEventCount > 1 && taskEvidenceValid) {
+      const requiresTaskIdentity = terminalEventCount > 1 || foregroundBashCompleted;
+      if (provider !== 'codex' && requiresTaskIdentity && taskEvidenceValid) {
         if (!initSessionObserved) invalidateTask('missing_init_event');
         else if (missingInitModel) invalidateTask('missing_model_id');
       }
       const terminalFramingComplete = provider === 'codex' ? terminalEventCount === 1
         : taskEvidenceValid && mainResultCount === 1 && terminalEventCount === 1 + notificationResultCount
           && pendingTaskNotifications.length === 0
-          && (terminalEventCount === 1 || initSessionObserved && identityEvidenceValid && identityConsistent);
+          && (!requiresTaskIdentity || initSessionObserved && identityEvidenceValid && identityConsistent);
       const evidence: WorkflowTelemetryEvidence = {
         version: 1,
         diagnosticLogComplete: outcome.diagnosticLogComplete ?? true,

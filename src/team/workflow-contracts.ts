@@ -686,7 +686,7 @@ function leadIntegrationActor(value: unknown): WorkflowLeadIntegrationActor {
   return Object.freeze({ id, model });
 }
 function literalPaths(value: unknown): string[] {
-  const paths = texts(value).map(literalFilePath);
+  const paths = texts(value).map(repositorySourceFilePath);
   if (!paths.length || new Set(paths).size !== paths.length) throw new Error('workflow_invalid_lead_integration_paths');
   return paths;
 }
@@ -1346,6 +1346,14 @@ export function scopePath(value: unknown): string {
 function literalFilePath(value: unknown): string {
   return repositoryPath(value, false);
 }
+/** Lead adoption and review metadata may name this policy; worker scopes and handoffs may not. */
+function repositorySourceFilePath(value: unknown): string {
+  if (value === '.omc/routing.md') return value;
+  const text = boundedText(value, 400);
+  // Check before separator normalization, including case/trailing-dot aliases on Windows.
+  if (text.split(/[\\/]/).some(part => /^\.omc[. ]*$/i.test(part))) throw new Error('workflow_invalid_scope');
+  return literalFilePath(text);
+}
 export function matchesScope(path: string, scopes: string[]): boolean {
   const normalized = process.platform === 'win32' ? path.toLowerCase() : path;
   return scopes.some(scope => {
@@ -1438,6 +1446,6 @@ export function parseWorkflowFindings(value: unknown, pass: number): WorkflowFin
     if (!['P0', 'P1', 'P2', 'P3'].includes(String(finding.severity))) throw new Error('workflow_invalid_severity');
     if (finding.line !== undefined && finding.line !== null && (!Number.isInteger(finding.line) || Number(finding.line) < 1)) throw new Error('workflow_invalid_line');
     return { id: `review-${pass}-${index + 1}`, severity: finding.severity as WorkflowFinding['severity'], message: boundedText(finding.message),
-      ...(finding.file ? { file: literalFilePath(finding.file) } : {}), ...(finding.line ? { line: Number(finding.line) } : {}) };
+      ...(finding.file ? { file: repositorySourceFilePath(finding.file) } : {}), ...(finding.line ? { line: Number(finding.line) } : {}) };
   });
 }

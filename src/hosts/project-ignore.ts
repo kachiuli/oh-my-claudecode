@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import {
   assetIssue,
-  mergeManagedBlock,
+  mergePortableManagedBlock,
   readTarget,
   sha256,
   type AssetReceipt,
@@ -36,22 +36,22 @@ export function projectIgnoreAsset(
   const existing =
     readTarget(root, join(root, PROJECT_IGNORE_PATH)).bytes?.toString("utf8") ??
     "";
+  const merged = mergePortableManagedBlock(
+    existing,
+    previous,
+    PROJECT_IGNORE_BLOCK,
+    PROJECT_IGNORE_START,
+    PROJECT_IGNORE_END,
+  );
   return {
     path: PROJECT_IGNORE_PATH,
     kind: "block",
-    content: mergeManagedBlock(
-      existing,
-      previous,
-      PROJECT_IGNORE_BLOCK,
-      PROJECT_IGNORE_START,
-      PROJECT_IGNORE_END,
-    ),
-    managedText: PROJECT_IGNORE_BLOCK,
+    ...merged,
     receipt: {
       path: PROJECT_IGNORE_PATH,
       kind: "block",
-      digest: sha256(PROJECT_IGNORE_BLOCK),
-      managedText: PROJECT_IGNORE_BLOCK,
+      digest: sha256(merged.managedText),
+      managedText: merged.managedText,
     },
   };
 }

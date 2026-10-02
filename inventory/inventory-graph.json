@@ -5,15 +5,15 @@
   "provenance": {
     "base": "05c800f40d1ad53b42a78609d2667ef4f726808b",
     "planningHead": "0a91273e61dbbd47eb0af4c02844409251e08398",
-    "head": "e89d19f2b340c95891481813dc96b89d48da5179",
-    "sourceSha256": "33e538d7057d4d97e5b4c1d9b7a46fa844cbf534b9b43ffce9962744cff10e25",
+    "head": "babde6b3a31b0f5e556cb41d35699a984bfa557f",
+    "sourceSha256": "6e25eb94de889e6bc247ad459175512984165a658426414a5b35ec044b09669f",
     "generatedAt": null,
     "generator": "scripts/generate-inventory-graph.mjs"
   },
   "base": "05c800f40d1ad53b42a78609d2667ef4f726808b",
   "planningHead": "0a91273e61dbbd47eb0af4c02844409251e08398",
-  "head": "e89d19f2b340c95891481813dc96b89d48da5179",
-  "sourceSha256": "33e538d7057d4d97e5b4c1d9b7a46fa844cbf534b9b43ffce9962744cff10e25",
+  "head": "babde6b3a31b0f5e556cb41d35699a984bfa557f",
+  "sourceSha256": "6e25eb94de889e6bc247ad459175512984165a658426414a5b35ec044b09669f",
   "counts": {
     "public": {
       "skills": 43,
@@ -28,8 +28,8 @@
       "toolFiles": 61,
       "libFiles": 44,
       "templateHooks": 22,
-      "srcFiles": 1456,
-      "total": 1478
+      "srcFiles": 1458,
+      "total": 1480
     },
     "generated": {
       "distFiles": 5094,
@@ -33093,6 +33093,11 @@
         "path": "docs/WORKFLOW-V1.6.2-RELEASE-NOTES.md"
       },
       {
+        "id": "docs/WORKFLOW-V1.6.3-RELEASE-NOTES.md",
+        "kind": "other",
+        "path": "docs/WORKFLOW-V1.6.3-RELEASE-NOTES.md"
+      },
+      {
         "id": "docs/adr/03487-named-autopilot-stage-profiles.md",
         "kind": "other",
         "path": "docs/adr/03487-named-autopilot-stage-profiles.md"
@@ -39198,6 +39203,11 @@
         "path": "src/hosts/__tests__/adapters-hooks.test.ts"
       },
       {
+        "id": "src/hosts/__tests__/portable-project-setup.test.ts",
+        "kind": "src",
+        "path": "src/hosts/__tests__/portable-project-setup.test.ts"
+      },
+      {
         "id": "src/hosts/__tests__/project-setup.test.ts",
         "kind": "src",
         "path": "src/hosts/__tests__/project-setup.test.ts"
@@ -41216,6 +41226,11 @@
         "id": "src/team/__tests__/workflow-task-recovery.test.ts",
         "kind": "src",
         "path": "src/team/__tests__/workflow-task-recovery.test.ts"
+      },
+      {
+        "id": "src/team/__tests__/workflow-usage-foreground-bash.test.ts",
+        "kind": "src",
+        "path": "src/team/__tests__/workflow-usage-foreground-bash.test.ts"
       },
       {
         "id": "src/team/__tests__/workflow-usage.test.ts",
@@ -66030,6 +66045,41 @@
         "kind": "imports"
       },
       {
+        "from": "src/hosts/__tests__/portable-project-setup.test.ts",
+        "to": "external:node:child_process",
+        "kind": "imports"
+      },
+      {
+        "from": "src/hosts/__tests__/portable-project-setup.test.ts",
+        "to": "external:node:fs",
+        "kind": "imports"
+      },
+      {
+        "from": "src/hosts/__tests__/portable-project-setup.test.ts",
+        "to": "external:node:os",
+        "kind": "imports"
+      },
+      {
+        "from": "src/hosts/__tests__/portable-project-setup.test.ts",
+        "to": "external:node:path",
+        "kind": "imports"
+      },
+      {
+        "from": "src/hosts/__tests__/portable-project-setup.test.ts",
+        "to": "external:vitest",
+        "kind": "imports"
+      },
+      {
+        "from": "src/hosts/__tests__/portable-project-setup.test.ts",
+        "to": "src/hosts/asset-ownership.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/hosts/__tests__/portable-project-setup.test.ts",
+        "to": "src/hosts/project-setup.ts",
+        "kind": "imports"
+      },
+      {
         "from": "src/hosts/__tests__/project-setup.test.ts",
         "to": "external:node:child_process",
         "kind": "imports"
@@ -76746,6 +76796,11 @@
       },
       {
         "from": "src/team/__tests__/workflow-lead-integration.test.ts",
+        "to": "external:node:child_process",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-lead-integration.test.ts",
         "to": "external:node:fs",
         "kind": "imports"
       },
@@ -77122,6 +77177,21 @@
       {
         "from": "src/team/__tests__/workflow-task-recovery.test.ts",
         "to": "src/team/workflow.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-usage-foreground-bash.test.ts",
+        "to": "external:vitest",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-usage-foreground-bash.test.ts",
+        "to": "src/team/workflow-contracts.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-usage-foreground-bash.test.ts",
+        "to": "src/team/workflow-usage.ts",
         "kind": "imports"
       },
       {
@@ -84231,12 +84301,12 @@
       }
     ],
     "stats": {
-      "nodeCount": 7196,
-      "edgeCount": 8344,
-      "importEdgeCount": 6883,
+      "nodeCount": 7199,
+      "edgeCount": 8355,
+      "importEdgeCount": 6894,
       "registerEdgeCount": 64
     }
   },
-  "inventorySha256": "28293f5c2e7511ac05e9dd59ca69537ecc490a928c4dee27c670c4cdb36940d5",
-  "manifestSha256": "c382fa8fa3bcdaf49234bf97f3d1821d677715575cfb66b517f076d80e4683c2"
+  "inventorySha256": "c3b65e4498f932f93b5afe0cd32ef0f561c7d4247f42c93fa8ea1c67d9b72fce",
+  "manifestSha256": "b5807517e548b257d80df0f358f3d90b9a33c1e2c6c8bb1f8fb96805d9da00cc"
 }
