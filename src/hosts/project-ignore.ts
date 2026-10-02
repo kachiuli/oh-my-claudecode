@@ -45,6 +45,7 @@ export function projectIgnoreAsset(
       PROJECT_IGNORE_BLOCK,
       PROJECT_IGNORE_START,
       PROJECT_IGNORE_END,
+      { adoptExactBlock: true },
     ),
     managedText: PROJECT_IGNORE_BLOCK,
     receipt: {

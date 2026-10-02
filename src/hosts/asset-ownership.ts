@@ -239,6 +239,7 @@ export function mergeManagedBlock(
   nextBlock: string,
   start: string,
   end: string,
+  options: { readonly adoptExactBlock?: boolean } = {},
 ): string {
   if (previous) {
     if (!previous.managedText || !existing.includes(previous.managedText)) {
@@ -247,6 +248,25 @@ export function mergeManagedBlock(
     return existing.replace(previous.managedText, nextBlock);
   }
   if (existing.includes(start) || existing.includes(end)) {
+    const startIndex = existing.indexOf(start);
+    const endIndex = existing.indexOf(end);
+    const afterEnd = endIndex + end.length;
+    // Only explicitly portable fragments may be adopted, without rewriting
+    // any source bytes. Ambiguous, partial, or edited blocks remain unowned.
+    if (
+      options.adoptExactBlock &&
+      startIndex >= 0 &&
+      endIndex > startIndex &&
+      existing.indexOf(start, startIndex + start.length) === -1 &&
+      existing.indexOf(end, afterEnd) === -1 &&
+      (startIndex === 0 || existing[startIndex - 1] === "\n") &&
+      (afterEnd === existing.length ||
+        existing[afterEnd] === "\n" ||
+        existing.slice(afterEnd, afterEnd + 2) === "\r\n") &&
+      existing.slice(startIndex, afterEnd) === nextBlock
+    ) {
+      return existing;
+    }
     throw new Error("host_assets_unowned_managed_block");
   }
   const base = existing.trimEnd();

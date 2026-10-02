@@ -208,6 +208,7 @@ function hostAssets(
         block,
         GUIDANCE_START,
         GUIDANCE_END,
+        { adoptExactBlock: true },
       ),
       managedText: block,
     });
@@ -269,6 +270,7 @@ function hostAssets(
       block,
       GUIDANCE_START,
       GUIDANCE_END,
+      { adoptExactBlock: true },
     ),
     managedText: block,
   });
