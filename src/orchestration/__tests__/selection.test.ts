@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
@@ -6,6 +6,7 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  statSync,
   utimesSync,
   writeFileSync,
 } from "node:fs";
@@ -13,6 +14,8 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { clearWorktreeCache, getOmcRoot } from "../../lib/worktree-paths.js";
+import { currentProcessStartIdentity } from "../../team/team-owner-epoch.js";
+import { teamCreateTask } from "../../team/team-ops.js";
 import {
   ORCHESTRATOR_ENV,
   acquireOrchestratorLease,
@@ -36,6 +39,17 @@ import {
 
 const available = () => true;
 const orchestratorEnvKeys = Object.values(ORCHESTRATOR_ENV);
+
+/** A real process that has verifiably exited, used as a dead lease owner. */
+function exitedPid(): number {
+  const child = spawnSync(process.execPath, ["-e", "process.exit(0)"], {
+    windowsHide: true,
+  });
+  if (child.status !== 0 || !child.pid) {
+    throw new Error("synthetic process did not exit");
+  }
+  return child.pid;
+}
 
 describe("repository orchestrator selection", () => {
   let root: string;
@@ -726,5 +740,94 @@ describe("repository orchestrator selection", () => {
       if (previous === undefined) delete process.env[key];
       else process.env[key] = previous;
     }
+  });
+
+  it("recovers a dead lead lease carrying a writer-produced completed projection above 16 KiB", async () => {
+    await adopt("claude");
+    await acquireOrchestratorLease(repo, {
+      host: "claude",
+      sessionId: "large-projection",
+    });
+
+    const teamName = "large-projection-team";
+    const teamRoot = join(getOmcRoot(repo), "state", "team", teamName);
+    mkdirSync(teamRoot, { recursive: true });
+    writeFileSync(
+      join(teamRoot, "config.json"),
+      JSON.stringify({
+        name: teamName,
+        task: "Recover a large completed projection",
+        agent_type: "claude",
+        worker_launch_mode: "prompt",
+        worker_count: 1,
+        max_workers: 1,
+        workers: [
+          {
+            name: "worker-1",
+            index: 1,
+            role: "executor",
+            worker_cli: "claude",
+            assigned_tasks: [],
+            operational_state: "stopped",
+          },
+        ],
+        created_at: "2026-09-21T00:00:00.000Z",
+        tmux_session: "large-projection-team:0",
+        next_task_id: 2,
+        leader_pane_id: null,
+        hud_pane_id: null,
+        resize_hook_name: null,
+        resize_hook_target: null,
+        lifecycle_state: "active",
+        runtime_owner_epoch: {
+          epoch: 1,
+          nonce: "11111111-1111-4111-8111-111111111111",
+          pid: exitedPid(),
+          process_started_at: currentProcessStartIdentity(),
+          created_at: "2026-09-21T00:00:00.000Z",
+        },
+      }),
+      "utf8",
+    );
+    const created = await teamCreateTask(
+      teamName,
+      {
+        subject: "Completed projection",
+        description: "Canonical writer output retained after completion",
+        status: "completed",
+        result: "r".repeat(20_000),
+      },
+      repo,
+    );
+    const taskPath = join(teamRoot, "tasks", `task-${created.id}.json`);
+    expect(statSync(taskPath).size).toBeGreaterThan(16 * 1024);
+    const taskBytes = readFileSync(taskPath);
+
+    // Fixture: the recorded lease owner has verifiably exited.
+    const runtimePath = resolveOrchestratorPaths(repo).state;
+    const runtime = JSON.parse(readFileSync(runtimePath, "utf8")) as {
+      lease: { ownerPid: number };
+    };
+    runtime.lease.ownerPid = exitedPid();
+    writeFileSync(runtimePath, JSON.stringify(runtime));
+
+    await expect(
+      recoverOrchestratorLease(repo, {
+        kind: "checkpointed",
+        reference: "large-projection",
+      }),
+    ).resolves.toBeUndefined();
+
+    // Only the authorized lease/lock transition occurs; the projection is untouched.
+    expect(readOrchestratorStatus(repo, { probe: available })).toMatchObject({
+      lease: null,
+      lastRecovery: {
+        recoveredLease: true,
+        recoveredOperationLock: false,
+        checkpoint: { kind: "checkpointed", reference: "large-projection" },
+      },
+    });
+    expect(readFileSync(taskPath)).toEqual(taskBytes);
+    expect(existsSync(resolveOrchestratorPaths(repo).operationLock)).toBe(false);
   });
 });
