@@ -286,7 +286,14 @@ describe("repository orchestrator selection", () => {
     mkdirSync(dirname(task), { recursive: true });
     writeFileSync(
       task,
-      JSON.stringify({ status: "pending", claim: { token: "held" } }),
+      JSON.stringify({
+        status: "pending",
+        claim: {
+          owner: "worker-1",
+          token: "held",
+          leased_until: "2026-09-21T01:00:00.000Z",
+        },
+      }),
     );
     await expect(
       selectOrchestrator(repo, "codex", { probe: available }),

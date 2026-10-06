@@ -2,6 +2,7 @@ import { lstatSync, readdirSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { getOmcRoot } from "../lib/worktree-paths.js";
 import { isProcessAlive } from "../platform/index.js";
+import { isValidTaskClaim } from "../team/state/tasks.js";
 import {
   validateLegacyTeamConfig,
   validateRevisionedTeamConfig,
@@ -143,6 +144,9 @@ function assertTaskFileQuiescent(
     "failed",
   ]);
   if (typeof task.status !== "string" || !statuses.has(task.status)) {
+    throw new Error("orchestrator_quiescence_unverified");
+  }
+  if (task.claim !== undefined && !isValidTaskClaim(task.claim)) {
     throw new Error("orchestrator_quiescence_unverified");
   }
   const terminal = ["completed", "failed"].includes(task.status);

@@ -5,15 +5,15 @@
   "provenance": {
     "base": "05c800f40d1ad53b42a78609d2667ef4f726808b",
     "planningHead": "0a91273e61dbbd47eb0af4c02844409251e08398",
-    "head": "e89d19f2b340c95891481813dc96b89d48da5179",
-    "sourceSha256": "33e538d7057d4d97e5b4c1d9b7a46fa844cbf534b9b43ffce9962744cff10e25",
+    "head": "9a5c6de33e6b593bc7153d36876b9dabc681d132",
+    "sourceSha256": "df3be1368180494759a25bd94d1544a66098213b78aac3f9c9e184e55f314244",
     "generatedAt": null,
     "generator": "scripts/generate-inventory-graph.mjs"
   },
   "base": "05c800f40d1ad53b42a78609d2667ef4f726808b",
   "planningHead": "0a91273e61dbbd47eb0af4c02844409251e08398",
-  "head": "e89d19f2b340c95891481813dc96b89d48da5179",
-  "sourceSha256": "33e538d7057d4d97e5b4c1d9b7a46fa844cbf534b9b43ffce9962744cff10e25",
+  "head": "9a5c6de33e6b593bc7153d36876b9dabc681d132",
+  "sourceSha256": "df3be1368180494759a25bd94d1544a66098213b78aac3f9c9e184e55f314244",
   "counts": {
     "public": {
       "skills": 43,
@@ -71311,7 +71311,17 @@
       },
       {
         "from": "src/orchestration/__tests__/recovery-quiescence.test.ts",
+        "to": "src/orchestration/selection.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/orchestration/__tests__/recovery-quiescence.test.ts",
         "to": "src/orchestration/state.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/orchestration/__tests__/recovery-quiescence.test.ts",
+        "to": "src/team/team-ops.ts",
         "kind": "imports"
       },
       {
@@ -71358,6 +71368,16 @@
         "from": "src/orchestration/__tests__/selection.test.ts",
         "to": "src/orchestration/selection.ts",
         "kind": "type-imports"
+      },
+      {
+        "from": "src/orchestration/__tests__/selection.test.ts",
+        "to": "src/team/team-ops.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/orchestration/__tests__/selection.test.ts",
+        "to": "src/team/team-owner-epoch.ts",
+        "kind": "imports"
       },
       {
         "from": "src/orchestration/operation-lock.ts",
@@ -71412,6 +71432,11 @@
       {
         "from": "src/orchestration/quiescence.ts",
         "to": "src/team/monitor.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/orchestration/quiescence.ts",
+        "to": "src/team/state/tasks.ts",
         "kind": "imports"
       },
       {
@@ -84232,11 +84257,11 @@
     ],
     "stats": {
       "nodeCount": 7196,
-      "edgeCount": 8344,
-      "importEdgeCount": 6883,
+      "edgeCount": 8349,
+      "importEdgeCount": 6888,
       "registerEdgeCount": 64
     }
   },
   "inventorySha256": "28293f5c2e7511ac05e9dd59ca69537ecc490a928c4dee27c670c4cdb36940d5",
-  "manifestSha256": "c382fa8fa3bcdaf49234bf97f3d1821d677715575cfb66b517f076d80e4683c2"
+  "manifestSha256": "4d5056b8d19113225edd7b7d4e91a28984af8aad2d5aec2120c861faa1e8ee8c"
 }
