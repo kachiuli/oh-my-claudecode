@@ -6,14 +6,14 @@
     "base": "05c800f40d1ad53b42a78609d2667ef4f726808b",
     "planningHead": "0a91273e61dbbd47eb0af4c02844409251e08398",
     "head": "3b63b1ea20b5a5aef7c6c68f6342dc050bd01643",
-    "sourceSha256": "e3cee8bbf7587f369de12bb0414b6a5e32a367e8ec0b04e368f567e0754b315d",
+    "sourceSha256": "40da78cbffcb5f0c0bfb2b547fb2b16e665264aad1a0fd12c3d65b21fab484d8",
     "generatedAt": null,
     "generator": "scripts/generate-inventory-graph.mjs"
   },
   "base": "05c800f40d1ad53b42a78609d2667ef4f726808b",
   "planningHead": "0a91273e61dbbd47eb0af4c02844409251e08398",
   "head": "3b63b1ea20b5a5aef7c6c68f6342dc050bd01643",
-  "sourceSha256": "e3cee8bbf7587f369de12bb0414b6a5e32a367e8ec0b04e368f567e0754b315d",
+  "sourceSha256": "40da78cbffcb5f0c0bfb2b547fb2b16e665264aad1a0fd12c3d65b21fab484d8",
   "counts": {
     "public": {
       "skills": 43,
@@ -71361,6 +71361,11 @@
       },
       {
         "from": "src/orchestration/__tests__/recovery-quiescence.test.ts",
+        "to": "src/orchestration/selection.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/orchestration/__tests__/recovery-quiescence.test.ts",
         "to": "src/orchestration/state.ts",
         "kind": "imports"
       },
@@ -71477,6 +71482,11 @@
       {
         "from": "src/orchestration/quiescence.ts",
         "to": "src/team/monitor.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/orchestration/quiescence.ts",
+        "to": "src/team/state/tasks.ts",
         "kind": "imports"
       },
       {
@@ -84317,11 +84327,11 @@
     ],
     "stats": {
       "nodeCount": 7199,
-      "edgeCount": 8358,
-      "importEdgeCount": 6897,
+      "edgeCount": 8360,
+      "importEdgeCount": 6899,
       "registerEdgeCount": 64
     }
   },
   "inventorySha256": "c3b65e4498f932f93b5afe0cd32ef0f561c7d4247f42c93fa8ea1c67d9b72fce",
-  "manifestSha256": "391f847009d7c27e2ff58df24cdbfe3d1b7ff4d0b29bcea4bc3ea7fdde6f7eac"
+  "manifestSha256": "d3ed4988b9a7374a17ab0ef613cf4a119af56fd79b07c519b67b93a46e6457c0"
 }

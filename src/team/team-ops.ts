@@ -67,6 +67,7 @@ import {
   releaseTaskClaim as releaseTaskClaimImpl,
   listTasks as listTasksImpl,
   createTaskRecord,
+  isValidTaskClaim,
   validateTaskDependencies,
 } from './state/tasks.js';
 import {
@@ -289,16 +290,7 @@ function isTeamTask(value: unknown): value is TeamTask {
   if (v.metadata !== undefined && !isPlainRecord(v.metadata)) return false;
   if (v.recovery_reservation !== undefined && !isTaskRecoveryReservation(v.recovery_reservation)) return false;
   if (v.recovery_adoption !== undefined && !isTaskRecoveryAdoption(v.recovery_adoption)) return false;
-  const claim = v.claim;
-  if (claim !== undefined) {
-    if (!isPlainRecord(claim)
-      || typeof claim.owner !== 'string' || claim.owner.trim() === ''
-      || typeof claim.token !== 'string' || claim.token.trim() === ''
-      || typeof claim.leased_until !== 'string' || !Number.isFinite(Date.parse(claim.leased_until))
-      || (claim.launch_attempt_id !== undefined && typeof claim.launch_attempt_id !== 'string')) {
-      return false;
-    }
-  }
+  if (v.claim !== undefined && !isValidTaskClaim(v.claim)) return false;
   return true;
 }
 
