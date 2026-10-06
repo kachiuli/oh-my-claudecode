@@ -3,6 +3,7 @@ import type { WorkflowIdentityEvidence, WorkflowTelemetry, WorkflowTelemetryEvid
   WorkflowTerminalUsageEvidence } from './workflow-usage.js';
 import { isDeepStrictEqual } from 'node:util';
 import { createHash } from 'node:crypto';
+import { isAbsolute } from 'node:path';
 import type { OrchestratorHost } from '../orchestration/selection.js';
 import { MAX_WORKFLOW_TASK_RECOVERIES, parseWorkflowTaskRecovery,
   type WorkflowTaskRecovery } from './workflow-task-recovery.js';
@@ -145,6 +146,8 @@ export interface WorkflowReviewAttempt {
 }
 export interface WorkflowProcessResultSnapshot {
   readonly passed: boolean;
+  /** A bounded integrity failure retained separately from actual process/close facts. */
+  readonly integrityDiagnostic?: string;
   readonly error?: 'launch_failed' | 'timeout' | 'interrupted' | 'process_failed' | 'throttled' | 'protocol_failed' | 'output_incomplete';
   readonly parentExitedSuccessfully: boolean;
   readonly stdoutTruncated: boolean;
@@ -188,6 +191,8 @@ export interface WorkflowState {
   leadIntegrations?: WorkflowLeadIntegration[];
   dispatchSupplements?: WorkflowDispatchSupplement[];
   reviewBudgetExtensions?: WorkflowReviewBudgetExtension[];
+  /** Explicit per-operation review compatibility adoptions; append-only and never a pin change. */
+  reviewCompatibilityAdoptions?: WorkflowReviewCompatibilityAdoption[];
   taskRecoveries?: readonly WorkflowTaskRecovery[];
   createdAt: string;
   updatedAt: string;
@@ -209,6 +214,8 @@ export interface WorkflowReviewAttemptV2 extends Omit<WorkflowReviewAttempt, 'te
   readonly invocationId: string;
   readonly binding: WorkflowRoleBinding;
   readonly provenance: WorkflowReviewProvenance;
+  /** Present only when this attempt's source was served through an adopted read-only reader. */
+  readonly compatibility?: WorkflowReviewCompatibilityBinding;
   telemetry: WorkflowRouteTelemetry;
 }
 export interface WorkflowTaskStateV2 extends Omit<WorkflowTaskState, 'invocations' | 'session'> {
@@ -313,6 +320,95 @@ export interface WorkflowReviewBudgetExtensionIntent {
   readonly actor: WorkflowLeadIntegrationActor;
   readonly authorityRef: string;
   readonly reason: string;
+}
+/**
+ * Version of the lossless review transport descriptor. A descriptor binds only per-response and
+ * per-stream buffer policies; it carries no aggregate review, context, request or source ceiling,
+ * so no saved adoption can silently re-introduce a total byte/file/page/read limit over the
+ * complete delivery. The parser admits exactly this field set, so an older descriptor that tried
+ * to carry a total would be refused rather than silently honored.
+ */
+export const WORKFLOW_REVIEW_TRANSPORT_SCHEMA_VERSION = 2;
+/** Bound on one complete encoded reader response, including metadata and encoding overhead. */
+export const WORKFLOW_REVIEW_READ_LIMIT_BYTES = 8 * 1024;
+/** Bound on one streaming buffer used to spool unbounded source and Git stdout. */
+export const WORKFLOW_REVIEW_BUFFER_LIMIT_BYTES = 64 * 1024;
+export interface WorkflowReviewBuildIdentity {
+  readonly id: string;
+  readonly sha256: string;
+}
+/** The per-response/per-buffer policy of one lossless review transport descriptor. */
+export interface WorkflowReviewTransportPolicy {
+  readonly schemaVersion: number;
+  readonly responseBytes: number;
+  readonly bufferBytes: number;
+}
+/** The current versioned transport policy; every per-request bound is a buffer, never a total. */
+export function workflowReviewTransportPolicy(): WorkflowReviewTransportPolicy {
+  return Object.freeze({ schemaVersion: WORKFLOW_REVIEW_TRANSPORT_SCHEMA_VERSION,
+    responseBytes: WORKFLOW_REVIEW_READ_LIMIT_BYTES, bufferBytes: WORKFLOW_REVIEW_BUFFER_LIMIT_BYTES });
+}
+export const WORKFLOW_REVIEW_SOURCE_MANIFEST_SCHEMA_VERSION = 1;
+/**
+ * The immutable disk descriptor of one authorized source manifest. It names the manifest file, its
+ * exact byte count and record count and its content digest, and nothing else: the authorized path
+ * set itself is never carried in state, so a recorded adoption can neither grow with the size of
+ * the change nor restate a prospective file list that might differ from the frozen manifest.
+ */
+export interface WorkflowReviewSourceManifestDescriptor {
+  readonly schemaVersion: number;
+  readonly path: string;
+  readonly bytes: number;
+  readonly records: number;
+  readonly sha256: string;
+}
+/**
+ * The authorized source of one final PR. It is bound to the exact final-PR base and head —
+ * deliberately separate from the workflow's own narrower task base/delta — and commits to the
+ * immutable disk manifest through its descriptor. The digest commits to the pair and the
+ * descriptor together, so a selection that names another revision or another manifest, or that
+ * restates a descriptor whose manifest has been rewritten on disk, can never match the recorded
+ * authority. A pre-descriptor array-form record is still parsed, with its original digest
+ * derivation, so an old saved state loads read-only; a descriptor is required to select one.
+ */
+export interface WorkflowReviewAuthorizedSource {
+  readonly baseCommit: string;
+  readonly head: string;
+  readonly descriptor?: WorkflowReviewSourceManifestDescriptor;
+  /** Legacy read-only array form; present only on a record saved before the disk descriptor. */
+  readonly paths?: readonly string[];
+  readonly digest: string;
+}
+/**
+ * One explicit administrative adoption of review-transport compatibility. It is
+ * a bounded per-operation grant, not a repin: it records the exact authorized
+ * source manifest, the controller and reader builds, the versioned transport
+ * policy and the unchanged authenticated reviewer identity under which a
+ * subsequent review may use the read-only source reader.
+ */
+export interface WorkflowReviewCompatibilityAdoption {
+  readonly sequence: number;
+  readonly requestId: string;
+  readonly source: WorkflowReviewAuthorizedSource;
+  readonly controller: WorkflowReviewBuildIdentity;
+  readonly reader: WorkflowReviewBuildIdentity;
+  readonly transport: WorkflowReviewTransportPolicy;
+  readonly reviewerBindingId: string;
+  readonly reviewerAuthFingerprint: string;
+  readonly orchestrationHost: OrchestratorHost;
+  readonly actor: WorkflowLeadIntegrationActor;
+  readonly authorityRef: string;
+  readonly reason: string;
+  readonly at: string;
+}
+export type WorkflowReviewCompatibilityAdoptionIntent = Omit<WorkflowReviewCompatibilityAdoption,
+  'sequence' | 'orchestrationHost' | 'at' | 'source'> & { readonly source: Omit<WorkflowReviewAuthorizedSource, 'digest'> };
+/** Evidence bound to one review attempt whose source was served through the reader. */
+export interface WorkflowReviewCompatibilityBinding {
+  readonly adoptionSequence: number;
+  readonly bundleSha256: string;
+  readonly controllerSha256: string;
+  readonly readerSha256: string;
 }
 const MAX_LEAD_INTEGRATIONS = 32;
 const MAX_LEAD_INTEGRATION_BYTES = 128 * 1024;
@@ -581,7 +677,9 @@ function parseArtifactDescriptor(value: unknown, expectedKind?: string): Artifac
     ...(raw.expiresAt === undefined ? {} : { expiresAt: timestamp(raw.expiresAt) }) });
 }
 function parseWorkflowProcessResultSnapshot(value: unknown): WorkflowProcessResultSnapshot {
-  const raw = exactObject(value, ['passed', 'error', 'parentExitedSuccessfully', 'stdoutTruncated', 'settlement']);
+  const raw = exactObject(value, ['passed', 'error', 'integrityDiagnostic', 'parentExitedSuccessfully', 'stdoutTruncated', 'settlement']);
+  if (raw.integrityDiagnostic !== undefined && (typeof raw.integrityDiagnostic !== 'string'
+    || raw.integrityDiagnostic.length > 220 || !/^workflow_[a-z_:]+$/.test(raw.integrityDiagnostic))) throw new Error('workflow_invalid_process_result');
   if (typeof raw.passed !== 'boolean' || typeof raw.parentExitedSuccessfully !== 'boolean'
     || typeof raw.stdoutTruncated !== 'boolean') throw new Error('workflow_invalid_process_result');
   const errors: NonNullable<WorkflowProcessResultSnapshot['error']>[] = [
@@ -618,6 +716,7 @@ function parseWorkflowProcessResultSnapshot(value: unknown): WorkflowProcessResu
       descendants: saved.descendants as WorkflowProcessSettlementSnapshot['descendants'] });
   }
   return Object.freeze({ passed: raw.passed, ...(raw.error === undefined ? {} : { error: raw.error as WorkflowProcessResultSnapshot['error'] }),
+    ...(raw.integrityDiagnostic === undefined ? {} : { integrityDiagnostic: raw.integrityDiagnostic as string }),
     parentExitedSuccessfully: raw.parentExitedSuccessfully, stdoutTruncated: raw.stdoutTruncated,
     ...(settlement === undefined ? {} : { settlement }) });
 }
@@ -634,12 +733,16 @@ function boundAttempt(value: unknown, role: 'implementer' | 'reviewer', ordinal:
   if (raw[field] !== ordinal) throw new Error('workflow_invocation_sequence_mismatch');
   if (role === 'implementer' && !['fresh', 'resume'].includes(String(raw.mode))) throw new Error('workflow_invalid_invocation_mode');
   const processResult = raw.processResult === undefined ? undefined : parseWorkflowProcessResultSnapshot(raw.processResult);
+  const compatibility = role === 'reviewer' && raw.compatibility !== undefined
+    ? parseWorkflowReviewCompatibilityBinding(raw.compatibility) : undefined;
   const parsed = { ...raw, startedAt: timestamp(raw.startedAt), binding, invocationId, telemetry,
-    ...(processResult === undefined ? {} : { processResult }) };
+    ...(processResult === undefined ? {} : { processResult }),
+    ...(compatibility === undefined ? {} : { compatibility }) };
   // The outcome/telemetry may settle later; the reserved identity may not change.
   Object.defineProperties(parsed, { binding: { writable: false, configurable: false }, invocationId: { writable: false, configurable: false },
     telemetry: { writable: false, configurable: false },
     ...(processResult === undefined ? {} : { processResult: { writable: false, configurable: false } }),
+    ...(compatibility === undefined ? {} : { compatibility: { writable: false, configurable: false } }),
     ...(raw.orchestrationHost === undefined ? {} : { orchestrationHost: { writable: false, configurable: false } }) });
   return parsed;
 }
@@ -791,6 +894,129 @@ export function parseWorkflowReviewBudgetExtension(value: unknown): WorkflowRevi
 export function workflowReviewCeiling(state: Pick<VersionedWorkflowState, 'options' | 'reviewBudgetExtensions'>): number {
   return state.reviewBudgetExtensions?.at(-1)?.newCeiling ?? state.options.maxReviewPasses;
 }
+function reviewBuildIdentity(value: unknown): WorkflowReviewBuildIdentity {
+  const raw = exactObject(value, ['id', 'sha256']);
+  return Object.freeze({ id: literal(raw.id, 120), sha256: digest(raw.sha256) });
+}
+/**
+ * A transported adoption binds only the versioned per-response/per-buffer policy. The exact field
+ * set is intentional: a descriptor carrying any total context/request/source/read ceiling is
+ * refused here, so a saved or supplied total can never silently restrict the lossless delivery.
+ */
+function reviewTransportPolicy(value: unknown): WorkflowReviewTransportPolicy {
+  const raw = exactObject(value, ['schemaVersion', 'responseBytes', 'bufferBytes']);
+  const parsed = Object.freeze({ schemaVersion: integer(raw.schemaVersion, 1, 1_000_000),
+    responseBytes: integer(raw.responseBytes, 1, 64 * 1024), bufferBytes: integer(raw.bufferBytes, 1, 8 * 1024 * 1024) });
+  if (parsed.schemaVersion !== WORKFLOW_REVIEW_TRANSPORT_SCHEMA_VERSION
+    || parsed.responseBytes !== WORKFLOW_REVIEW_READ_LIMIT_BYTES
+    || parsed.bufferBytes !== WORKFLOW_REVIEW_BUFFER_LIMIT_BYTES) {
+    throw new Error('workflow_review_compatibility_transport_unsupported');
+  }
+  return parsed;
+}
+/** Parse one immutable disk manifest descriptor. */
+export function parseWorkflowReviewSourceManifestDescriptor(value: unknown): WorkflowReviewSourceManifestDescriptor {
+  const raw = exactObject(value, ['schemaVersion', 'path', 'bytes', 'records', 'sha256']);
+  if (raw.schemaVersion !== WORKFLOW_REVIEW_SOURCE_MANIFEST_SCHEMA_VERSION) {
+    throw new Error('workflow_review_compatibility_source_unsupported');
+  }
+  // The manifest is a host file, not a repository member: it is an absolute path, and the byte and
+  // record counts and the content digest are the only things that bind the (unbounded) path set.
+  const path = boundedText(raw.path, 1000);
+  if (!isAbsolute(path) || /[\r\n\0]/.test(path)) throw new Error('workflow_review_compatibility_invalid_paths');
+  // A descriptor that binds no record at all, or a byte count that cannot be a length, is not an
+  // authorized source: an empty or negative manifest is refused here rather than recorded.
+  if (!Number.isSafeInteger(raw.bytes) || (raw.bytes as number) < 0
+    || !Number.isSafeInteger(raw.records) || (raw.records as number) < 1) {
+    throw new Error('workflow_review_compatibility_invalid_paths');
+  }
+  return Object.freeze({ schemaVersion: WORKFLOW_REVIEW_SOURCE_MANIFEST_SCHEMA_VERSION, path,
+    bytes: raw.bytes as number, records: raw.records as number, sha256: digest(raw.sha256) });
+}
+/**
+ * Bind one authorized source over the final-PR pair and its immutable disk manifest. The digest is
+ * derived here, so an intent that omits it is bound by the controller and a recorded source that
+ * carries one must match exactly. A pre-descriptor array-form record is still accepted, with its
+ * original derivation, so old saved states load; nothing new is ever recorded in that form.
+ */
+function reviewAuthorizedSourceFields(value: unknown, recorded: boolean): WorkflowReviewAuthorizedSource {
+  const raw = value as Record<string, unknown> | null;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('workflow_review_compatibility_invalid_paths');
+  if ('descriptor' in raw) {
+    const fields = exactObject(value, recorded ? ['baseCommit', 'head', 'descriptor', 'digest'] : ['baseCommit', 'head', 'descriptor']);
+    const binding = { baseCommit: workflowSha(fields.baseCommit), head: workflowSha(fields.head),
+      descriptor: parseWorkflowReviewSourceManifestDescriptor(fields.descriptor) };
+    const digestValue = createHash('sha256').update(JSON.stringify(binding)).digest('hex');
+    if (recorded && fields.digest !== undefined && fields.digest !== digestValue) {
+      throw new Error('workflow_review_compatibility_source_mismatch');
+    }
+    return Object.freeze({ ...binding, digest: digestValue });
+  }
+  // The legacy array form: a record saved before the disk descriptor. It parses, and its digest is
+  // re-derived exactly as it was recorded, so the saved state loads without being rewritten — but
+  // it carries no descriptor, so no new selection can name it and no review can be reserved for it.
+  const fields = exactObject(value, recorded ? ['baseCommit', 'head', 'paths', 'digest'] : ['baseCommit', 'head', 'paths']);
+  if (!Array.isArray(fields.paths) || !fields.paths.length) {
+    throw new Error('workflow_review_compatibility_invalid_paths');
+  }
+  const paths = fields.paths.map(entry => repositorySourceFilePath(entry));
+  if (new Set(paths).size !== paths.length) throw new Error('workflow_review_compatibility_invalid_paths');
+  const legacy = { baseCommit: workflowSha(fields.baseCommit), head: workflowSha(fields.head),
+    paths: Object.freeze([...paths].sort()) as string[] };
+  const digestValue = createHash('sha256').update(JSON.stringify(legacy)).digest('hex');
+  if (recorded && fields.digest !== undefined && fields.digest !== digestValue) {
+    throw new Error('workflow_review_compatibility_source_mismatch');
+  }
+  return Object.freeze({ ...legacy, digest: digestValue });
+}
+/** The digest-free manifest shape a shared field parser re-reads: descriptor form, or legacy paths. */
+function authorizedSourceShape(source: WorkflowReviewAuthorizedSource): Record<string, unknown> {
+  return source.descriptor === undefined
+    ? { baseCommit: source.baseCommit, head: source.head, paths: source.paths }
+    : { baseCommit: source.baseCommit, head: source.head, descriptor: source.descriptor };
+}
+function reviewCompatibilityFields(value: unknown): WorkflowReviewCompatibilityAdoptionIntent {
+  const raw = exactObject(value, ['requestId', 'source', 'controller', 'reader', 'transport', 'reviewerBindingId',
+    'reviewerAuthFingerprint', 'actor', 'authorityRef', 'reason']);
+  // The intent carries the authorized manifest descriptor without its derived digest; the controller
+  // verifies the descriptor against the manifest on disk and binds the digest when it records it.
+  const source = reviewAuthorizedSourceFields(raw.source, false);
+  const parsed: WorkflowReviewCompatibilityAdoptionIntent = { requestId: literal(raw.requestId, 100),
+    source: authorizedSourceShape(source) as WorkflowReviewCompatibilityAdoptionIntent['source'],
+    controller: reviewBuildIdentity(raw.controller), reader: reviewBuildIdentity(raw.reader),
+    transport: reviewTransportPolicy(raw.transport), reviewerBindingId: safeWorkflowId(raw.reviewerBindingId),
+    reviewerAuthFingerprint: digest(raw.reviewerAuthFingerprint), actor: leadIntegrationActor(raw.actor),
+    authorityRef: boundedText(raw.authorityRef, 1000), reason: boundedText(raw.reason, 1000) };
+  // There is deliberately no aggregate intent ceiling: the authorized set lives in an immutable disk
+  // manifest addressed by a bounded descriptor, and every individual field above is already bounded
+  // on its own. A total here would cap the authorized file set the adoption may carry, which is
+  // exactly the ceiling this delta removes.
+  return Object.freeze(parsed);
+}
+export function parseWorkflowReviewCompatibilityAdoptionIntent(value: unknown): WorkflowReviewCompatibilityAdoptionIntent {
+  return reviewCompatibilityFields(value);
+}
+export function parseWorkflowReviewCompatibilityAdoption(value: unknown): WorkflowReviewCompatibilityAdoption {
+  const raw = exactObject(value, ['sequence', 'requestId', 'source', 'controller', 'reader', 'transport', 'reviewerBindingId',
+    'reviewerAuthFingerprint', 'actor', 'authorityRef', 'reason', 'orchestrationHost', 'at']);
+  validateOrchestrationHost(raw.orchestrationHost);
+  if (raw.orchestrationHost === undefined) throw new Error('workflow_invalid_orchestration_host');
+  const source = reviewAuthorizedSourceFields(raw.source, true);
+  // The shared field parser reads the digest-free manifest shape; the verified source above — digest
+  // included — is what the recorded adoption binds, so a tampered digest can never be re-derived.
+  const fields = reviewCompatibilityFields({ requestId: raw.requestId,
+    source: authorizedSourceShape(source), controller: raw.controller,
+    reader: raw.reader, transport: raw.transport, reviewerBindingId: raw.reviewerBindingId,
+    reviewerAuthFingerprint: raw.reviewerAuthFingerprint, actor: raw.actor, authorityRef: raw.authorityRef, reason: raw.reason });
+  return Object.freeze({ sequence: integer(raw.sequence, 1, MAX_LEAD_INTEGRATIONS), ...fields, source,
+    orchestrationHost: raw.orchestrationHost as OrchestratorHost, at: timestamp(raw.at) });
+}
+export function parseWorkflowReviewCompatibilityBinding(value: unknown): WorkflowReviewCompatibilityBinding {
+  const raw = exactObject(value, ['adoptionSequence', 'bundleSha256', 'controllerSha256', 'readerSha256']);
+  return Object.freeze({ adoptionSequence: integer(raw.adoptionSequence, 1, MAX_LEAD_INTEGRATIONS),
+    bundleSha256: digest(raw.bundleSha256), controllerSha256: digest(raw.controllerSha256),
+    readerSha256: digest(raw.readerSha256) });
+}
 /** New workflows budget completed reviews; omitted v1.5 states retain attempt-based accounting without migration. */
 export function workflowReviewBudgetUsed(state: Pick<VersionedWorkflowState,
   'reviewBudgetBasis' | 'reviewPasses' | 'reviews'>): number {
@@ -882,12 +1108,18 @@ export function parseWorkflowState(value: unknown): VersionedWorkflowState {
     // Preserve the accepted legacy shape byte-for-byte before requiring fields introduced by newer controllers.
     if (!hasSetupHistory && raw.leadIntegrations === undefined && raw.dispatchSupplements === undefined
       && raw.reviewBudgetExtensions === undefined && raw.taskRecoveries === undefined
+      && raw.reviewCompatibilityAdoptions === undefined
       && raw.reviewBudgetBasis === undefined && !hasTelemetryEvidence && !hasProcessResultEvidence) return value as WorkflowState;
   }
   if (raw.reviewBudgetExtensions !== undefined && !Array.isArray(raw.reviewBudgetExtensions)) {
     throw new Error('workflow_invalid_review_budget_extensions');
   }
   const reviewBudgetExtensions = (raw.reviewBudgetExtensions ?? []).map(parseWorkflowReviewBudgetExtension);
+  if (raw.reviewCompatibilityAdoptions !== undefined && (!Array.isArray(raw.reviewCompatibilityAdoptions)
+    || raw.reviewCompatibilityAdoptions.length > MAX_LEAD_INTEGRATIONS)) {
+    throw new Error('workflow_invalid_review_compatibility_adoptions');
+  }
+  const reviewCompatibilityAdoptions = (raw.reviewCompatibilityAdoptions ?? []).map(parseWorkflowReviewCompatibilityAdoption);
   if (raw.taskRecoveries !== undefined && (!Array.isArray(raw.taskRecoveries)
     || raw.taskRecoveries.length > MAX_WORKFLOW_TASK_RECOVERIES)) throw new Error('workflow_invalid_task_recoveries');
   const taskRecoveries = (raw.taskRecoveries ?? []).map(parseWorkflowTaskRecovery);
@@ -929,6 +1161,13 @@ export function parseWorkflowState(value: unknown): VersionedWorkflowState {
     }
     requestIds.add(entry.requestId); reviewCeiling = entry.newCeiling;
   });
+  const compatibilityRequestIds = new Set<string>();
+  reviewCompatibilityAdoptions.forEach((entry, index) => {
+    if (entry.sequence !== index + 1 || compatibilityRequestIds.has(entry.requestId)) {
+      throw new Error('workflow_review_compatibility_chain_mismatch');
+    }
+    compatibilityRequestIds.add(entry.requestId);
+  });
   integer(raw.reviewPasses, 0, Number.MAX_SAFE_INTEGER);
   if (raw.reviewBudgetBasis === 'completed-reviews') {
     const attempts = raw.reviewAttempts ?? [];
@@ -950,6 +1189,8 @@ export function parseWorkflowState(value: unknown): VersionedWorkflowState {
   }
   // Preserve legacy shape and optional fields exactly; this is not a migration.
   if (raw.schemaVersion === 1) {
+    // v1 states carry no role bindings, so an adoption could never be attributed to a reviewer there.
+    if (reviewCompatibilityAdoptions.length) throw new Error('workflow_review_compatibility_binding_mismatch');
     if (dispatchSupplements.some(entry => entry.actor.id !== 'unknown')) {
       throw new Error('workflow_dispatch_supplement_actor_mismatch');
     }
@@ -978,6 +1219,7 @@ export function parseWorkflowState(value: unknown): VersionedWorkflowState {
     ...(raw.leadIntegrations === undefined ? {} : { leadIntegrations: Object.freeze(leadIntegrations) }),
     ...(raw.dispatchSupplements === undefined ? {} : { dispatchSupplements: Object.freeze(dispatchSupplements) }),
     ...(raw.reviewBudgetExtensions === undefined ? {} : { reviewBudgetExtensions: Object.freeze(reviewBudgetExtensions) }),
+    ...(raw.reviewCompatibilityAdoptions === undefined ? {} : { reviewCompatibilityAdoptions: Object.freeze(reviewCompatibilityAdoptions) }),
     ...(raw.taskRecoveries === undefined ? {} : { taskRecoveries: Object.freeze(taskRecoveries) }) } as unknown as WorkflowState;
   }
   const maxAttempts = integer(options.maxAttempts, 1, 5);
@@ -1051,6 +1293,12 @@ export function parseWorkflowState(value: unknown): VersionedWorkflowState {
     && !knownLeadActors.has(`${entry.actor.id}\0${entry.actor.model}`)) throw new Error('workflow_review_budget_extension_actor_mismatch');
   for (const entry of taskRecoveries) if (entry.actor.id !== 'unknown'
     && !knownLeadActors.has(`${entry.actor.id}\0${entry.actor.model}`)) throw new Error('workflow_task_recovery_actor_mismatch');
+  for (const entry of reviewCompatibilityAdoptions) {
+    if (entry.actor.id !== 'unknown'
+      && !knownLeadActors.has(`${entry.actor.id}\0${entry.actor.model}`)) throw new Error('workflow_review_compatibility_actor_mismatch');
+    const reviewer = known.get(entry.reviewerBindingId);
+    if (!reviewer || reviewer.role !== 'reviewer') throw new Error('workflow_review_compatibility_binding_mismatch');
+  }
   const ids = new Set<string>();
   const checkSnapshot = (entry: Record<string, unknown>) => {
     const binding = entry.binding as WorkflowRoleBinding;
@@ -1070,6 +1318,7 @@ export function parseWorkflowState(value: unknown): VersionedWorkflowState {
     ...(raw.leadIntegrations === undefined ? {} : { leadIntegrations: Object.freeze(leadIntegrations) }),
     ...(raw.dispatchSupplements === undefined ? {} : { dispatchSupplements: Object.freeze(dispatchSupplements) }),
     ...(raw.reviewBudgetExtensions === undefined ? {} : { reviewBudgetExtensions: Object.freeze(reviewBudgetExtensions) }),
+    ...(raw.reviewCompatibilityAdoptions === undefined ? {} : { reviewCompatibilityAdoptions: Object.freeze(reviewCompatibilityAdoptions) }),
     ...(raw.taskRecoveries === undefined ? {} : { taskRecoveries: Object.freeze(taskRecoveries) }),
     substitutions: Object.freeze(substitutions), bindings: Object.freeze(parsedBindings) } as unknown as WorkflowStateV2;
 }
@@ -1127,6 +1376,46 @@ export function validateWorkflowStateTransition(previous: unknown, next: unknown
     };
     if (!isDeepStrictEqual(withoutExtension(before), withoutExtension(after))) {
       throw new Error('workflow_review_budget_extension_transition_invalid');
+    }
+  }
+  // Administrative adoption is append-only and consumes no review; it may only be recorded
+  // while the workflow is otherwise idle at its recorded head.
+  const oldAdoptions = before.reviewCompatibilityAdoptions ?? [];
+  const newAdoptions = after.reviewCompatibilityAdoptions ?? [];
+  if (newAdoptions.length < oldAdoptions.length || newAdoptions.length > oldAdoptions.length + 1
+    || oldAdoptions.some((entry, index) => !isDeepStrictEqual(entry, newAdoptions[index]))) {
+    throw new Error('workflow_review_compatibility_history_rewritten');
+  }
+  if (newAdoptions.length === oldAdoptions.length + 1) {
+    const appended = newAdoptions.at(-1)!;
+    // The adopted final-PR head is the reviewed integration head. Its base is the final PR's own base,
+    // which is deliberately not required to be the plan's narrower task base; that it is a real
+    // ancestor of the head is proven against Git before the adoption is recorded, so this pure
+    // validator keeps the origin check and the reward of a re-derived, unrewritten ledger entry.
+    const unavailable = appended.source.head !== before.integrationHead
+      || appended.source.baseCommit === appended.source.head
+      || before.tasks.some(entry => entry.status === 'running'
+        || entry.invocations?.some(invocation => invocation.error === 'workflow_invocation_incomplete'))
+      || before.reviewAttempts?.some(attempt => attempt.error === 'workflow_invocation_incomplete');
+    if (unavailable) throw new Error('workflow_review_compatibility_origin_mismatch');
+    if (before.schemaVersion !== 2 || (appended.actor.id !== 'unknown'
+      && (appended.actor.id !== before.bindings.lead.id || appended.actor.model !== before.bindings.lead.model))
+      || appended.reviewerBindingId !== before.bindings.reviewer.id) {
+      throw new Error('workflow_review_compatibility_actor_mismatch');
+    }
+    // The adoption must bind exactly the current versioned transport policy; a descriptor that
+    // carries any total ceiling was already refused by the parser above.
+    if (!isDeepStrictEqual(appended.transport, workflowReviewTransportPolicy())) {
+      throw new Error('workflow_review_compatibility_transport_unsupported');
+    }
+    const withoutAdoption = (state: VersionedWorkflowState): Record<string, unknown> => {
+      const copy = JSON.parse(JSON.stringify(state)) as Record<string, unknown>;
+      delete copy.reviewCompatibilityAdoptions;
+      delete copy.updatedAt;
+      return copy;
+    };
+    if (!isDeepStrictEqual(withoutAdoption(before), withoutAdoption(after))) {
+      throw new Error('workflow_review_compatibility_transition_invalid');
     }
   }
   const oldSupplements = before.dispatchSupplements ?? [];
@@ -1313,6 +1602,16 @@ export function validateWorkflowStateTransition(previous: unknown, next: unknown
     preserveAttempts(task.invocations ?? [], replacement.invocations ?? []);
   }
   preserveAttempts(before.reviewAttempts ?? [], after.reviewAttempts ?? []);
+  // A compatibility-bound review must reference an already-recorded adoption with matching build identities.
+  for (const attempt of (after.reviewAttempts ?? []).slice((before.reviewAttempts ?? []).length)) {
+    const binding = attempt.compatibility;
+    if (binding === undefined) continue;
+    const adoption = newAdoptions.find(entry => entry.sequence === binding.adoptionSequence);
+    if (!adoption || binding.controllerSha256 !== adoption.controller.sha256
+      || binding.readerSha256 !== adoption.reader.sha256) {
+      throw new Error('workflow_review_compatibility_transition_invalid');
+    }
+  }
 }
 export function boundedText(value: unknown, limit = 2000): string {
   if (typeof value !== 'string' || !value.trim() || value.length > limit || value.includes('\0')) throw new Error('workflow_invalid_text');

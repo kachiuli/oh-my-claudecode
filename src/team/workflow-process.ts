@@ -73,7 +73,12 @@ export interface WorkflowProcessResult {
   telemetry?: WorkflowTelemetry;
 }
 
-/** One-shot execution only; no shell, transcript handoff or env serialization. */
+/** A controller-owned duplex protocol may write bounded frames and close input only. */
+export interface WorkflowProcessInputTransport {
+  write(frame: Buffer): void;
+  end(): void;
+}
+/** Protected execution; no shell, transcript handoff or env serialization. */
 export async function runWorkflowProcess(input: {
   command: string; args: string[]; cwd: string; stdin?: string; artifactPrefix: string;
   /** Required for an already-quoted native cmd.exe /c payload. Never enables a shell. */
@@ -87,6 +92,8 @@ export async function runWorkflowProcess(input: {
   redactionEnvironment?: NodeJS.ProcessEnv;
   /** Operation decoder receives raw bounded-protocol chunks only inside the controller. */
   onStdout?: (chunk: Buffer) => void;
+  /** A trusted controller protocol, mutually exclusive with one-shot stdin. */
+  onInput?: (transport: WorkflowProcessInputTransport) => void;
   /** Receives the launch owner's identity so an interrupted attempt can later be proven dead. */
   onSpawn?: (identity: WorkflowProviderProcessIdentity) => void;
   /** On Windows, keep an owned Job boundary alive until provider descendants have been cleaned up. */
@@ -96,6 +103,7 @@ export async function runWorkflowProcess(input: {
   if (input.provider === 'claude' && !input.environment) throw new Error('workflow_explicit_environment_required');
   if (!input.command || /[\0\r\n]/.test(input.command) || input.args.some(arg => arg.includes('\0'))) throw new Error('workflow_invalid_process_arguments');
   if (process.platform === 'win32' && /\.(cmd|bat|ps1)$/i.test(input.command)) throw new Error('workflow_shell_wrapper_unsupported');
+  if (input.onInput && input.stdin !== undefined) throw new Error('workflow_invalid_process_input');
   // Validate the lifetime bound before any artifact path is created or a child is spawned.
   // Null is the sole unbounded value; every other invalid input is refused, never coerced to null.
   const timeoutMs = input.timeoutMs;
@@ -370,7 +378,8 @@ export async function runWorkflowProcess(input: {
       stderrTruncated ||= kept.length < chunk.length; stderrBytes += kept.length;
     });
     child.on('error', () => { error = 'launch_failed'; });
-    child.stdin.on('error', () => { /* EPIPE is reflected in the exit status. */ });
+    const inputFailure = () => { if (!finished && !error) { error = 'protocol_failed'; terminate(); } };
+    child.stdin.on('error', () => { if (input.onInput) inputFailure(); /* One-shot EPIPE is reflected in the exit status. */ });
     child.on('close', (code: number | null) => {
       streamClose = true;
       // The Windows supervisor returns zero only after the direct provider
@@ -378,7 +387,28 @@ export async function runWorkflowProcess(input: {
       if (input.superviseProcessTree && process.platform === 'win32' && code === 0) supervisedCleanupVerified = true;
       finish(code);
     });
-    child.stdin.end(input.stdin ?? '');
+    if (input.onInput) {
+      let ended = false;
+      try {
+        const setup: unknown = input.onInput(Object.freeze({
+          write(frame: Buffer) {
+            if (ended || finished || error) throw new Error('workflow_process_input_closed');
+            if (!Buffer.isBuffer(frame) || frame.length > 65536) throw new Error('workflow_process_input_unbounded');
+            child.stdin.write(frame, writeError => { if (writeError) inputFailure(); });
+          },
+          end() {
+            if (ended || finished || error) throw new Error('workflow_process_input_closed');
+            ended = true; child.stdin.end();
+          },
+        }));
+        if (setup !== undefined) {
+          // Protocol setup is synchronous. Consume a rejected promise before refusing it so an
+          // accidentally async controller cannot leave an unhandled rejection or an unmanaged child.
+          if (setup && typeof (setup as { then?: unknown }).then === 'function') void Promise.resolve(setup).catch(() => {});
+          throw new Error('workflow_invalid_process_input');
+        }
+      } catch { inputFailure(); }
+    } else child.stdin.end(input.stdin ?? '');
   });
   // Aggregate before redaction so secrets split across process chunks cannot escape.
   if (lstatSync(artifactParent).isSymbolicLink() || realpathSync(artifactParent) !== canonicalArtifactParent) throw new Error('workflow_artifact_parent_changed');

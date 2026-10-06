@@ -6,14 +6,14 @@
     "base": "05c800f40d1ad53b42a78609d2667ef4f726808b",
     "planningHead": "0a91273e61dbbd47eb0af4c02844409251e08398",
     "head": "3b63b1ea20b5a5aef7c6c68f6342dc050bd01643",
-    "sourceSha256": "40da78cbffcb5f0c0bfb2b547fb2b16e665264aad1a0fd12c3d65b21fab484d8",
+    "sourceSha256": "6331d7660289b1fafdd2686150499a0e227fc8dce9981bf6b4a3c0a8fdb5b81b",
     "generatedAt": null,
     "generator": "scripts/generate-inventory-graph.mjs"
   },
   "base": "05c800f40d1ad53b42a78609d2667ef4f726808b",
   "planningHead": "0a91273e61dbbd47eb0af4c02844409251e08398",
   "head": "3b63b1ea20b5a5aef7c6c68f6342dc050bd01643",
-  "sourceSha256": "40da78cbffcb5f0c0bfb2b547fb2b16e665264aad1a0fd12c3d65b21fab484d8",
+  "sourceSha256": "6331d7660289b1fafdd2686150499a0e227fc8dce9981bf6b4a3c0a8fdb5b81b",
   "counts": {
     "public": {
       "skills": 43,
@@ -28,8 +28,8 @@
       "toolFiles": 61,
       "libFiles": 44,
       "templateHooks": 22,
-      "srcFiles": 1458,
-      "total": 1480
+      "srcFiles": 1464,
+      "total": 1486
     },
     "generated": {
       "distFiles": 5094,
@@ -33048,6 +33048,11 @@
         "path": "docs/TOOLS.md"
       },
       {
+        "id": "docs/WORKFLOW-REVIEW-COMPATIBILITY.md",
+        "kind": "other",
+        "path": "docs/WORKFLOW-REVIEW-COMPATIBILITY.md"
+      },
+      {
         "id": "docs/WORKFLOW-V1.4-CLAUDE-LEAD-VERIFICATION.md",
         "kind": "other",
         "path": "docs/WORKFLOW-V1.4-CLAUDE-LEAD-VERIFICATION.md"
@@ -33378,6 +33383,16 @@
         "path": "@eslint/js"
       },
       {
+        "id": "external:@modelcontextprotocol/sdk/client/index.js",
+        "kind": "external",
+        "path": "@modelcontextprotocol/sdk/client/index.js"
+      },
+      {
+        "id": "external:@modelcontextprotocol/sdk/inMemory.js",
+        "kind": "external",
+        "path": "@modelcontextprotocol/sdk/inMemory.js"
+      },
+      {
         "id": "external:@modelcontextprotocol/sdk/server/index.js",
         "kind": "external",
         "path": "@modelcontextprotocol/sdk/server/index.js"
@@ -33386,6 +33401,11 @@
         "id": "external:@modelcontextprotocol/sdk/server/stdio.js",
         "kind": "external",
         "path": "@modelcontextprotocol/sdk/server/stdio.js"
+      },
+      {
+        "id": "external:@modelcontextprotocol/sdk/shared/stdio.js",
+        "kind": "external",
+        "path": "@modelcontextprotocol/sdk/shared/stdio.js"
       },
       {
         "id": "external:@modelcontextprotocol/sdk/types.js",
@@ -41173,6 +41193,11 @@
         "path": "src/team/__tests__/workflow-lead-integration.test.ts"
       },
       {
+        "id": "src/team/__tests__/workflow-native-review.test.ts",
+        "kind": "src",
+        "path": "src/team/__tests__/workflow-native-review.test.ts"
+      },
+      {
         "id": "src/team/__tests__/workflow-process.test.ts",
         "kind": "src",
         "path": "src/team/__tests__/workflow-process.test.ts"
@@ -41208,9 +41233,24 @@
         "path": "src/team/__tests__/workflow-review-budget-extension.test.ts"
       },
       {
+        "id": "src/team/__tests__/workflow-review-compatibility.test.ts",
+        "kind": "src",
+        "path": "src/team/__tests__/workflow-review-compatibility.test.ts"
+      },
+      {
+        "id": "src/team/__tests__/workflow-review-context.test.ts",
+        "kind": "src",
+        "path": "src/team/__tests__/workflow-review-context.test.ts"
+      },
+      {
         "id": "src/team/__tests__/workflow-review-paths.test.ts",
         "kind": "src",
         "path": "src/team/__tests__/workflow-review-paths.test.ts"
+      },
+      {
+        "id": "src/team/__tests__/workflow-review-source.test.ts",
+        "kind": "src",
+        "path": "src/team/__tests__/workflow-review-source.test.ts"
       },
       {
         "id": "src/team/__tests__/workflow-routing.test.ts",
@@ -41686,6 +41726,16 @@
         "id": "src/team/workflow-report.ts",
         "kind": "src",
         "path": "src/team/workflow-report.ts"
+      },
+      {
+        "id": "src/team/workflow-review-source-server.ts",
+        "kind": "src",
+        "path": "src/team/workflow-review-source-server.ts"
+      },
+      {
+        "id": "src/team/workflow-review-source.ts",
+        "kind": "src",
+        "path": "src/team/workflow-review-source.ts"
       },
       {
         "id": "src/team/workflow-task-recovery.ts",
@@ -54173,6 +54223,11 @@
         "from": "src/cli/commands/team-workflow.ts",
         "to": "src/team/workflow-contracts.ts",
         "kind": "imports"
+      },
+      {
+        "from": "src/cli/commands/team-workflow.ts",
+        "to": "src/team/workflow-contracts.ts",
+        "kind": "type-imports"
       },
       {
         "from": "src/cli/commands/team-workflow.ts",
@@ -76860,6 +76915,61 @@
         "kind": "imports"
       },
       {
+        "from": "src/team/__tests__/workflow-native-review.test.ts",
+        "to": "external:node:crypto",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-native-review.test.ts",
+        "to": "external:node:fs",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-native-review.test.ts",
+        "to": "external:node:os",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-native-review.test.ts",
+        "to": "external:node:path",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-native-review.test.ts",
+        "to": "external:vitest",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-native-review.test.ts",
+        "to": "src/team/__tests__/helpers/workflow-fixture.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-native-review.test.ts",
+        "to": "src/team/__tests__/helpers/workflow-v2-fixture.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-native-review.test.ts",
+        "to": "src/team/workflow-adapters.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-native-review.test.ts",
+        "to": "src/team/workflow-adapters.ts",
+        "kind": "type-imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-native-review.test.ts",
+        "to": "src/team/workflow-review-source-server.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-native-review.test.ts",
+        "to": "src/team/workflow-review-source.ts",
+        "kind": "imports"
+      },
+      {
         "from": "src/team/__tests__/workflow-process.test.ts",
         "to": "external:node:fs",
         "kind": "imports"
@@ -77065,6 +77175,151 @@
         "kind": "imports"
       },
       {
+        "from": "src/team/__tests__/workflow-review-compatibility.test.ts",
+        "to": "external:node:child_process",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-review-compatibility.test.ts",
+        "to": "external:node:crypto",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-review-compatibility.test.ts",
+        "to": "external:node:fs",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-review-compatibility.test.ts",
+        "to": "external:node:net",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-review-compatibility.test.ts",
+        "to": "external:node:os",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-review-compatibility.test.ts",
+        "to": "external:node:path",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-review-compatibility.test.ts",
+        "to": "external:vitest",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-review-compatibility.test.ts",
+        "to": "src/cli/commands/team-workflow.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-review-compatibility.test.ts",
+        "to": "src/team/__tests__/helpers/workflow-fixture.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-review-compatibility.test.ts",
+        "to": "src/team/__tests__/helpers/workflow-v2-fixture.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-review-compatibility.test.ts",
+        "to": "src/team/workflow-adapters.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-review-compatibility.test.ts",
+        "to": "src/team/workflow-adapters.ts",
+        "kind": "type-imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-review-compatibility.test.ts",
+        "to": "src/team/workflow-contracts.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-review-compatibility.test.ts",
+        "to": "src/team/workflow-contracts.ts",
+        "kind": "type-imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-review-compatibility.test.ts",
+        "to": "src/team/workflow-review-source-server.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-review-compatibility.test.ts",
+        "to": "src/team/workflow-review-source-server.ts",
+        "kind": "type-imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-review-compatibility.test.ts",
+        "to": "src/team/workflow-review-source.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-review-compatibility.test.ts",
+        "to": "src/team/workflow-review-source.ts",
+        "kind": "type-imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-review-compatibility.test.ts",
+        "to": "src/team/workflow.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-review-context.test.ts",
+        "to": "external:node:crypto",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-review-context.test.ts",
+        "to": "external:node:fs",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-review-context.test.ts",
+        "to": "external:node:path",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-review-context.test.ts",
+        "to": "external:vitest",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-review-context.test.ts",
+        "to": "src/team/__tests__/helpers/workflow-fixture.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-review-context.test.ts",
+        "to": "src/team/__tests__/helpers/workflow-v2-fixture.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-review-context.test.ts",
+        "to": "src/team/workflow-contracts.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-review-context.test.ts",
+        "to": "src/team/workflow-contracts.ts",
+        "kind": "type-imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-review-context.test.ts",
+        "to": "src/team/workflow-review-source.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-review-context.test.ts",
+        "to": "src/team/workflow.ts",
+        "kind": "imports"
+      },
+      {
         "from": "src/team/__tests__/workflow-review-paths.test.ts",
         "to": "external:ajv",
         "kind": "imports"
@@ -77098,6 +77353,106 @@
         "from": "src/team/__tests__/workflow-review-paths.test.ts",
         "to": "src/team/workflow.ts",
         "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-review-source.test.ts",
+        "to": "external:@modelcontextprotocol/sdk/client/index.js",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-review-source.test.ts",
+        "to": "external:@modelcontextprotocol/sdk/inMemory.js",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-review-source.test.ts",
+        "to": "external:@modelcontextprotocol/sdk/shared/stdio.js",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-review-source.test.ts",
+        "to": "external:@modelcontextprotocol/sdk/types.js",
+        "kind": "type-imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-review-source.test.ts",
+        "to": "external:esbuild",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-review-source.test.ts",
+        "to": "external:node:child_process",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-review-source.test.ts",
+        "to": "external:node:crypto",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-review-source.test.ts",
+        "to": "external:node:fs",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-review-source.test.ts",
+        "to": "external:node:net",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-review-source.test.ts",
+        "to": "external:node:net",
+        "kind": "type-imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-review-source.test.ts",
+        "to": "external:node:os",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-review-source.test.ts",
+        "to": "external:node:path",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-review-source.test.ts",
+        "to": "external:node:stream",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-review-source.test.ts",
+        "to": "external:node:url",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-review-source.test.ts",
+        "to": "external:vitest",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-review-source.test.ts",
+        "to": "src/team/__tests__/helpers/workflow-fixture.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-review-source.test.ts",
+        "to": "src/team/workflow-contracts.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-review-source.test.ts",
+        "to": "src/team/workflow-review-source-server.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-review-source.test.ts",
+        "to": "src/team/workflow-review-source.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-review-source.test.ts",
+        "to": "src/team/workflow-review-source.ts",
+        "kind": "type-imports"
       },
       {
         "from": "src/team/__tests__/workflow-routing.test.ts",
@@ -80605,8 +80960,18 @@
         "kind": "type-imports"
       },
       {
+        "from": "src/team/workflow-adapters.ts",
+        "to": "src/team/workflow-review-source-server.ts",
+        "kind": "type-imports"
+      },
+      {
         "from": "src/team/workflow-contracts.ts",
         "to": "external:node:crypto",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow-contracts.ts",
+        "to": "external:node:path",
         "kind": "imports"
       },
       {
@@ -80870,6 +81235,186 @@
         "kind": "type-imports"
       },
       {
+        "from": "src/team/workflow-review-source-server.ts",
+        "to": "external:@ast-grep/napi",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow-review-source-server.ts",
+        "to": "external:@modelcontextprotocol/sdk/server/index.js",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow-review-source-server.ts",
+        "to": "external:@modelcontextprotocol/sdk/server/stdio.js",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow-review-source-server.ts",
+        "to": "external:@modelcontextprotocol/sdk/shared/stdio.js",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow-review-source-server.ts",
+        "to": "external:@modelcontextprotocol/sdk/types.js",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow-review-source-server.ts",
+        "to": "external:@modelcontextprotocol/sdk/types.js",
+        "kind": "type-imports"
+      },
+      {
+        "from": "src/team/workflow-review-source-server.ts",
+        "to": "external:esbuild",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow-review-source-server.ts",
+        "to": "external:node:buffer",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow-review-source-server.ts",
+        "to": "external:node:child_process",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow-review-source-server.ts",
+        "to": "external:node:child_process",
+        "kind": "type-imports"
+      },
+      {
+        "from": "src/team/workflow-review-source-server.ts",
+        "to": "external:node:crypto",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow-review-source-server.ts",
+        "to": "external:node:fs",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow-review-source-server.ts",
+        "to": "external:node:module",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow-review-source-server.ts",
+        "to": "external:node:net",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow-review-source-server.ts",
+        "to": "external:node:net",
+        "kind": "type-imports"
+      },
+      {
+        "from": "src/team/workflow-review-source-server.ts",
+        "to": "external:node:os",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow-review-source-server.ts",
+        "to": "external:node:path",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow-review-source-server.ts",
+        "to": "external:node:url",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow-review-source-server.ts",
+        "to": "external:node:util",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow-review-source-server.ts",
+        "to": "src/team/workflow-adapters.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow-review-source-server.ts",
+        "to": "src/team/workflow-adapters.ts",
+        "kind": "type-imports"
+      },
+      {
+        "from": "src/team/workflow-review-source-server.ts",
+        "to": "src/team/workflow-contracts.ts",
+        "kind": "type-imports"
+      },
+      {
+        "from": "src/team/workflow-review-source-server.ts",
+        "to": "src/team/workflow-process-supervisor.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow-review-source-server.ts",
+        "to": "src/team/workflow-process.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow-review-source-server.ts",
+        "to": "src/team/workflow-process.ts",
+        "kind": "type-imports"
+      },
+      {
+        "from": "src/team/workflow-review-source-server.ts",
+        "to": "src/team/workflow-review-source.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow-review-source-server.ts",
+        "to": "src/team/workflow-review-source.ts",
+        "kind": "type-imports"
+      },
+      {
+        "from": "src/team/workflow-review-source.ts",
+        "to": "external:node:child_process",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow-review-source.ts",
+        "to": "external:node:crypto",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow-review-source.ts",
+        "to": "external:node:fs",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow-review-source.ts",
+        "to": "external:node:fs",
+        "kind": "type-imports"
+      },
+      {
+        "from": "src/team/workflow-review-source.ts",
+        "to": "external:node:os",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow-review-source.ts",
+        "to": "external:node:path",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow-review-source.ts",
+        "to": "src/shared/artifact-descriptor.ts",
+        "kind": "type-imports"
+      },
+      {
+        "from": "src/team/workflow-review-source.ts",
+        "to": "src/team/workflow-contracts.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow-review-source.ts",
+        "to": "src/team/workflow-contracts.ts",
+        "kind": "type-imports"
+      },
+      {
         "from": "src/team/workflow-task-recovery.ts",
         "to": "external:node:util",
         "kind": "imports"
@@ -80911,7 +81456,22 @@
       },
       {
         "from": "src/team/workflow.ts",
+        "to": "external:node:os",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow.ts",
         "to": "external:node:path",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow.ts",
+        "to": "external:node:url",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow.ts",
+        "to": "external:node:util",
         "kind": "imports"
       },
       {
@@ -81053,6 +81613,26 @@
         "from": "src/team/workflow.ts",
         "to": "src/team/workflow-ref-audit.ts",
         "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow.ts",
+        "to": "src/team/workflow-review-source-server.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow.ts",
+        "to": "src/team/workflow-review-source-server.ts",
+        "kind": "type-imports"
+      },
+      {
+        "from": "src/team/workflow.ts",
+        "to": "src/team/workflow-review-source.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow.ts",
+        "to": "src/team/workflow-review-source.ts",
+        "kind": "type-imports"
       },
       {
         "from": "src/team/workflow.ts",
@@ -84326,12 +84906,12 @@
       }
     ],
     "stats": {
-      "nodeCount": 7199,
-      "edgeCount": 8360,
-      "importEdgeCount": 6899,
+      "nodeCount": 7209,
+      "edgeCount": 8466,
+      "importEdgeCount": 6982,
       "registerEdgeCount": 64
     }
   },
-  "inventorySha256": "c3b65e4498f932f93b5afe0cd32ef0f561c7d4247f42c93fa8ea1c67d9b72fce",
-  "manifestSha256": "d3ed4988b9a7374a17ab0ef613cf4a119af56fd79b07c519b67b93a46e6457c0"
+  "inventorySha256": "f055ad7bfa13fc654746a723c62f94ada9dba0b2753981dec1e6e663dd14b99d",
+  "manifestSha256": "675962489e633342f77dfa4f9e27b203528bbee2e0c447c414c08a81fe0b08ee"
 }

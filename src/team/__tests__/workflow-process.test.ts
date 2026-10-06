@@ -458,6 +458,74 @@ describe('bounded one-shot workflow process', () => {
   );
 });
 
+describe('controller-owned duplex workflow process', () => {
+  let cwd: string;
+  beforeEach(() => { cwd = mkdtempSync(join(tmpdir(), 'omc-workflow-duplex-')); });
+  afterEach(() => rmSync(cwd, { recursive: true, force: true }));
+  const echo = "process.stdin.on('data',b=>process.stdout.write(b)); process.stdin.on('end',()=>process.exit(0));";
+
+  it('delivers later protocol frames and returns the actual child close outcome', async () => {
+    let input: Parameters<NonNullable<Parameters<typeof runWorkflowProcess>[0]['onInput']>>[0];
+    let replies = '';
+    const result = await runWorkflowProcess({ command: process.execPath, args: ['-e', echo], cwd,
+      artifactPrefix: join(cwd, 'exchange'), timeoutMs: 5000,
+      onInput(transport) { input = transport; input.write(Buffer.from('first\n')); },
+      onStdout(chunk) {
+        replies += chunk.toString();
+        if (replies === 'first\n') input.write(Buffer.from('second λ\n'));
+        else if (replies === 'first\nsecond λ\n') input.end();
+      } });
+    expect(result.passed).toBe(true);
+    expect(result.parentExitedSuccessfully).toBe(true);
+    expect(replies).toBe('first\nsecond λ\n');
+    expect(() => input!.write(Buffer.from('late\n'))).toThrow('workflow_process_input_closed');
+  });
+
+  it('refuses mixed one-shot and duplex input before launch or artifacts', async () => {
+    const launched = vi.fn();
+    await expect(runWorkflowProcess({ command: process.execPath, args: ['-e', echo], cwd,
+      artifactPrefix: join(cwd, 'mixed'), timeoutMs: 5000, stdin: '', onInput: launched }))
+      .rejects.toThrow('workflow_invalid_process_input');
+    expect(launched).not.toHaveBeenCalled();
+    expect(existsSync(join(cwd, 'mixed.stdout.log'))).toBe(false);
+  });
+
+  it('observes the full duplex stream after bounded diagnostic stdout truncates', async () => {
+    const frame = 'x'.repeat(4095) + '\n'; const expectedBytes = Buffer.byteLength(frame) * 400;
+    let observedBytes = 0;
+    let transport: Parameters<NonNullable<Parameters<typeof runWorkflowProcess>[0]['onInput']>>[0];
+    const result = await runWorkflowProcess({ command: process.execPath,
+      args: ['-e', "const frame=Buffer.from(process.argv[1]); process.stdin.once('data',()=>{for(let i=0;i<400;i++)process.stdout.write(frame)});", '--', frame],
+      cwd, artifactPrefix: join(cwd, 'full-stream'), timeoutMs: 5000,
+      onInput(writer) { transport = writer; transport.write(Buffer.from('start\n')); },
+      onStdout(chunk) { observedBytes += chunk.length; if (observedBytes === expectedBytes) transport.end(); } });
+    expect(observedBytes).toBe(expectedBytes);
+    expect(result.passed).toBe(true);
+    expect(result.stdoutTruncated).toBe(true);
+    expect(readFileSync(result.artifacts[0]!.path).length).toBeLessThanOrEqual(1024 * 1024);
+  });
+
+  it.each(['callback', 'async', 'oversized', 'closed'] as const)('owns cleanup after a duplex %s failure', async fault => {
+    const result = await runWorkflowProcess({ command: process.execPath, args: ['-e', echo], cwd,
+      artifactPrefix: join(cwd, fault), timeoutMs: 5000,
+      onInput(transport) {
+        if (fault === 'callback') throw new Error('controller_failed');
+        if (fault === 'async') return Promise.reject(new Error('controller_failed'));
+        if (fault === 'oversized') transport.write(Buffer.alloc(65537));
+        else { transport.end(); transport.write(Buffer.from('late')); }
+      } });
+    expect(result.passed).toBe(false);
+    expect(result.error).toBe('protocol_failed');
+  });
+
+  it('retains the existing timeout cleanup for an unfinished duplex protocol', async () => {
+    const result = await runWorkflowProcess({ command: process.execPath, args: ['-e', echo], cwd,
+      artifactPrefix: join(cwd, 'unfinished'), timeoutMs: 100, onInput() {} });
+    expect(result.passed).toBe(false);
+    expect(result.error).toBe('timeout');
+  });
+});
+
 describe('explicit no-wall process execution', () => {
   let cwd: string;
   beforeEach(() => { cwd = mkdtempSync(join(tmpdir(), 'omc-workflow-no-wall-')); });

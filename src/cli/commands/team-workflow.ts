@@ -3,14 +3,17 @@ import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { publishWorkflowResultArtifact } from '../../team/workflow-publication.js';
 import {
   acceptWorkflowTask, addWorkflowFix, adjudicateWorkflow, cleanupWorkflow, finishWorkflow,
-  extendWorkflowReviewBudget, initWorkflow, initWorkflowV2, inspectWorkflowTask, integrateWorkflowLeadCommit, readWorkflow, recoverWorkflowTask, rejectWorkflowTask, resumeWorkflowTask, reviewWorkflow, runWorkflow,
+  adoptWorkflowReviewCompatibility, extendWorkflowReviewBudget, initWorkflow, initWorkflowV2, inspectWorkflowTask, integrateWorkflowLeadCommit, readWorkflow, recoverWorkflowTask, rejectWorkflowTask, resumeWorkflowTask, reviewWorkflow, runWorkflow,
   probeWorkflowBinding, refreshWorkflowBinding, substituteWorkflowBinding, supplementWorkflowTask, verifyWorkflow, workflowRouting, workflowStatus,
 } from '../../team/workflow.js';
+import type { WorkflowReviewCompatibilitySelection } from '../../team/workflow.js';
 import type { WorkflowOptions } from '../../team/workflow.js';
 import { validateCliCommandRef } from '../../team/model-contract.js';
 import { workflowUsage } from '../../team/workflow-report.js';
-import { boundedText, parseWorkflowProviderPolicy, safeWorkflowId, workflowSha } from '../../team/workflow-contracts.js';
-import type { WorkflowAuthProfile, WorkflowRuntime } from '../../team/workflow-adapters.js';
+import { boundedText, parseWorkflowProviderPolicy, parseWorkflowReviewSourceManifestDescriptor, safeWorkflowId,
+  workflowSha } from '../../team/workflow-contracts.js';
+import type { WorkflowReviewSourceManifestDescriptor } from '../../team/workflow-contracts.js';
+import type { WorkflowAuthProfile, WorkflowReaderObservationIdentity, WorkflowRuntime } from '../../team/workflow-adapters.js';
 
 export const WORKFLOW_HELP = `Usage: omc team workflow <operation>
 
@@ -32,9 +35,10 @@ export const WORKFLOW_HELP = `Usage: omc team workflow <operation>
   accept <name> <task-id>
   integrate-lead <name> --file <integration.json>
   extend-review-budget <name> --file <intent.json>
+  adopt-review-compatibility <name> --file <intent.json>
   reject <name> <task-id> --reason <reason>
   verify <name>
-  review <name> [--runtime <absolute-private-config.json>]
+  review <name> [--runtime <absolute-private-config.json>] [--compatibility <selection.json>]
   adjudicate <name> --file <decisions.json>
   add-fix <name> --file <fix.json>
   finish <name>
@@ -53,6 +57,14 @@ Legacy reviewer command selection uses --codex-command, then OMC_CODEX_COMMAND,
 then codex on PATH. The command must be an executable name or absolute path.
 Local worker checks and integrated verification always keep the finite saved timeout.
 Substitution records intent without dispatch or budget reset. Self-review is allowed.
+Administrative review compatibility is adopted per review, consumes no review and changes no
+saved plan, option, binding, pin or counter; a compatibility review additionally delivers the
+authorized complete source through the controller-owned read-only reader.
+Private readerQualification and readerObservation records remain consistency guards. Saved JSON
+cannot create delivery authority. Compatibility review requires a runtime-only trusted factory.
+Synthetic runtimes use a controller-built capsule. Native Codex uses the explicit controller bootstrap
+API, a pinned authenticated CLI and actual model-facing delivery proof. The CLI cannot load or mint
+either capability from saved JSON. See docs/WORKFLOW-REVIEW-COMPATIBILITY.md.
 See docs/MIMO-WORKFLOW.md, docs/GLM-WORKFLOW.md, docs/GLM-WORKFLOW-V1.2.md and docs/GLM-WORKFLOW-V1.3.md for
 schemas and setup.`;
 
@@ -66,6 +78,20 @@ function readInputFile(path: string | undefined): unknown {
   }
 }
 
+/**
+ * One explicit per-review compatibility selection. It restates the immutable disk manifest
+ * descriptor the adoption recorded; the controller remains authoritative for its exact comparison,
+ * for reading the manifest and for every adoption/identity check.
+ */
+function readCompatibilitySelection(path: string): WorkflowReviewCompatibilitySelection {
+  const input = inputObject(readInputFile(path), ['requestId', 'descriptor'], 'workflow_invalid_compatibility_selection');
+  // The selection carries a bounded descriptor, never the authorized file set itself: the manifest
+  // whose path, byte count, record count and digest it names is the only thing that can be frozen.
+  let descriptor: WorkflowReviewSourceManifestDescriptor;
+  try { descriptor = parseWorkflowReviewSourceManifestDescriptor(input.descriptor); }
+  catch { throw new Error('workflow_invalid_compatibility_selection'); }
+  return { requestId: safeWorkflowId(input.requestId), descriptor };
+}
 function parseArgs(args: string[]): { positional: string[]; flags: Map<string, string> } {
   const positional: string[] = [];
   const flags = new Map<string, string>();
@@ -113,7 +139,8 @@ function readRuntime(path: string, cwd: string): WorkflowRuntime {
     if (statSync(path).size > 256 * 1024) throw new Error('workflow_invalid_runtime_config');
     const bytes = readFileSync(path);
     if (bytes.length > 256 * 1024) throw new Error('workflow_invalid_runtime_config');
-    const raw = inputObject(JSON.parse(bytes.toString('utf8')), ['schemaVersion', 'profiles', 'capabilityEvidence', 'reviewAuthorship']);
+    const raw = inputObject(JSON.parse(bytes.toString('utf8')),
+      ['schemaVersion', 'profiles', 'capabilityEvidence', 'reviewAuthorship', 'readerQualification', 'readerObservation']);
     if (raw.schemaVersion !== 1) throw new Error('workflow_invalid_runtime_config');
     const profiles = new Map<string, WorkflowAuthProfile>();
     for (const [ref, value] of Object.entries(inputObject(raw.profiles))) {
@@ -142,7 +169,40 @@ function readRuntime(path: string, cwd: string): WorkflowRuntime {
       if (!/^[a-f0-9]{64}$/.test(sha256)) throw new Error('workflow_invalid_runtime_config');
       reviewAuthorship = { path: runtimePath(receipt.path), sha256 };
     }
-    return { ...(reviewAuthorship ? { reviewAuthorship } : {}), resolveBinding(binding) {
+    // The host's private reader qualification, and the model catalog it is projected with, travel the
+    // same non-serialized channel: a qualification record bound by its own digest, plus the host's
+    // own catalog path for a route whose invocation cannot be given a global catalog.
+    let readerQualification: WorkflowRuntime['readerQualification'];
+    if (raw.readerQualification !== undefined) {
+      const record = inputObject(raw.readerQualification, ['path', 'sha256', 'catalogPath']);
+      const sha256 = runtimeText(record.sha256);
+      if (!/^[a-f0-9]{64}$/.test(sha256)) throw new Error('workflow_invalid_runtime_config');
+      readerQualification = { path: runtimePath(record.path), sha256,
+        ...(record.catalogPath === undefined ? {} : { catalogPath: runtimePath(record.catalogPath) }) };
+    }
+    // Historical labels remain parseable, but cannot create the runtime-only trusted factory or its
+    // private completion capability. Native observation is always refused before projection; JSON
+    // configuration alone cannot authorize a synthetic compatibility review either.
+    let readerObservation: WorkflowRuntime['readerObservation'];
+    if (raw.readerObservation !== undefined) {
+      const record = inputObject(raw.readerObservation, ['mode', 'tools', 'identity']);
+      const mode = record.mode;
+      if (mode !== 'native' && mode !== 'synthetic') throw new Error('workflow_invalid_runtime_config');
+      if (!Array.isArray(record.tools) || record.tools.length > 32) throw new Error('workflow_invalid_runtime_config');
+      const tools = record.tools.map(tool => runtimeText(tool));
+      if (record.identity !== undefined && mode !== 'native') throw new Error('workflow_invalid_runtime_config');
+      let identity: WorkflowReaderObservationIdentity | undefined;
+      if (record.identity !== undefined) {
+        const parsed = inputObject(record.identity, ['id', 'sha256', 'observedPath']);
+        const sha256 = runtimeText(parsed.sha256);
+        if (!/^[a-f0-9]{64}$/.test(sha256)) throw new Error('workflow_invalid_runtime_config');
+        identity = { id: runtimeText(parsed.id), sha256, observedPath: runtimePath(parsed.observedPath) };
+      }
+      readerObservation = { mode, tools, ...(identity ? { identity } : {}) };
+    }
+    return { ...(reviewAuthorship ? { reviewAuthorship } : {}),
+      ...(readerQualification ? { readerQualification } : {}),
+      ...(readerObservation ? { readerObservation } : {}), resolveBinding(binding) {
       const authProfile = profiles.get(binding.authProfileRef); const capabilityEvidencePath = evidence.get(binding.id);
       if (!authProfile || !capabilityEvidencePath) throw new Error('workflow_auth_profile_unavailable');
       try {
@@ -166,9 +226,10 @@ export async function workflowCommand(args: string[], cwd = process.cwd()): Prom
   const { positional, flags } = parseArgs(rest);
   const allowed: Record<string, string[]> = {
     init: ['--file', '--mode', '--workers', '--max-review-passes', '--max-attempts', '--timeout-ms', '--provider-policy', '--profile', '--bindings', '--codex-command'],
-    run: ['--runtime'], status: [], 'inspect-task': [], routing: [], usage: [], resume: ['--expected-head', '--reason', '--runtime'], accept: [], reject: ['--reason'], verify: [], review: ['--runtime'],
+    run: ['--runtime'], status: [], 'inspect-task': [], routing: [], usage: [], resume: ['--expected-head', '--reason', '--runtime'], accept: [], reject: ['--reason'], verify: [], review: ['--runtime', '--compatibility'],
     substitute: ['--file'], 'probe-binding': ['--file', '--runtime'], 'refresh-binding': ['--file', '--runtime'],
     supplement: ['--file'], 'integrate-lead': ['--file'], 'extend-review-budget': ['--file'], 'recover-task': ['--file'],
+    'adopt-review-compatibility': ['--file'],
     adjudicate: ['--file'], 'add-fix': ['--file'], finish: [], cleanup: [],
     'publish-result': ['--source', '--result-file', '--task-id'],
   };
@@ -294,6 +355,7 @@ export async function workflowCommand(args: string[], cwd = process.cwd()): Prom
   else if (operation === 'supplement') await supplementWorkflowTask(cwd, name, readInputFile(flags.get('--file')));
   else if (operation === 'integrate-lead') await integrateWorkflowLeadCommit(cwd, name, readInputFile(flags.get('--file')));
   else if (operation === 'extend-review-budget') await extendWorkflowReviewBudget(cwd, name, readInputFile(flags.get('--file')));
+  else if (operation === 'adopt-review-compatibility') await adoptWorkflowReviewCompatibility(cwd, name, readInputFile(flags.get('--file')));
   else if (operation === 'recover-task') await recoverWorkflowTask(cwd, name, positional[1], readInputFile(flags.get('--file')));
   else if (operation === 'accept') await acceptWorkflowTask(cwd, name, positional[1]);
   else if (operation === 'reject') {
@@ -303,7 +365,9 @@ export async function workflowCommand(args: string[], cwd = process.cwd()): Prom
   } else if (operation === 'verify') await verifyWorkflow(cwd, name);
   else if (operation === 'review') {
     const selected = runtime();
-    if (selected) await reviewWorkflow(cwd, name, selected); else await reviewWorkflow(cwd, name);
+    const selectionFile = flags.get('--compatibility');
+    const options = selectionFile === undefined ? undefined : { compatibility: readCompatibilitySelection(selectionFile) };
+    if (selected) await reviewWorkflow(cwd, name, selected, options); else await reviewWorkflow(cwd, name, undefined, options);
   }
   else if (operation === 'adjudicate') {
     const input = readInputFile(flags.get('--file'));
