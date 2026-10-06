@@ -7,6 +7,7 @@ import type { Dirent } from 'fs';
 import type { TeamTaskStatus } from '../contracts.js';
 import type {
   TeamTask,
+  TeamTaskClaim,
   TeamTaskDelegationComplianceEvidence,
   TeamTaskV2,
   TaskReadiness,
@@ -23,6 +24,17 @@ import type {
 
 interface TaskReadDeps {
   readTask: (teamName: string, taskId: string, cwd: string) => Promise<TeamTask | null>;
+}
+
+/** The canonical persisted claim shape, shared by task readers and recovery guards. */
+export function isValidTaskClaim(value: unknown): value is TeamTaskClaim {
+  if (!value || typeof value !== 'object' || Array.isArray(value)
+    || Object.getPrototypeOf(value) !== Object.prototype) return false;
+  const claim = value as Record<string, unknown>;
+  return typeof claim.owner === 'string' && claim.owner.trim() !== ''
+    && typeof claim.token === 'string' && claim.token.trim() !== ''
+    && typeof claim.leased_until === 'string' && Number.isFinite(Date.parse(claim.leased_until))
+    && (claim.launch_attempt_id === undefined || typeof claim.launch_attempt_id === 'string');
 }
 
 const logEventAppendFailure = createSwallowedErrorLogger(
