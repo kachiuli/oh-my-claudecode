@@ -151,6 +151,52 @@ describe.skipIf(!nativeApis)('owned native transport', () => {
     secure.write(`GET /backend-api/codex/responses HTTP/1.1\r\nHost: chatgpt.com\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: ${randomBytes(16).toString('base64')}\r\n\r\n`); while (!readFileSync(join(root, 'native-body-journal.jsonl'), 'utf8').includes('websocket-negotiated')) await delay(); secure.write(wsFrame(Buffer.from('{"type":"response.create","input":[]}'), true)); while (!callbacks) await delay(); const done = await invocation.settle();
     expect(done.stats.failures).toBeGreaterThan(0); expect(callbacks).toBe(1); expect(journal(root, done.journal.name).some(row => row.type === 'response-receipt')).toBe(false); expect(readFileSync(join(root, done.journal.name), 'utf8')).not.toContain('PRIVATE_HEADER_SENTINEL'); expect(Buffer.concat(received).includes(payload)).toBe(false);
   });
+  it('retires one clean server Close with zero credit and accepts a full request on a new authenticated channel', async () => {
+    const server = await upstream(); let channel = 0; let requests = 0;
+    server.on('upgrade', (req, stream) => {
+      const socket = stream as Socket, current = ++channel;
+      const accept = createHash('sha1').update(req.headers['sec-websocket-key'] + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest('base64');
+      socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`); socket.resume();
+      socket.on('data', () => {
+        const id = ++requests;
+        if (current === 1 && id === 2) {
+          socket.write(wsFrame(Buffer.from(JSON.stringify({ type: 'response.created', response: { id: 'resp_abandoned' } })), false));
+          socket.write(wsFrame(Buffer.from(JSON.stringify({ type: 'response.function_call_arguments.delta', item_id: 'fc_partial', output_index: 0, delta: '{' })), false));
+          socket.end(Buffer.from([0x88, 2, 3, 232]));
+        } else socket.write(wsFrame(Buffer.from(JSON.stringify({ type: 'response.completed', response: { id: `resp_complete-${id}`, status: 'completed', output: [] } })), false));
+      }); socket.on('end', () => socket.end());
+    }); route(server);
+    const value = await factory(), root = directory(); let failures = 0;
+    const invocation = value.beginInvocation({ directory: root, invocationId: 'reconnect', onFirstFailure() { failures++; } });
+    const open = async () => {
+      const expected = channel + 1;
+      const connection = await tunnel(value), secure = connection.secure!; secure.on('error', () => {}); secure.resume();
+      secure.write(`GET /backend-api/codex/responses HTTP/1.1\r\nHost: chatgpt.com\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: ${randomBytes(16).toString('base64')}\r\n\r\n`);
+      while (readFileSync(join(root, 'native-body-journal.jsonl'), 'utf8').split('"type":"websocket-negotiated"').length - 1 !== expected) await delay();
+      return connection;
+    };
+    const first = await open(), full = Buffer.from('{"type":"response.create","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"complete current history"}]}]}');
+    first.secure!.write(wsFrame(full, true));
+    while (!journal(root, 'native-body-journal.jsonl').some(row => row.eventType === 'response.completed')) await delay();
+    first.secure!.write(wsFrame(Buffer.from('{"type":"response.create","previous_response_id":"resp_complete-1","input":[]}'), true));
+    while (!journal(root, 'native-body-journal.jsonl').some(row => row.type === 'response-abandoned')) await delay();
+    invocation.assertHealthy(); expect(failures).toBe(0);
+    const second = await open(); second.secure!.write(wsFrame(full, true));
+    while (journal(root, 'native-body-journal.jsonl').filter(row => row.eventType === 'response.completed').length !== 2) await delay();
+    invocation.beginClientShutdown(); const done = await invocation.settle();
+    expect(done.stats).toMatchObject({ accepted: 2, requests: 3, abandoned: 1, failures: 0 });
+    const rows = journal(root, done.journal.name), abandoned = rows.filter(row => row.type === 'response-abandoned');
+    expect(abandoned).toHaveLength(1); expect(abandoned[0]).toMatchObject({ id: 2, channelId: 1, transaction: 1, responseEvents: 2, outputItems: 0, modelSourceCredit: false });
+    expect(rows.filter(row => row.classification === 'ABANDONED_WS_SERVER_CLOSE')).toHaveLength(1);
+    const outcomes: string[] = [];
+    for await (const transaction of iterateWorkflowNativeObservedTransactions({ directory: root, invocationId: 'reconnect', settlement: done })) {
+      outcomes.push(transaction.outcome);
+      if (transaction.outcome === 'abandoned') expect(transaction).not.toHaveProperty('response');
+      if (transaction.id === 3) { expect(transaction.channelId).toBe(2); expect(transaction.decoded.sha256).toBe(createHash('sha256').update(full).digest('hex')); }
+    }
+    expect(outcomes).toEqual(['completed', 'abandoned', 'completed']); await value.close();
+    await new Promise<void>(resolve => setImmediate(resolve)); expect(socketOwners.size).toBe(0);
+  });
   it('rejects unsupported WS extensions before opening model files', async () => {
     const value = await factory(), root = directory(); let callbacks = 0; const invocation = value.beginInvocation({ directory: root, invocationId: 'extension', onFirstFailure() { callbacks++; } }), connection = await tunnel(value); connection.secure!.on('error', () => {}); connection.secure!.resume();
     connection.secure!.write('GET /backend-api/codex/responses HTTP/1.1\r\nHost: chatgpt.com\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Extensions: unsupported-extension\r\n\r\n'); while (!callbacks) await delay(); const done = await invocation.settle(); expect(done.stats.requests).toBe(0); expect(done.stats.failures).toBeGreaterThan(0); expect(journal(root, done.journal.name).some(row => row.type === 'body')).toBe(false);

@@ -16,6 +16,7 @@ export interface WorkflowNativeBodyObserverStats {
   readonly accepted: number;
   readonly requests: number;
   readonly responseEvents: number;
+  readonly abandoned?: number;
   readonly failures: number;
   readonly peakWorkingChunk: number;
   readonly bodySizeCeiling: null;
@@ -33,6 +34,7 @@ type RouteCategory = 'ACCOUNTS_CHECK' | 'USER_SETTINGS' | 'CONFIG_BUNDLE' | 'WOR
 export type WorkflowNativeBodyObserverRecord =
   | (RecordIdentity & ModelTransportIdentity & { readonly type: 'body'; readonly id: number; readonly direction: 'request'; readonly encoding: string; readonly wire: WorkflowReviewOwnedReference; readonly decoded: WorkflowReviewOwnedReference; readonly complete: true })
   | (RecordIdentity & ModelTransportIdentity & WorkflowNativeModelEventReceipt & { readonly type: 'response-receipt'; readonly kind: 'model-event' })
+  | (RecordIdentity & ModelTransportIdentity & { readonly type: 'response-abandoned'; readonly id: number; readonly wire: WorkflowReviewOwnedReference; readonly decoded: WorkflowReviewOwnedReference; readonly responseEvents: number; readonly classification: 'UPSTREAM_SERVER_CLOSE_BEFORE_RESPONSE_COMPLETED'; readonly parserIdle: true; readonly upstreamClose: true; readonly outputItems: 0; readonly modelSourceCredit: false })
   | (RecordIdentity & { readonly type: 'native-control-discarded'; readonly channelId: number; readonly transaction: number; readonly transport: 'wss' | 'https-http1'; readonly category: 'metadata-discarded' | 'native-ignored-event-discarded'; readonly knownControlType?: string; readonly modelSourceCredit: false })
   | (RecordIdentity & { readonly type: 'channel-close'; readonly channelId: number; readonly peer: string; readonly classification: string; readonly modelSourceCredit: false })
   | (RecordIdentity & { readonly type: 'failure'; readonly code: string; readonly channelId?: number; readonly transaction?: number; readonly state?: FailureState })
@@ -67,7 +69,8 @@ type Fields = Record<string, unknown>;
 type FirstFailure = (failure: { readonly code: string }) => void | Promise<void>;
 interface Channel {
   id: number; pending: number; tail: Promise<unknown>; acceptedRequests: number; activeHttp: number;
-  requests: number; completions: number; httpExchanges: number; localRefusals: number;
+  requests: number; completions: number; abandoned: number; httpExchanges: number; localRefusals: number;
+  unfinished?: { id: number; transaction: number; path: string; wire: WorkflowReviewOwnedReference; decoded: WorkflowReviewOwnedReference; responseEvents: number; outputItems: number };
   partialHeader: boolean; upgrading: boolean; websocket: boolean; incomplete: boolean;
   requestClose: boolean; responseClose: boolean; parsers: WsParser[];
   wsSocketAssigned: boolean; wsTcpConnected: boolean; wsTlsReady: boolean; wsRequestFinished: boolean; wsResponseStatus: number | null;
@@ -130,9 +133,9 @@ function createInvocation(options: { directory: string; invocationId: string; on
   if (!/^[A-Za-z0-9_.:-]{1,256}$/.test(options.invocationId)) throw fault('NATIVE_OBSERVER_INVOCATION_ID');
   mkdirSync(options.directory, { recursive: true }); const journal = new WorkflowReviewOwnedFile(options.directory, 'native-body-journal.jsonl', true);
   const pending = new Set<Promise<unknown>>(), sockets = new Set<Socket>(), requestsInFlight = new Set<ClientRequest>(), responsesInFlight = new Set<IncomingMessage>(), closes = new Set<Promise<void>>(), channels = new Set<Channel>();
-  let seq = 0, channelId = 0, transaction = 0, bodyId = 0, accepted = 0, requests = 0, responseEvents = 0, failures = 0, peakWorkingChunk = 0;
+  let seq = 0, channelId = 0, transaction = 0, bodyId = 0, accepted = 0, requests = 0, responseEvents = 0, abandoned = 0, failures = 0, peakWorkingChunk = 0;
   let closing = false, settled: WorkflowNativeBodyObserverSettlement | null = null, settling: Promise<WorkflowNativeBodyObserverSettlement> | null = null, journalFailure: unknown = null, failureNotified = false;
-  const stats = (): WorkflowNativeBodyObserverStats => Object.freeze({ accepted, requests, responseEvents, failures, peakWorkingChunk, bodySizeCeiling: null, corpusSizeCeiling: null });
+  const stats = (): WorkflowNativeBodyObserverStats => Object.freeze({ accepted, requests, responseEvents, ...(abandoned ? { abandoned } : {}), failures, peakWorkingChunk, bodySizeCeiling: null, corpusSizeCeiling: null });
   function event(type: string, fields: Fields = {}): void {
     if (settled) throw fault('NATIVE_OBSERVER_EVENT_AFTER_SETTLEMENT');
     if (journalFailure) return;
@@ -146,11 +149,25 @@ function createInvocation(options: { directory: string; invocationId: string; on
   function fail(error: unknown, fields: Fields = {}): void { failures++; const code = errorCode(error); event('failure', { code, ...fields }); notifyFailure(code); }
   function ownClose<T extends Socket | ClientRequest | IncomingMessage>(value: T, owners: Set<T>): void { if (owners.has(value) || ('closed' in value && value.closed === true)) return; owners.add(value); const ended = new Promise<void>(resolve => value.once('close', () => { owners.delete(value); resolve(); })); closes.add(ended); ended.finally(() => closes.delete(ended)).catch(() => {}); }
   function ownRequest(request: ClientRequest): ClientRequest { ownClose(request, requestsInFlight); request.once('socket', socket => ownClose(socket, sockets)); return request; }
-  function idle(channel: Channel): boolean { return channel.pending === 0 && channel.activeHttp === 0 && !channel.partialHeader && !channel.upgrading && !channel.incomplete && channel.requests === channel.completions && channel.parsers.every(parser => parser.isIdle()); }
+  function idle(channel: Channel): boolean { return channel.pending === 0 && channel.activeHttp === 0 && !channel.partialHeader && !channel.upgrading && !channel.incomplete && channel.requests === channel.completions + channel.abandoned && channel.parsers.every(parser => parser.isIdle()); }
   function failureState(channel: Channel): FailureState { return { upgrading: channel.upgrading, partialHeader: channel.partialHeader, activeHttp: channel.activeHttp, pending: channel.pending, acceptedRequests: channel.acceptedRequests, requests: channel.requests, completions: channel.completions, parserIdle: channel.parsers.every(parser => parser.isIdle()), clientShutdownDeclared: closing, wsSocketAssigned: channel.wsSocketAssigned, wsTcpConnected: channel.wsTcpConnected, wsTlsReady: channel.wsTlsReady, wsRequestFinished: channel.wsRequestFinished, wsResponseStatus: channel.wsResponseStatus }; }
   async function joinedChannel(channel: Channel): Promise<void> { for (;;) { const tail = channel.tail; await tail; if (tail === channel.tail) return; } }
+  function abandon(channel: Channel): boolean {
+    const request = channel.unfinished;
+    if (failures || closing || channel.abandoned || !request || request.path !== '/backend-api/codex/responses'
+      || !channel.websocket || !channel.responseClose || !channel.wsTlsReady || channel.wsResponseStatus !== 101
+      || channel.pending || channel.activeHttp || channel.partialHeader || channel.upgrading || channel.incomplete
+      || channel.requests !== channel.completions + 1 || request.outputItems !== 0 || !channel.parsers.every(parser => parser.isIdle())) return false;
+    event('response-abandoned', { channelId: channel.id, transaction: request.transaction, transport: 'wss', path: request.path,
+      id: request.id, wire: request.wire, decoded: request.decoded, responseEvents: request.responseEvents,
+      classification: 'UPSTREAM_SERVER_CLOSE_BEFORE_RESPONSE_COMPLETED', parserIdle: true, upstreamClose: true, outputItems: 0, modelSourceCredit: false });
+    channel.abandoned++; abandoned++; channel.unfinished = undefined;
+    event('channel-close', { channelId: channel.id, peer: 'upstream-ws', classification: 'ABANDONED_WS_SERVER_CLOSE', modelSourceCredit: false });
+    return true;
+  }
   async function channelError(error: unknown, channel: Channel, peer: string): Promise<void> {
     await joinedChannel(channel); const code = errorCode(error); let classification: string | null = null;
+    if (code === 'EOF' && (abandon(channel) || channel.abandoned && idle(channel))) return;
     if (code === 'EOF' && idle(channel) && channel.httpExchanges && !channel.websocket) classification = channel.localRefusals ? 'LOCAL_POLICY_REFUSAL_COMPLETE' : 'NORMAL_COMPLETE_HTTP_EOF';
     else if (code === 'EOF' && idle(channel) && channel.websocket && channel.requestClose && channel.responseClose) classification = 'NORMAL_COMPLETE_WS_CLOSE_HANDSHAKE';
     else if ((code === 'EOF' || code === 'ECONNRESET') && closing && idle(channel)) classification = channel.acceptedRequests ? 'NORMAL_IDLE_CLOSE_AFTER_DECLARED_SHUTDOWN' : 'NORMAL_UNUSED_CLOSE_AFTER_DECLARED_SHUTDOWN';
@@ -172,7 +189,7 @@ function createInvocation(options: { directory: string; invocationId: string; on
     let done = false, decodeError: unknown = null;
     const plain = (bytes: Buffer) => pieces(bytes, piece => decoded.append(piece));
     decoder?.on('data', plain); decoder?.on('error', error => { decodeError = error; });
-    function seal(): void { if (done || decodeError) throw decodeError ?? fault('NATIVE_OBSERVER_REQUEST_SETTLED'); done = true; try { const wireRef = wire.seal(), decodedRef = decoded.seal(); requests++; identity.channel.requests++; event('body', { id, channelId: identity.channel.id, transaction: identity.transaction, direction: 'request', transport: identity.transport, path: identity.path, encoding, wire: wireRef, decoded: decodedRef, complete: true }); } finally { try { wire.close(); } finally { decoded.close(); } } }
+    function seal(): void { if (done || decodeError) throw decodeError ?? fault('NATIVE_OBSERVER_REQUEST_SETTLED'); done = true; try { const wireRef = wire.seal(), decodedRef = decoded.seal(); requests++; identity.channel.requests++; identity.channel.unfinished = { id, transaction: identity.transaction, path: identity.path, wire: wireRef, decoded: decodedRef, responseEvents: 0, outputItems: 0 }; event('body', { id, channelId: identity.channel.id, transaction: identity.transaction, direction: 'request', transport: identity.transport, path: identity.path, encoding, wire: wireRef, decoded: decodedRef, complete: true }); } finally { try { wire.close(); } finally { decoded.close(); } } }
     return {
       async write(bytes) { if (done || decodeError) throw decodeError ?? fault('NATIVE_OBSERVER_REQUEST_SETTLED'); pieces(bytes, piece => wire.append(piece)); if (decoder) await new Promise<void>((resolve, reject) => decoder.write(bytes, error => error ? reject(error) : resolve())); else plain(bytes); if (decodeError) throw decodeError; },
       plain(bytes) { pieces(bytes, piece => wire.append(piece)); plain(bytes); }, compressed(bytes) { pieces(bytes, piece => wire.append(piece)); }, decoded: plain,
@@ -182,7 +199,7 @@ function createInvocation(options: { directory: string; invocationId: string; on
   }
   function responseRecorder(identity: MessageIdentity, encoding: string): Recorder {
     let done = false, completions = 0, decodeError: unknown = null;
-    const emit = (receipt: WorkflowNativeModelEventReceipt) => { if (receipt.kind === 'model-event') { responseEvents++; if (receipt.eventType === 'response.completed') { completions++; identity.channel.completions++; } event('response-receipt', { channelId: identity.channel.id, transaction: identity.transaction, transport: identity.transport, path: identity.path, ...receipt }); } else event('native-control-discarded', { channelId: identity.channel.id, transaction: identity.transaction, transport: identity.transport, category: receipt.kind, ...(receipt.controlType ? { knownControlType: receipt.controlType } : {}), modelSourceCredit: false }); };
+    const emit = (receipt: WorkflowNativeModelEventReceipt) => { if (receipt.kind === 'model-event') { responseEvents++; const unfinished = identity.channel.unfinished; if (unfinished) { unfinished.responseEvents++; if (receipt.eventType === 'response.output_item.done') unfinished.outputItems++; } if (receipt.eventType === 'response.completed') { completions++; identity.channel.completions++; identity.channel.unfinished = undefined; } event('response-receipt', { channelId: identity.channel.id, transaction: identity.transaction, transport: identity.transport, path: identity.path, ...receipt }); } else event('native-control-discarded', { channelId: identity.channel.id, transaction: identity.transaction, transport: identity.transport, category: receipt.kind, ...(receipt.controlType ? { knownControlType: receipt.controlType } : {}), modelSourceCredit: false }); };
     const parser: WorkflowNativeModelEventParser = identity.transport === 'wss' ? createWorkflowNativeModelEventParser({ emit }) : createWorkflowNativeSseParser({ emit });
     const decoded = (bytes: Buffer) => pieces(bytes, piece => parser.feed(piece)); const decoder = decoderFor(encoding);
     decoder?.on('data', bytes => { try { decoded(bytes); } catch (error) { decodeError = error; } }); decoder?.on('error', error => { decodeError = error; });
@@ -231,6 +248,7 @@ function createInvocation(options: { directory: string; invocationId: string; on
     function inflaterForMessage(): void { if (inflater) return; const codec = { chunkSize: BYTES, highWaterMark: BYTES, windowBits: compression!.windowBits }; inflater = zlib.createInflateRaw(codec);
       inflater.on('data', bytes => { try { if (!message) throw fault('NATIVE_OBSERVER_WS_DECODE_STATE'); message.decoded(bytes); } catch (error) { inflateError = error; } }); inflater.on('error', error => { inflateError = error; }); }
     function frameHeader(): void {
+      if (identity.channel.abandoned || (identity.direction === 'request' ? identity.channel.requestClose : identity.channel.responseClose)) throw fault('NATIVE_OBSERVER_WS_FRAME_AFTER_CLOSE');
       final = !!(header[0]! & 128); opcode = header[0]! & 15;
       if ((header[0]! & 0x30) || !!(header[1]! & 128) !== masked) throw fault('NATIVE_OBSERVER_WS_FLAGS');
       const rsv1 = !!(header[0]! & 0x40); if (rsv1 && (!compression || opcode === 0 || opcode >= 8)) throw fault('NATIVE_OBSERVER_WS_COMPRESSION_FLAG');
@@ -287,7 +305,7 @@ function createInvocation(options: { directory: string; invocationId: string; on
   const handle: WorkflowNativeBodyObserverInvocation = Object.freeze({
     beginClientShutdown() { if (!invocationBrands.has(handle) || closing || settled) throw fault('NATIVE_OBSERVER_SHUTDOWN_STATE'); closing = true; event('client-shutdown-begin', { modelSourceCredit: false }); },
     settle() { if (settled) return Promise.resolve(settled); if (settling) return settling; settling = (async () => { let firstFailure: unknown = journalFailure; const remember = (error: unknown) => { firstFailure ??= error; };
-      try { for (const channel of channels) if (channel.activeHttp || channel.upgrading || channel.partialHeader || channel.requests !== channel.completions || channel.parsers.some(parser => !parser.isIdle())) { channel.incomplete = true; fail(fault('NATIVE_OBSERVER_INCOMPLETE_SETTLEMENT'), { channelId: channel.id, state: failureState(channel) }); } } catch (error) { remember(error); }
+      try { for (const channel of channels) if (channel.activeHttp || channel.upgrading || channel.partialHeader || channel.requests !== channel.completions + channel.abandoned || channel.parsers.some(parser => !parser.isIdle())) { channel.incomplete = true; fail(fault('NATIVE_OBSERVER_INCOMPLETE_SETTLEMENT'), { channelId: channel.id, state: failureState(channel) }); } } catch (error) { remember(error); }
       for (const request of requestsInFlight) { try { request.destroy(); } catch (error) { remember(error); } } for (const response of responsesInFlight) { try { response.destroy(); } catch (error) { remember(error); } } for (const socket of sockets) { try { socket.destroy(); } catch (error) { remember(error); } }
       while (closes.size || pending.size) { await Promise.allSettled([...closes, ...pending]); await new Promise<void>(resolve => setImmediate(resolve)); }
       let reference: WorkflowReviewOwnedReference | undefined; try { event('closed', { status: failures ? 'failed' : 'healthy', stats: stats() }); reference = journal.seal(); } catch (error) { remember(error); } finally { try { journal.close(); } catch (error) { remember(error); } }
@@ -295,10 +313,10 @@ function createInvocation(options: { directory: string; invocationId: string; on
     })(); return settling; },
     assertHealthy() { if (!invocationBrands.has(handle) || failures) throw fault('NATIVE_OBSERVER_FAILED'); },
   }); invocationBrands.add(handle);
-  return { handle, ownSocket(socket) { ownClose(socket, sockets); if (closing || settling || settled || failures) socket.destroy(); }, accept(socket, head) { if (closing || settling || settled || failures) { socket.destroy(); return; } const channel: Channel = { id: ++channelId, pending: 0, tail: Promise.resolve(), acceptedRequests: 0, activeHttp: 0, requests: 0, completions: 0, httpExchanges: 0, localRefusals: 0, partialHeader: false, upgrading: false, websocket: false, incomplete: false, requestClose: false, responseClose: false, parsers: [], wsSocketAssigned: false, wsTcpConnected: false, wsTlsReady: false, wsRequestFinished: false, wsResponseStatus: null };
+  return { handle, ownSocket(socket) { ownClose(socket, sockets); if (closing || settling || settled || failures) socket.destroy(); }, accept(socket, head) { if (closing || settling || settled || failures) { socket.destroy(); return; } const channel: Channel = { id: ++channelId, pending: 0, tail: Promise.resolve(), acceptedRequests: 0, activeHttp: 0, requests: 0, completions: 0, abandoned: 0, httpExchanges: 0, localRefusals: 0, partialHeader: false, upgrading: false, websocket: false, incomplete: false, requestClose: false, responseClose: false, parsers: [], wsSocketAssigned: false, wsTcpConnected: false, wsTlsReady: false, wsRequestFinished: false, wsResponseStatus: null };
       accepted++; channels.add(channel); ownClose(socket, sockets); socket.write('HTTP/1.1 200 Connection Established\r\n\r\n'); if (head.length) socket.unshift(head); const secured = new tls.TLSSocket(socket, { isServer: true, secureContext: security.context, ALPNProtocols: ['http/1.1'] }); ownClose<Socket>(secured, sockets); (secured as NativeSocket)[CHANNEL] = channel;
       secured.on('data', () => { if (!channel.websocket && !channel.upgrading && channel.activeHttp === 0) channel.partialHeader = true; }); secured.on('error', error => track(channelError(error, channel, 'native-tls'))); secured.once('end', () => track(channelError(fault('EOF'), channel, 'native-tls'))); inner.emit('connection', secured);
-      secured.once('close', () => { track(joinedChannel(channel).then(() => { if (!idle(channel) && !failures) fail(fault('NATIVE_OBSERVER_INCOMPLETE_CHANNEL'), { channelId: channel.id }); channels.delete(channel); })); });
+      secured.once('close', () => { track(joinedChannel(channel).then(() => { abandon(channel); if (!idle(channel) && !failures) fail(fault('NATIVE_OBSERVER_INCOMPLETE_CHANNEL'), { channelId: channel.id }); channels.delete(channel); })); });
     }, async dispose() { try { await handle.settle(); } finally { inner.close(); } } };
 }
 

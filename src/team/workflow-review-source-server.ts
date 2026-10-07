@@ -2130,6 +2130,7 @@ export interface WorkflowNativeReviewTraceProof {
   readonly observed: WorkflowReviewOwnedReference;
   readonly calls: WorkflowReviewOwnedReference;
   readonly requests: number;
+  readonly abandoned?: number;
   readonly transport?: WorkflowNativeBodyObserverSettlement;
   readonly compaction?: Awaited<ReturnType<WorkflowNativeCompactionChain['finish']>>;
   readonly calibration?: NativeCalibrationTrace;
@@ -2208,7 +2209,7 @@ export async function verifyWorkflowNativeReviewTrace(input: {
   let count = 0; let received = 0; let receivedReceipts = 0; let sequence = 0; let offset = 0; let previousResponse: string | undefined;
   let firstCallCount = 0; let completedTurns = 0; let currentTurnId = input.turnId; let firstSourceReceived = false; let postSourceReceived = false;
   let pendingInference: { id: string; path: string; postSource: boolean } | undefined; let requestCount = 0; let inventory = false;
-  let finalResult = false;
+  let finalResult = false; let abandonedCount = 0; let reconnectChannel: number | undefined;
   let currentWire: WorkflowNativeObservedTransaction | undefined;
   let pendingCompact: { id: string; requestId: string; completed: boolean } | undefined;
   let outputBatch = 0;
@@ -2231,6 +2232,7 @@ export async function verifyWorkflowNativeReviewTrace(input: {
         controllerPromptContentSha256: workflowReviewNativeTextContentSha256(input.request) });
       const control = readWorkflowReviewNativeRequestControls(next.value.request.file, next.value.request.representation);
       if (control.generate === false) {
+        if (next.value.outcome !== 'completed') throw new Error(code);
         for (const record of iterateWorkflowReviewJsonRecords({ path: join(input.directory, next.value.request.file.name),
           arrayKey: 'input', found: { value: false }, streamScalars: true, skipTypes: ['message'] })) {
           const item = JSON.parse(record) as Record<string, unknown>; if (item.type !== 'additional_tools') throw new Error(code); flattenInventory(item.tools);
@@ -2247,6 +2249,7 @@ export async function verifyWorkflowNativeReviewTrace(input: {
   };
   const proveModelOutput = (file: WorkflowReviewOwnedFile, responseId?: string): void => {
     if (!currentWire) { if (transactions) throw new Error(code); return; }
+    if (currentWire.outcome !== 'completed') throw new Error(code);
     if (responseId !== undefined && currentWire.response.responseId !== responseId) throw new Error(code);
     const aggregate = createHash('sha256').update('array\n'); let count = 0n;
     for (const item of iterateWorkflowReviewNativeItems({ file, arrayKey: 'output_items' })) { aggregate.update(item.sha256 + '\n'); count++; }
@@ -2369,10 +2372,19 @@ export async function verifyWorkflowNativeReviewTrace(input: {
             || payload.model !== 'gpt-6.1-sol' || payload.provider_name !== 'OpenAI' || typeof payload.inference_call_id !== 'string') throw new Error(code);
           const path = sealPayload(payload.request_payload, 'inference_request');
           currentWire = await nextWire();
+          if (reconnectChannel !== undefined) {
+            if (!currentWire || currentWire.channelId === reconnectChannel
+              || readWorkflowReviewNativeRequestControls(currentWire.request.file, currentWire.request.representation).previousResponseId !== undefined) throw new Error(code);
+            reconnectChannel = undefined;
+          }
           if (currentWire) {
             const native = new WorkflowReviewOwnedFile(input.directory, path.slice(input.directory.length + 1).replaceAll('\\', '/'));
             try {
               const controls = readWorkflowReviewNativeRequestControls(currentWire.request.file, currentWire.request.representation);
+              if (currentWire.outcome === 'abandoned' && (controls.model !== 'gpt-6.1-sol' || controls.effort !== 'xhigh'
+                || controls.context !== 'all_turns' || controls.parallel !== false || controls.threadId !== input.threadId
+                || controls.sessionId !== input.threadId || controls.turnId !== currentTurnId || controls.requestKind !== 'turn'
+                || controls.generate !== undefined)) throw new Error('workflow_review_reader_qualification_mismatch');
               if (input.schema === undefined || !isDeepStrictEqual(controls.text?.format,
                 { type: 'json_schema', strict: true, schema: input.schema, name: 'codex_output_schema' })) throw new Error('workflow_review_reader_qualification_mismatch');
               if (fingerprintWorkflowReviewNativeRequest(native) !== fingerprintWorkflowReviewNativeRequest(currentWire.request.file)) throw new Error(code);
@@ -2397,10 +2409,18 @@ export async function verifyWorkflowNativeReviewTrace(input: {
             if (item.type === 'additional_tools') { if (stated) throw new Error(code); flattenInventory(item.tools); stated = true; }
           }
           if (!found.value || (!stated && (!inventory || prior !== previousResponse || !previousResponse))) throw new Error('workflow_review_reader_observation_incomplete');
-          if (stated) inventory = true;
-          const postSource = receiveSource(path, payload.inference_call_id);
-          if (currentWire) await chain!.startGeneration(payload.inference_call_id, currentWire.request);
+          const abandoned = currentWire?.outcome === 'abandoned';
+          if (stated && !abandoned) inventory = true;
+          const postSource = abandoned ? false : receiveSource(path, payload.inference_call_id);
+          if (currentWire && !abandoned) await chain!.startGeneration(payload.inference_call_id, currentWire.request);
           pendingInference = { id: payload.inference_call_id, path, postSource }; requestCount++; break;
+        }
+        case 'inference_failed': {
+          if (!pendingInference || !currentWire || currentWire.outcome !== 'abandoned'
+            || payload.inference_call_id !== pendingInference.id || event.thread_id !== input.threadId || event.codex_turn_id !== currentTurnId
+            || payload.error !== 'stream disconnected before completion: websocket closed by server before response.completed'
+            || payload.partial_response_payload !== null) throw new Error(code);
+          abandonedCount++; reconnectChannel = currentWire.channelId; pendingInference = undefined; currentWire = undefined; break;
         }
         case 'inference_completed': {
           if (!pendingInference || payload.inference_call_id !== pendingInference.id || typeof payload.response_id !== 'string') throw new Error(code);
@@ -2441,7 +2461,7 @@ export async function verifyWorkflowNativeReviewTrace(input: {
           if (!transactions || finalResult || !turnStarted || turnEnded || pendingInference || pendingCompact
             || payload.thread_id !== input.threadId || payload.codex_turn_id !== currentTurnId || payload.model !== 'gpt-6.1-sol'
             || payload.provider_name !== 'OpenAI' || typeof payload.compaction_id !== 'string' || typeof payload.compaction_request_id !== 'string') throw new Error(code);
-          currentWire = await nextWire(); if (!currentWire || !chain) throw new Error(code);
+          currentWire = await nextWire(); if (!currentWire || currentWire.outcome !== 'completed' || !chain || reconnectChannel !== undefined) throw new Error(code);
           if (calibration && completedTurns === 1 && payload.compaction_id !== calibration.compactionId) throw new Error(code);
           const path = sealPayload(payload.request_payload, 'compaction_request');
           const native = new WorkflowReviewOwnedFile(input.directory, path.slice(input.directory.length + 1).replaceAll('\\', '/'));
@@ -2452,7 +2472,7 @@ export async function verifyWorkflowNativeReviewTrace(input: {
           pendingCompact = { id: payload.compaction_id, requestId: payload.compaction_request_id, completed: false }; break;
         }
         case 'compaction_request_completed': {
-          if (!chain || !currentWire || !pendingCompact || pendingCompact.completed || payload.compaction_id !== pendingCompact.id
+          if (!chain || !currentWire || currentWire.outcome !== 'completed' || !pendingCompact || pendingCompact.completed || payload.compaction_id !== pendingCompact.id
             || payload.compaction_request_id !== pendingCompact.requestId) throw new Error(code);
           const path = sealPayload(payload.response_payload, 'compaction_response');
           const native = new WorkflowReviewOwnedFile(input.directory, path.slice(input.directory.length + 1).replaceAll('\\', '/'));
@@ -2502,7 +2522,8 @@ export async function verifyWorkflowNativeReviewTrace(input: {
         default: throw new Error(code);
       }
     }
-    if (!ended || completedTurns !== turns.length || pendingInference || pendingCompact || !inventory || !requestCount || !finalResult || !machine.isFinished || received !== count) throw new Error(code);
+    if (!ended || completedTurns !== turns.length || pendingInference || pendingCompact || reconnectChannel !== undefined || !inventory || !requestCount || !finalResult || !machine.isFinished || received !== count
+      || abandonedCount !== (input.transport?.stats.abandoned ?? 0)) throw new Error(code);
     if (transactions && !(await transactions.next()).done) throw new Error(code);
     const compaction = chain ? await chain.finish(false) : undefined;
     if (input.transport) seals.append(wire({ directory: 'bodies', ...input.transport.journal }));
@@ -2519,7 +2540,7 @@ export async function verifyWorkflowNativeReviewTrace(input: {
     result = Object.freeze({ proof: machine.retainedProof, ranges: machine.rangeCount, reconstructionSha256: machine.reconstructionDigest,
       native: Object.freeze({ observer: 'codex-rollout-trace' as const, producer: NATIVE_CODEX,
         directory: nativeDirectory!.slice(input.directory.length + 1), seals: seals.seal(), observed: observed.seal(),
-        calls: journal.seal(), requests: requestCount, ...(input.transport ? { transport: input.transport, compaction } : {}),
+        calls: journal.seal(), requests: requestCount, ...(abandonedCount ? { abandoned: abandonedCount } : {}), ...(input.transport ? { transport: input.transport, compaction } : {}),
         ...(calibration ? { calibration } : {}) }) });
   } finally {
     try { await transactions?.return(undefined); } catch (value) { cleanupFailure = { value }; }

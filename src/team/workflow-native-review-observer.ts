@@ -190,12 +190,14 @@ export async function disposeWorkflowNativeReviewObserver(observer: WorkflowNati
   if (failure) throw failure.value;
 }
 
-export interface WorkflowNativeObservedTransaction {
+interface WorkflowNativeObservedRequest {
   readonly request: WorkflowNativeHistoryInput;
-  readonly response: WorkflowNativeResponseReceiptProof;
   readonly channelId: number; readonly transaction: number; readonly id: number;
   readonly wire: WorkflowReviewOwnedReference; readonly decoded: WorkflowReviewOwnedReference;
 }
+export type WorkflowNativeObservedTransaction = WorkflowNativeObservedRequest & (
+  | { readonly outcome: 'completed'; readonly response: WorkflowNativeResponseReceiptProof }
+  | { readonly outcome: 'abandoned'; readonly classification: 'UPSTREAM_SERVER_CLOSE_BEFORE_RESPONSE_COMPLETED'; readonly modelSourceCredit: false });
 /** Offline streamed correlation only. Live authority also requires the privately branded completion. */
 export async function* iterateWorkflowNativeObservedTransactions(input: {
   readonly directory: string; readonly invocationId: string; readonly settlement: WorkflowNativeBodyObserverSettlement;
@@ -208,7 +210,7 @@ export async function* iterateWorkflowNativeObservedTransactions(input: {
       !['bodySizeCeiling', 'corpusSizeCeiling'].includes(key) && (!Number.isSafeInteger(value) || Number(value) < 0))) throw new Error(code);
   const journal = new WorkflowReviewOwnedFile(input.directory, input.settlement.journal.name);
   let sequence = 0; let requestCount = 0; let responseEvents = 0; let websocket = false; let closed = false; let shutdown = false;
-  let transactionCount = 0; let lastTransaction = 0;
+  let transactionCount = 0; let lastTransaction = 0; let completedCount = 0; let abandonedCount = 0;
   const metadata = new Map<number, { channelId: number; category: string }>();
   const websockets = new Map<number, number>();
   const channel = (event: Record<string, unknown>): number => {
@@ -229,12 +231,14 @@ export async function* iterateWorkflowNativeObservedTransactions(input: {
   };
   const noCredit = (event: Record<string, unknown>): void => { if (event.modelSourceCredit !== false) throw new Error(code); };
   let pending: { file: WorkflowReviewOwnedFile; wire: WorkflowReviewOwnedReference; decoded: WorkflowReviewOwnedReference;
-    channelId: number; transaction: number; id: number; path: string; transport: 'wss' | 'https-http1'; response: WorkflowNativeResponseReceipts } | undefined;
+    channelId: number; transaction: number; id: number; path: string; transport: 'wss' | 'https-http1'; response: WorkflowNativeResponseReceipts;
+    responseEvents: number; outputItems: number; abandoned: boolean } | undefined;
   try {
     mkdirSync(join(input.directory, 'verified-transactions'));
     for await (const line of streamWorkflowReviewLines(journal)) {
       const event = JSON.parse(line) as Record<string, unknown>;
       if (closed || event.seq !== ++sequence || event.invocationId !== input.invocationId) throw new Error(code);
+      if (pending?.abandoned && event.type !== 'channel-close') throw new Error(code);
       if (event.type === 'body') {
         if (shutdown || pending || event.id !== ++requestCount || !Number.isSafeInteger(event.channelId) || Number(event.channelId) < 1
           || !Number.isSafeInteger(event.transaction) || Number(event.transaction) < 1 || event.direction !== 'request' || event.complete !== true
@@ -250,19 +254,29 @@ export async function* iterateWorkflowNativeObservedTransactions(input: {
         const root = input.artifactsDirectory ?? input.directory;
         pending = { file: new WorkflowReviewOwnedFile(root, relative(root, join(input.directory, decoded.name)).replaceAll('\\', '/')), wire: raw, decoded,
           channelId: Number(event.channelId), transaction: Number(event.transaction), id: requestCount,
-          path: String(event.path), transport: event.transport as 'wss' | 'https-http1', response: new WorkflowNativeResponseReceipts() };
+          path: String(event.path), transport: event.transport as 'wss' | 'https-http1', response: new WorkflowNativeResponseReceipts(),
+          responseEvents: 0, outputItems: 0, abandoned: false };
       } else if (event.type === 'response-receipt') {
         if (!pending || event.channelId !== pending.channelId || event.transaction !== pending.transaction || event.transport !== pending.transport
           || event.path !== pending.path || event.kind !== 'model-event') throw new Error(code);
-        responseEvents++;
+        responseEvents++; pending.responseEvents++;
+        if (event.eventType === 'response.output_item.done') pending.outputItems++;
         pending.response.record(event as unknown as import('./workflow-native-model-events.js').WorkflowNativeModelEventReceipt);
         if (event.eventType === 'response.completed') {
-          yield Object.freeze({ request: { file: pending.file, arrayKey: 'input', representation: pending.transport === 'wss' ? 'wire-wss' as const : 'wire' as const },
+          completedCount++;
+          yield Object.freeze({ outcome: 'completed' as const, request: { file: pending.file, arrayKey: 'input', representation: pending.transport === 'wss' ? 'wire-wss' as const : 'wire' as const },
             response: pending.response.finish(), channelId: pending.channelId, transaction: pending.transaction, id: pending.id,
             wire: pending.wire, decoded: pending.decoded });
           verifyWorkflowReviewOwnedReference(input.directory, pending.wire); verifyWorkflowReviewOwnedReference(input.directory, pending.decoded);
           pending.file.close(); pending = undefined;
         }
+      } else if (event.type === 'response-abandoned') {
+        if (!pending || shutdown || pending.transport !== 'wss' || pending.path !== '/backend-api/codex/responses'
+          || pending.outputItems !== 0 || !isDeepStrictEqual(event, { seq: sequence, at: event.at, invocationId: input.invocationId,
+            type: 'response-abandoned', channelId: pending.channelId, transaction: pending.transaction, transport: 'wss', path: pending.path,
+            id: pending.id, wire: pending.wire, decoded: pending.decoded, responseEvents: pending.responseEvents,
+            classification: 'UPSTREAM_SERVER_CLOSE_BEFORE_RESPONSE_COMPLETED', parserIdle: true, upstreamClose: true, outputItems: 0, modelSourceCredit: false })) throw new Error(code);
+        pending.abandoned = true;
       } else if (event.type === 'closed') {
         if (!shutdown || pending || metadata.size || transactionCount !== lastTransaction || event.status !== 'healthy'
           || !isDeepStrictEqual(event.stats, input.settlement.stats)) throw new Error(code);
@@ -283,6 +297,8 @@ export async function* iterateWorkflowNativeObservedTransactions(input: {
         if (compression !== null && (!compression || Object.keys(compression).sort().join(',') !== 'clientNoContextTakeover,clientWindowBits,serverNoContextTakeover,serverWindowBits'
           || typeof compression.clientNoContextTakeover !== 'boolean' || typeof compression.serverNoContextTakeover !== 'boolean'
           || ![compression.clientWindowBits, compression.serverWindowBits].every(bits => Number.isSafeInteger(bits) && Number(bits) >= 8 && Number(bits) <= 15))) throw new Error(code);
+        const marker = new WorkflowReviewOwnedFile(input.directory, `verified-transactions/channel-${channelId}.json`, true);
+        try { marker.append(Buffer.from(JSON.stringify({ channelId, transaction }))); } finally { marker.close(); }
         websockets.set(channelId, transaction);
       } else if (event.type === 'client-shutdown-begin') {
         noCredit(event); if (shutdown || pending) throw new Error(code); shutdown = true;
@@ -296,6 +312,16 @@ export async function* iterateWorkflowNativeObservedTransactions(input: {
         } else if (event.category !== 'native-ignored-event-discarded' || event.knownControlType !== undefined) throw new Error(code);
       } else if (event.type === 'channel-close') {
         noCredit(event); const channelId = channel(event);
+        if (event.classification === 'ABANDONED_WS_SERVER_CLOSE') {
+          if (!pending?.abandoned || pending.channelId !== channelId || event.peer !== 'upstream-ws'
+            || websockets.get(channelId) !== pending.transaction || [...metadata.values()].some(value => value.channelId === channelId)) throw new Error(code);
+          websockets.delete(channelId); abandonedCount++;
+          yield Object.freeze({ outcome: 'abandoned' as const, classification: 'UPSTREAM_SERVER_CLOSE_BEFORE_RESPONSE_COMPLETED' as const,
+            modelSourceCredit: false as const, request: { file: pending.file, arrayKey: 'input', representation: 'wire-wss' as const },
+            channelId, transaction: pending.transaction, id: pending.id, wire: pending.wire, decoded: pending.decoded });
+          verifyWorkflowReviewOwnedReference(input.directory, pending.wire); verifyWorkflowReviewOwnedReference(input.directory, pending.decoded);
+          pending.file.close(); pending = undefined; continue;
+        }
         if (pending?.channelId === channelId || [...metadata.values()].some(value => value.channelId === channelId)
           || !['native-tls', 'native-http-parser', 'native-ws', 'upstream-ws'].includes(String(event.peer))
           || !['NORMAL_COMPLETE_HTTP_EOF', 'NORMAL_COMPLETE_WS_CLOSE_HANDSHAKE', 'NORMAL_IDLE_CLOSE_AFTER_DECLARED_SHUTDOWN', 'NORMAL_UNUSED_CLOSE_AFTER_DECLARED_SHUTDOWN'].includes(String(event.classification))
@@ -303,7 +329,8 @@ export async function* iterateWorkflowNativeObservedTransactions(input: {
         websockets.delete(channelId);
       } else throw new Error(code);
     }
-    if (!closed || pending || requestCount !== input.settlement.stats.requests || responseEvents !== input.settlement.stats.responseEvents) throw new Error(code);
+    if (!closed || pending || requestCount !== input.settlement.stats.requests || responseEvents !== input.settlement.stats.responseEvents
+      || abandonedCount !== (input.settlement.stats.abandoned ?? 0) || requestCount !== completedCount + abandonedCount) throw new Error(code);
     verifyWorkflowReviewOwnedReference(input.directory, input.settlement.journal);
   } finally { try { pending?.file.close(); } finally { journal.close(); } }
 }

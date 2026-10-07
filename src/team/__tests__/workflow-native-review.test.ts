@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { realpathSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { realpathSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -369,7 +369,15 @@ function compactionTrace(input: ReturnType<typeof fixture>, request: string, fau
     : { ...item, id: `msg_00000000-0000-7000-8000-${String(index + 1).padStart(12, '0')}` }) : [...replacement, ...fresh, nextPrompt];
   infer('post', [tools, instructions, ...baseline], modelCalls(calls.slice(firstCallCount)),
     fault === 'manual-stale-baseline' ? 'resp_first-final' : undefined);
-  infer('post-final', outputs(calls.slice(firstCallCount)), [answer(input.resultText, 'msg_final')], 'resp_post');
+  if (fault === 'server-close-reconnect') {
+    const failed = body(outputs(calls.slice(firstCallCount)), 'resp_post'); packets.set('abandoned', failed);
+    event({ type: 'inference_started', inference_call_id: 'abandoned', thread_id: input.threadId, codex_turn_id: turnId,
+      model: 'gpt-6.1-sol', provider_name: 'OpenAI', request_payload: payload('inference_request', failed) });
+    event({ type: 'inference_failed', inference_call_id: 'abandoned', upstream_request_id: null, partial_response_payload: null,
+      error: 'stream disconnected before completion: websocket closed by server before response.completed' });
+    infer('post-final', [tools, instructions, ...baseline, ...modelCalls(calls.slice(firstCallCount)), ...outputs(calls.slice(firstCallCount))],
+      [answer(input.resultText, 'msg_final')]);
+  } else infer('post-final', outputs(calls.slice(firstCallCount)), [answer(input.resultText, 'msg_final')], 'resp_post');
   event({ type: 'codex_turn_ended', codex_turn_id: turnId, status: 'completed' });
   event({ type: 'thread_ended', thread_id: input.threadId, status: 'completed' }); event({ type: 'rollout_ended', status: 'completed' });
   writeFileSync(join(traceRoot, 'trace.jsonl'), events.map(value => wire(value).toString()).join(''));
@@ -383,9 +391,10 @@ function observedFixture(fault?: string, cachedWarmup = false, manual: boolean |
   const manualProof = manual ? compactionTrace(input, request, fault, manual === 'auto') : undefined;
   const events = readFileSync(join(traceRoot, 'trace.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
   const bodies = join(input.directory, 'bodies'); mkdirSync(bodies);
-  const journal = new WorkflowReviewOwnedFile(bodies, 'events.jsonl', true); let sequence = 0; let requestCount = 0; let responseEvents = 0;
+  const journal = new WorkflowReviewOwnedFile(bodies, 'events.jsonl', true); let sequence = 0; let requestCount = 0; let responseEvents = 0; let abandoned = 0;
   const append = (event: unknown) => journal.append(wire({ seq: ++sequence, at: '2026-10-06T00:00:00.000Z', invocationId: input.invocationId, ...event as object }));
   const identity = { channelId: 1, transaction: 1, transport: 'wss', path: '/backend-api/codex/responses' };
+  let lastBody: { id: number; wire: ReturnType<WorkflowReviewOwnedFile['seal']>; decoded: ReturnType<WorkflowReviewOwnedFile['seal']> };
   append({ type: 'websocket-negotiated', channelId: 1, transaction: 1, compression: null, modelSourceCredit: false });
   const outgoing = (value: unknown) => {
     const id = ++requestCount; const refs = ['wire', 'decoded'].map(kind => {
@@ -393,11 +402,21 @@ function observedFixture(fault?: string, cachedWarmup = false, manual: boolean |
       try { const bytes = Buffer.from(JSON.stringify(value)); for (let offset = 0; offset < bytes.length; offset += 65536) file.append(bytes.subarray(offset, offset + 65536)); return file.seal(); } finally { file.close(); }
     });
     append({ type: 'body', ...identity, id, direction: 'request', encoding: 'identity', wire: refs[0], decoded: refs[1], complete: true });
+    lastBody = { id, wire: refs[0]!, decoded: refs[1]! };
   };
   const incoming = (value: object) => { append({ type: 'response-receipt', ...identity, kind: 'model-event', ...value }); responseEvents++; };
   const empty = createHash('sha256').update('array\n').digest('hex');
   for (const event of events) {
     const payload = event.payload;
+    if (payload.type === 'inference_failed' && fault === 'server-close-reconnect') {
+      incoming({ eventType: 'response.created', responseId: 'resp_abandoned' });
+      incoming({ eventType: 'response.function_call_arguments.delta' });
+      append({ type: 'response-abandoned', ...identity, ...lastBody!, responseEvents: 2,
+        classification: 'UPSTREAM_SERVER_CLOSE_BEFORE_RESPONSE_COMPLETED', parserIdle: true, upstreamClose: true, outputItems: 0, modelSourceCredit: false });
+      append({ type: 'channel-close', channelId: 1, peer: 'upstream-ws', classification: 'ABANDONED_WS_SERVER_CLOSE', modelSourceCredit: false });
+      abandoned++; identity.channelId++; identity.transaction++;
+      append({ type: 'websocket-negotiated', channelId: 2, transaction: 2, compression: null, modelSourceCredit: false });
+    }
     if (manualProof && ['inference_started', 'compaction_request_started'].includes(payload.type)) {
       outgoing(manualProof.packets.get(payload.inference_call_id ?? payload.compaction_request_id));
     }
@@ -450,7 +469,7 @@ function observedFixture(fault?: string, cachedWarmup = false, manual: boolean |
         ? { count: '0', mask: 0, sha256: empty } : { count: String(count), mask: 0, sha256: aggregate.digest('hex') } });
     }
   }
-  const stats = { accepted: 1, requests: requestCount, responseEvents, failures: 0, peakWorkingChunk: 65536, bodySizeCeiling: null, corpusSizeCeiling: null } as const;
+  const stats = { accepted: abandoned + 1, requests: requestCount, responseEvents, ...(abandoned ? { abandoned } : {}), failures: 0, peakWorkingChunk: 65536, bodySizeCeiling: null, corpusSizeCeiling: null } as const;
   append({ type: 'client-shutdown-begin', modelSourceCredit: false });
   append({ type: 'closed', status: 'healthy', stats });
   const transport = { journal: journal.seal(), stats }; journal.close();
@@ -459,6 +478,25 @@ function observedFixture(fault?: string, cachedWarmup = false, manual: boolean |
 }
 
 describe('offline selected transport and native trace join', () => {
+  it('joins a clean server Close with zero credit and a complete full-history reconnect after compaction', async () => {
+    const input = observedFixture('server-close-reconnect', false, 'auto');
+    const proof = await verifyWorkflowNativeReviewTrace(input);
+    expect(proof.native.abandoned).toBe(1); expect(proof.native.requests).toBe(4);
+    expect(proof.native.transport?.stats).toMatchObject({ accepted: 2, requests: 5, abandoned: 1, failures: 0 });
+    expect(proof.native.compaction).toMatchObject({ authority: false, compactions: 1 });
+    expect(proof.ranges).toBe(input.attestation.ranges);
+    const observed = readFileSync(join(input.directory, proof.native.observed.name), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    const intended = readFileSync(join(input.directory, 'calls.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line).receipt);
+    expect(observed).toEqual(intended);
+    const consumed = readdirSync(join(input.directory, 'consumed')).map(name => JSON.parse(readFileSync(join(input.directory, 'consumed', name), 'utf8')));
+    expect(consumed).toHaveLength(input.callCount); expect(consumed.some(call => call.inference === 'abandoned')).toBe(false);
+    expect(consumed.some(call => call.inference === 'post-final')).toBe(true);
+    const ancestry = readFileSync(join(input.directory, 'ancestry', proof.native.compaction!.seals.name), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    const abandoned = readFileSync(join(input.directory, 'bodies', input.transport.journal.name), 'utf8').trim().split('\n')
+      .map(line => JSON.parse(line)).find(event => event.type === 'response-abandoned');
+    expect(ancestry.some(seal => seal.name === `bodies/${abandoned.decoded.name}`)).toBe(false);
+    expect(() => requireWorkflowNativeReviewClientFactory({ ...input, mode: 'native' })).toThrow('workflow_review_reader_observation_required');
+  });
   it('continues after a malformed native cursor without source credit and retains the refusal through compaction', async () => {
     const input = observedFixture('invalid-cursor-recovery', false, 'auto');
     const calls = readFileSync(join(input.directory, 'calls.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
