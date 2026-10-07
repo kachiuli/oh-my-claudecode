@@ -3,7 +3,7 @@ import http from 'node:http';
 import https from 'node:https';
 import tls from 'node:tls';
 import zlib from 'node:zlib';
-import { mkdtempSync, readFileSync, rmSync, readdirSync, writeFileSync } from 'node:fs';
+import { realpathSync, mkdtempSync, readFileSync, rmSync, readdirSync, writeFileSync } from 'node:fs';
 import { join, resolve, relative, basename } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createHash, randomBytes } from 'node:crypto';
@@ -18,7 +18,7 @@ const nativeApis = typeof tls.getCACertificates === 'function' && typeof zlib.cr
 const originalRequest = https.request.bind(https);
 let fixture: ReturnType<typeof createNativeBodyTlsFixture>;
 const owned: string[] = [], handles: WorkflowNativeBodyObserverHandle[] = [], servers: https.Server[] = [], socketOwners = new Set<Socket>();
-const directory = () => { const value = mkdtempSync(join(tmpdir(), 'native-body-test-')); owned.push(value); return value; };
+const directory = () => { const value = realpathSync(mkdtempSync(join(tmpdir(), 'native-body-test-'))); owned.push(value); return value; };
 const delay = () => new Promise(resolve => setTimeout(resolve, 5));
 async function upstream(handler?: Parameters<typeof https.createServer>[1]) {
   const server = https.createServer({ key: fixture.key, cert: fixture.cert }, handler); server.on('connection', stream => { const socket = stream as Socket; socketOwners.add(socket); socket.once('close', () => socketOwners.delete(socket)); });
@@ -56,7 +56,7 @@ function queuedResponseEnd(value: WorkflowNativeBodyObserverHandle) {
 }
 
 beforeAll(() => { if (nativeApis) fixture = createNativeBodyTlsFixture(); });
-afterEach(async () => { for (const socket of socketOwners) socket.destroy(); socketOwners.clear(); for (const handle of handles.splice(0)) await handle.close(); for (const server of servers.splice(0)) await new Promise<void>(resolve => server.close(() => resolve())); vi.restoreAllMocks(); for (const root of owned.splice(0)) { const target = resolve(root), within = relative(resolve(tmpdir()), target); if (!within || within.startsWith('..') || !basename(target).startsWith('native-body-test-')) throw new Error('native_body_test_cleanup_target'); rmSync(target, { recursive: true, force: true }); } });
+afterEach(async () => { for (const socket of socketOwners) socket.destroy(); socketOwners.clear(); for (const handle of handles.splice(0)) await handle.close(); for (const server of servers.splice(0)) await new Promise<void>(resolve => server.close(() => resolve())); vi.restoreAllMocks(); for (const root of owned.splice(0)) { const target = resolve(root), within = relative(realpathSync(tmpdir()), target); if (!within || within.startsWith('..') || !basename(target).startsWith('native-body-test-')) throw new Error('native_body_test_cleanup_target'); rmSync(target, { recursive: true, force: true }); } });
 afterAll(() => fixture?.close());
 
 describe('native-only body observer capability', () => {

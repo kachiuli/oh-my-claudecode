@@ -287,7 +287,7 @@ describe('team workflow CLI', () => {
     const head = 'a'.repeat(40);
     const args = operation === 'review' ? ['review', 'feature'] : ['resume', 'feature', 'task-a', '--expected-head', head, '--reason', 'Inspected'];
     await workflowCommand([...args, '--runtime', config], root);
-    if (operation === 'review') expect(api.reviewWorkflow).toHaveBeenCalledWith(root, 'feature', expect.objectContaining({ reviewAuthorship }));
+    if (operation === 'review') expect(api.reviewWorkflow).toHaveBeenCalledWith(root, 'feature', expect.objectContaining({ reviewAuthorship }), undefined);
     else expect(api.resumeWorkflowTask).toHaveBeenCalledWith(root, 'feature', 'task-a', head, 'Inspected', expect.objectContaining({ reviewAuthorship }));
     expect(readFileSync(config)).toEqual(before);
     expect(JSON.stringify(vi.mocked(console.log).mock.calls)).not.toContain('synthetic-private-value');
@@ -426,7 +426,7 @@ describe('team workflow CLI', () => {
   it.each(['run', 'verify', 'review', 'finish'] as const)('dispatches the explicit %s operation', async operation => {
     await workflowCommand([operation, 'feature'], root);
     const methods = { run: api.runWorkflow, verify: api.verifyWorkflow, review: api.reviewWorkflow, finish: api.finishWorkflow };
-    expect(methods[operation]).toHaveBeenCalledWith(root, 'feature');
+    expect(methods[operation]).toHaveBeenCalledWith(root, 'feature', ...(operation === 'review' ? [undefined, undefined] : []));
   });
 
   it('requires a reason for rejection and never accepts a rejected task', async () => {

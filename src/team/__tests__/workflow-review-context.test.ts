@@ -85,7 +85,7 @@ describe('uncapped complete review context and request', () => {
     // adoption can re-introduce a context, request, source or read total behind the policy.
     const intent = { requestId: 'review-compatibility-1',
       source: { baseCommit: 'a'.repeat(40), head: 'e'.repeat(40),
-        descriptor: { schemaVersion: 1, path: 'D:/host/state/authorized-source.jsonl', bytes: 40, records: 2, sha256: 'f'.repeat(64) } },
+        descriptor: { schemaVersion: 1, path: join(fixture.root, 'authorized-source.jsonl'), bytes: 40, records: 2, sha256: 'f'.repeat(64) } },
       controller: { id: 'team-workflow', sha256: 'b'.repeat(64) }, reader: { id: 'omc-review-source', sha256: 'c'.repeat(64) },
       transport: policy, reviewerBindingId: 'reviewer-claude', reviewerAuthFingerprint: 'd'.repeat(64),
       actor: { id: 'lead-codex', model: 'gpt-6-astra' }, authorityRef: 'issue-60',

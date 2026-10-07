@@ -119,7 +119,7 @@ function syntheticMaterials(): WorkflowReviewMaterialInput[] {
 const scratchRoots: string[] = [];
 /** A fresh, unique parent directory; the bundle itself is created inside it and must not pre-exist. */
 function scratch(): string {
-  const root = mkdtempSync(join(tmpdir(), 'omc-review-test-'));
+  const root = fs.realpathSync(mkdtempSync(join(tmpdir(), 'omc-review-test-')));
   scratchRoots.push(root);
   return root;
 }
@@ -204,6 +204,16 @@ describe('trusted live reader boundaries', () => {
     expect(proof.ranges).toBe(ranges);
     const invalid = join(scratch(), 'invalid.jsonl'); writeFileSync(invalid, Buffer.from([0x22, 0xe2, 0x82]));
     await expect((async () => { for await (const _line of streamWorkflowReviewLines(invalid)) { /* consume the actual EOF */ } })()).rejects.toThrow();
+  });
+
+  it('canonicalizes a positive temporary root created through an alias while refusing raw aliases and hardlinks', () => {
+    const owner = scratch(), actual = join(owner, 'actual'), alias = join(owner, 'alias');
+    mkdirSync(actual); symlinkSync(actual, alias, process.platform === 'win32' ? 'junction' : 'dir');
+    const raw = mkdtempSync(join(alias, 'positive-')), canonical = fs.realpathSync(raw);
+    const owned = new WorkflowReviewOwnedFile(canonical, 'receipt', true); owned.append(Buffer.from('held')); owned.close();
+    expect(() => new WorkflowReviewOwnedFile(raw, 'receipt')).toThrow('workflow_review_evidence_custody');
+    linkSync(join(canonical, 'receipt'), join(canonical, 'linked'));
+    expect(() => new WorkflowReviewOwnedFile(canonical, 'receipt')).toThrow('workflow_review_evidence_custody');
   });
 
   it('holds intended ledger custody across asynchronous line iteration and sealing', async () => {

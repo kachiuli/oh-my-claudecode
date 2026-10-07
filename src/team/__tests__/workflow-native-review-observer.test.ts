@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { realpathSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { connect } from 'node:net';
@@ -54,7 +54,7 @@ describe('native observer private lifetime', () => {
 });
 
 function metadataJournal(fault?: string) {
-  const directory = mkdtempSync(join(tmpdir(), 'omc-native-metadata-')); roots.push(directory);
+  const directory = realpathSync(mkdtempSync(join(tmpdir(), 'omc-native-metadata-'))); roots.push(directory);
   const journal = new WorkflowReviewOwnedFile(directory, 'journal.jsonl', true); let seq = 0;
   const append = (value: object) => journal.append(Buffer.from(JSON.stringify({ seq: ++seq, at: '2026-10-06T00:00:00.000Z', invocationId: 'metadata', ...value }) + '\n'));
   const identity = { channelId: 1, transaction: ['out-of-order', 'missing-transaction'].includes(fault ?? '') ? 2 : 1, category: 'ACCOUNTS_CHECK', modelSourceCredit: false };

@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { realpathSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve, relative, basename } from 'node:path';
 import tls from 'node:tls';
@@ -9,8 +9,8 @@ export function createNativeBodyTlsFixture(): { directory: string; ca: Buffer; c
   const candidates = process.platform === 'win32' ? ['C:/Program Files/Git/usr/bin/openssl.exe', 'openssl'] : ['openssl'];
   const openssl = candidates.find(command => spawnSync(command, ['version'], { stdio: 'ignore', windowsHide: true }).status === 0);
   if (!openssl) throw new Error('native_body_test_openssl_unavailable');
-  const directory = mkdtempSync(join(tmpdir(), 'native-body-tls-'));
-  const cleanup = () => { const target = resolve(directory), within = relative(resolve(tmpdir()), target); if (!within || within.startsWith('..') || !basename(target).startsWith('native-body-tls-')) throw new Error('native_body_test_cleanup_target'); rmSync(target, { recursive: true, force: true }); };
+  const directory = realpathSync(mkdtempSync(join(tmpdir(), 'native-body-tls-')));
+  const cleanup = () => { const target = resolve(directory), within = relative(realpathSync(tmpdir()), target); if (!within || within.startsWith('..') || !basename(target).startsWith('native-body-tls-')) throw new Error('native_body_test_cleanup_target'); rmSync(target, { recursive: true, force: true }); };
   const run = (args: string[]) => { if (spawnSync(openssl, args, { cwd: directory, stdio: 'ignore', windowsHide: true }).status !== 0) throw new Error('native_body_test_certificate_failed'); };
   try {
     run(['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', 'ca.key.pem', '-out', 'ca.cert.pem', '-days', '1', '-subj', '/CN=Native Local Test CA', '-addext', 'basicConstraints=critical,CA:TRUE']);

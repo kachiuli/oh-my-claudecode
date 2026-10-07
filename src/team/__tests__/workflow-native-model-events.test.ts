@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { realpathSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -22,7 +22,7 @@ function read(raw: unknown, chunkBytes = 65536, sse = false): WorkflowNativeMode
   parser.finish(); expect(JSON.stringify(receipts)).not.toContain(secret); return receipts;
 }
 function diskDigest(value: unknown): string {
-  const root = mkdtempSync(join(tmpdir(), 'omc-native-receipt-')); roots.push(root); writeFileSync(join(root, 'items.json'), JSON.stringify({ output: [value] }));
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'omc-native-receipt-'))); roots.push(root); writeFileSync(join(root, 'items.json'), JSON.stringify({ output: [value] }));
   const file = new WorkflowReviewOwnedFile(root, 'items.json');
   try { return [...iterateWorkflowReviewNativeItems({ file, arrayKey: 'output', publicCompactionMetadata: true })][0]!.sha256; } finally { file.close(); }
 }

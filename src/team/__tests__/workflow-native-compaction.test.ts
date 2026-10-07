@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { realpathSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -9,7 +9,7 @@ import { WorkflowNativeCompactionChain, WorkflowNativeResponseReceipts, type Wor
 
 const roots: string[] = [];
 const dispose: (() => void)[] = [];
-const scratch = () => { const root = mkdtempSync(join(tmpdir(), 'omc-native-items-')); roots.push(root); return root; };
+const scratch = () => { const root = realpathSync(mkdtempSync(join(tmpdir(), 'omc-native-items-'))); roots.push(root); return root; };
 afterEach(() => {
   for (const close of dispose.splice(0)) close();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });

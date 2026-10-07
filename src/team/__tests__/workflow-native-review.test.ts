@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { realpathSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -90,7 +90,7 @@ describe('native reader authority and exact response fitting', () => {
   });
   it('refuses native mode labels and copied authenticated launch declarations before bootstrap effects', async () => {
     expect(() => requireWorkflowNativeReviewClientFactory({ mode: 'native' })).toThrow('workflow_review_reader_observation_required');
-    const root = mkdtempSync(join(tmpdir(), 'omc-native-unbranded-')); roots.push(root);
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'omc-native-unbranded-'))); roots.push(root);
     await expect(qualifyWorkflowNativeReviewClientFactory({ prepared: { validation: 'authenticated' } as PreparedWorkflowBinding,
       cwd: root, directory: join(root, 'bootstrap'), catalogSource: 'unused', expected: undefined!, schema: {}, transport: { certificates: 'unused' } }))
       .rejects.toThrow('workflow_prepared_binding_required');
@@ -100,7 +100,7 @@ describe('native reader authority and exact response fitting', () => {
   });
 
   it('fits near-bound Unicode, escaped, binary and empty pages against the actual native envelope', () => {
-    const root = mkdtempSync(join(tmpdir(), 'omc-native-envelope-')); roots.push(root);
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'omc-native-envelope-'))); roots.push(root);
     const originals = [Buffer.from('界🙂"\\\n'.repeat(5000)), Buffer.from(Array.from({ length: 20000 }, (_, index) => index % 256)), Buffer.alloc(0)];
     const bundle = buildWorkflowReviewSourceBundle({ repository: root, baseCommit: '0'.repeat(40), head: '1'.repeat(40), directory: join(root, 'source'),
       materials: [...originals.map((content, index) => ({ kind: 'source' as const, path: `source-${index}.bin`, content })), ...requiredMaterials()] });
@@ -127,7 +127,7 @@ describe('native reader authority and exact response fitting', () => {
 /** Synthetic protocol fixtures exercise offline checking; they cannot mint native runtime authority. */
 function fixture(fault?: 'extra-tool' | 'wire-corruption' | 'ancestry' | 'missing-completion' | 'missing-empty' | 'wrong-model' | 'wrong-effort' | 'sequence'
   | 'early-final' | 'post-final-call' | 'post-final-inference' | 'post-final-dispatch', sourceRepeats = 300) {
-  const root = mkdtempSync(join(tmpdir(), 'omc-native-trace-fixture-')); roots.push(root);
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'omc-native-trace-fixture-'))); roots.push(root);
   const directory = join(root, 'delivery'); mkdirSync(directory); mkdirSync(join(directory, 'calls'));
   const traceRoot = join(directory, 'trace', 'trace-1234'); mkdirSync(join(traceRoot, 'payloads'), { recursive: true });
   const threadId = 'native-thread'; const turnId = 'native-turn'; const invocationId = 'fixture-invocation';
