@@ -1789,12 +1789,17 @@ export function prepareWorkflowNativeReview(input: {
   const session = new WorkflowNativeReviewSession(input.plan, pins, launch, input.bundle, input.request, input.files, input.artifacts);
   session.revalidate(); return session;
 }
-interface NativeCallRecord {
+const NATIVE_CURSOR_REFUSAL = 'workflow_review_source_invalid_cursor';
+const NATIVE_CURSOR_REFUSAL_RESULT = {
+  contentItems: [{ type: 'inputText', text: 'Error: workflow_review_source_invalid_cursor. Copy the cursor exactly from the preceding page for this entry, or omit cursor to restart.' }],
+  success: false,
+};
+type NativeCallRecord = {
   readonly callId: string; readonly requestId: string | number; readonly tool: string; readonly arguments: unknown;
   readonly request: { offset: number; bytes: number; sha256: string };
   readonly response: { offset: number; bytes: number; sha256: string };
-  readonly receipt: WorkflowReviewSourceReceipt;
-}
+} & ({ readonly receipt: WorkflowReviewSourceReceipt; readonly refusal?: never }
+  | { readonly refusal: typeof NATIVE_CURSOR_REFUSAL; readonly receipt?: never });
 function ownedJson(directory: string, name: string): Record<string, unknown> {
   const file = new WorkflowReviewOwnedFile(directory, name);
   try {
@@ -2013,21 +2018,28 @@ export class WorkflowNativeReviewSession {
       const args = readerArguments(String(params.tool), params.arguments);
       const envelope = (page: Parameters<typeof workflowReviewSourceReceipt>[0]) => ({ id: message.id,
         result: { contentItems: [{ type: 'inputText', text: JSON.stringify(page) }], success: true } });
-      const page = readWorkflowReviewSource(this.bundle(), { kind: params.tool === WORKFLOW_REVIEW_READER_TOOL_MANIFEST ? 'manifest' : 'entry',
-        ...args, requestId: message.id, responseEnvelope: envelope });
-      const receipt = workflowReviewSourceReceipt(page);
-      if (this.calibration?.phase === 'first') {
+      const bundle = this.bundle();
+      let page: ReturnType<typeof readWorkflowReviewSource> | undefined;
+      try {
+        page = readWorkflowReviewSource(bundle, { kind: params.tool === WORKFLOW_REVIEW_READER_TOOL_MANIFEST ? 'manifest' : 'entry',
+          ...args, requestId: message.id, responseEnvelope: envelope });
+      } catch (error) {
+        // A rejected cursor is model input, never a delivered source page. All other reader failures remain fatal.
+        if (!(error instanceof Error) || error.message !== NATIVE_CURSOR_REFUSAL) throw error;
+      }
+      const receipt = page && workflowReviewSourceReceipt(page);
+      if (page && receipt && this.calibration?.phase === 'first') {
         this.calibration.firstManifest ||= receipt.kind === 'manifest' && page.cursor === null;
         this.calibration.firstSource ||= receipt.kind === 'entry' && receipt.id?.startsWith('src-') === true && receipt.bytes > 0;
         if (receipt.bytes > 0) this.calibration.ranges++;
       }
-      if (this.calibration?.phase === 'post') {
+      if (receipt && this.calibration?.phase === 'post') {
         this.calibration.postSource ||= receipt.kind === 'entry' && receipt.id?.startsWith('src-') === true && receipt.bytes > 0;
       }
-      appendWorkflowReviewSourceReceipt(this.plan.receiptsPath, receipt);
-      const response = this.send(envelope(page), true);
+      if (receipt) appendWorkflowReviewSourceReceipt(this.plan.receiptsPath, receipt);
+      const response = this.send(page ? envelope(page) : { id: message.id, result: NATIVE_CURSOR_REFUSAL_RESULT }, true);
       const call: NativeCallRecord = { callId: params.callId, requestId: message.id, tool: String(params.tool), arguments: params.arguments,
-        request: reference, response, receipt };
+        request: reference, response, ...(receipt ? { receipt } : { refusal: NATIVE_CURSOR_REFUSAL }) };
       writeWorkflowReviewArtifact({ path: join(this.plan.directory, 'calls', nativeCallName(params.callId)), chunks: [wire(call)] });
       this.calls!.append(wire(call)); this.callCount++; return;
     }
@@ -2193,7 +2205,7 @@ export async function verifyWorkflowNativeReviewTrace(input: {
     }
     if (count !== TOOLS.length) throw new Error('workflow_review_reader_observation_incomplete');
   };
-  let count = 0; let received = 0; let sequence = 0; let offset = 0; let previousResponse: string | undefined;
+  let count = 0; let received = 0; let receivedReceipts = 0; let sequence = 0; let offset = 0; let previousResponse: string | undefined;
   let firstCallCount = 0; let completedTurns = 0; let currentTurnId = input.turnId; let firstSourceReceived = false; let postSourceReceived = false;
   let pendingInference: { id: string; path: string; postSource: boolean } | undefined; let requestCount = 0; let inventory = false;
   let finalResult = false;
@@ -2258,10 +2270,10 @@ export async function verifyWorkflowNativeReviewTrace(input: {
       if (typeof item.output !== 'string' || item.output !== text) throw new Error('workflow_review_native_delivery_mismatch');
       const marker = join(input.directory, 'consumed', nativeCallName(item.call_id));
       if (!existsSync(marker)) {
-        machine!.record(call.receipt, received + 1); observed.append(wire(call.receipt));
-        if (calibration && currentTurnId === calibration.firstTurnId && call.receipt.kind === 'entry'
+        if (call.receipt) { machine!.record(call.receipt, ++receivedReceipts); observed.append(wire(call.receipt)); }
+        if (call.receipt && calibration && currentTurnId === calibration.firstTurnId && call.receipt.kind === 'entry'
           && call.receipt.id?.startsWith('src-') && call.receipt.bytes > 0) firstSourceReceived = true;
-        if (calibration && currentTurnId === calibration.postTurnId && call.receipt.kind === 'entry'
+        if (call.receipt && calibration && currentTurnId === calibration.postTurnId && call.receipt.kind === 'entry'
           && call.receipt.id?.startsWith('src-') && call.receipt.bytes > 0) {
           const request = frameObject(capture.read(call.request.offset, call.request.bytes));
           if ((request.params as { turnId?: unknown }).turnId !== calibration.postTurnId) throw new Error(code);
@@ -2305,7 +2317,20 @@ export async function verifyWorkflowNativeReviewTrace(input: {
         || requestMessage.method !== 'item/tool/call' || requestMessage.id !== call.requestId || responseMessage.id !== call.requestId
         || params.threadId !== input.threadId || !(calibration ? [calibration.firstTurnId, calibration.postTurnId] : [input.turnId]).includes(String(params.turnId)) || params.callId !== call.callId
         || params.namespace != null || params.tool !== call.tool || !isDeepStrictEqual(params.arguments, call.arguments)
-        || result.success !== true || result.contentItems?.length !== 1 || result.contentItems[0]?.type !== 'inputText'
+        || !WORKFLOW_REVIEW_READER_TOOLS.includes(call.tool)) throw new Error('workflow_review_evidence_corrupt');
+      if (Object.hasOwn(call, 'refusal')) {
+        if (call.refusal !== NATIVE_CURSOR_REFUSAL || Object.hasOwn(call, 'receipt')
+          || !isDeepStrictEqual(responseMessage, { id: call.requestId, result: NATIVE_CURSOR_REFUSAL_RESULT })) throw new Error('workflow_review_evidence_corrupt');
+        const args = readerArguments(call.tool, call.arguments);
+        let refused = false;
+        try {
+          readWorkflowReviewSource(input.bundle, { kind: call.tool === WORKFLOW_REVIEW_READER_TOOL_MANIFEST ? 'manifest' : 'entry', ...args });
+        } catch (error) {
+          if (!(error instanceof Error) || error.message !== NATIVE_CURSOR_REFUSAL) throw error;
+          refused = true;
+        }
+        if (!refused) throw new Error('workflow_review_evidence_corrupt');
+      } else if (result.success !== true || result.contentItems?.length !== 1 || result.contentItems[0]?.type !== 'inputText'
         || !isDeepStrictEqual(workflowReviewSourceReceipt(JSON.parse(result.contentItems[0].text)), call.receipt)) throw new Error('workflow_review_evidence_corrupt');
       const callFile = new WorkflowReviewOwnedFile(join(input.directory, 'calls'), nativeCallName(call.callId));
       try { seals.append(wire({ directory: 'calls', ...callFile.seal() })); } finally { callFile.close(); }
@@ -2459,8 +2484,20 @@ export async function verifyWorkflowNativeReviewTrace(input: {
           if (finalResult || requester?.type !== 'model' || kind?.type !== 'other' || !WORKFLOW_REVIEW_READER_TOOLS.includes(String(kind.name))) throw new Error(code);
           sealPayload(payload.invocation_payload, 'tool_invocation'); break;
         }
-        case 'tool_call_ended':
-          if (payload.status !== 'completed') throw new Error(code); sealPayload(payload.result_payload, 'tool_result'); break;
+        case 'tool_call_ended': {
+          if (payload.status === 'failed') {
+            if (typeof payload.tool_call_id !== 'string') throw new Error(code);
+            const call = ownedJson(join(input.directory, 'calls'), nativeCallName(payload.tool_call_id)) as unknown as NativeCallRecord;
+            const modelCall = ownedJson(join(input.directory, 'model-calls'), nativeCallName(payload.tool_call_id));
+            if (call.refusal !== NATIVE_CURSOR_REFUSAL || call.callId !== payload.tool_call_id || modelCall.call_id !== call.callId
+              || !isDeepStrictEqual(boundedPayload(payload.result_payload, 'tool_result'), { type: 'direct_response',
+                response_item: { type: 'function_call_output', call_id: call.callId, output: NATIVE_CURSOR_REFUSAL_RESULT.contentItems[0]!.text } })) throw new Error(code);
+          } else {
+            if (payload.status !== 'completed') throw new Error(code);
+            sealPayload(payload.result_payload, 'tool_result');
+          }
+          break;
+        }
         case 'protocol_event_observed': sealPayload(payload.event_payload, 'protocol_event'); break;
         default: throw new Error(code);
       }

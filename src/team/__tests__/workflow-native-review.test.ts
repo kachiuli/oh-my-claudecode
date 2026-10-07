@@ -126,7 +126,7 @@ describe('native reader authority and exact response fitting', () => {
 
 /** Synthetic protocol fixtures exercise offline checking; they cannot mint native runtime authority. */
 function fixture(fault?: 'extra-tool' | 'wire-corruption' | 'ancestry' | 'missing-completion' | 'missing-empty' | 'wrong-model' | 'wrong-effort' | 'sequence'
-  | 'early-final' | 'post-final-call' | 'post-final-inference' | 'post-final-dispatch', sourceRepeats = 300) {
+  | 'early-final' | 'post-final-call' | 'post-final-inference' | 'post-final-dispatch', sourceRepeats = 300, recoverCursor = false) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'omc-native-trace-fixture-'))); roots.push(root);
   const directory = join(root, 'delivery'); mkdirSync(directory); mkdirSync(join(directory, 'calls'));
   const traceRoot = join(directory, 'trace', 'trace-1234'); mkdirSync(join(traceRoot, 'payloads'), { recursive: true });
@@ -138,30 +138,55 @@ function fixture(fault?: 'extra-tool' | 'wire-corruption' | 'ancestry' | 'missin
   const frames = new WorkflowReviewOwnedFile(directory, 'frames.bin', true);
   const correlations = new WorkflowReviewOwnedFile(directory, 'correlation.jsonl', true);
   const journal = new WorkflowReviewOwnedFile(directory, 'calls.jsonl', true);
-  let frameSequence = 0; const calls: { callId: string; tool: string; arguments: unknown; output: string }[] = [];
+  let frameSequence = 0; const calls: { callId: string; tool: string; arguments: unknown; output: string; bytes: number }[] = [];
   const record = (direction: string, value: unknown) => {
     const frame = frames.append(wire(value)); correlations.append(wire({ invocationId, reviewerId, effectiveInvocationDigest,
       sequence: ++frameSequence, direction, frame })); return frame;
   };
-  const read = (kind: 'manifest' | 'entry', id?: string) => {
-    let cursor: string | undefined;
-    do {
+  const dispatch = (kind: 'manifest' | 'entry', id?: string, cursor?: string) => {
       const requestId = calls.length; const callId = `call_${requestId}`;
       const tool = WORKFLOW_REVIEW_READER_TOOLS[kind === 'manifest' ? 0 : 1]!;
       const args = { ...(id ? { id } : {}), ...(cursor ? { cursor } : {}) };
+      const message = { id: requestId, method: 'item/tool/call', params: { threadId, turnId, callId, namespace: null, tool, arguments: args } };
+      const request = record('receive', message);
+      if (recoverCursor) {
+        let reply: { result: { contentItems: { text: string }[]; success: boolean } } | undefined;
+        // Exercise the real handler with offline sinks only; this unbranded object cannot authorize a native factory.
+        const session = Object.assign(Object.create(WorkflowNativeReviewSession.prototype) as WorkflowNativeReviewSession, {
+          incoming: request, threadId, turnId, bundle: () => bundle, callCount: 0, calls: journal,
+          plan: { directory, receiptsPath: join(directory, 'intended.jsonl') },
+          send(value: unknown) { reply = value as typeof reply; return record('request', value); },
+        });
+        WorkflowNativeReviewSession.prototype['receive'].call(session, wire(message));
+        if (!reply) throw new Error('missing native fixture response');
+        const output = reply.result.contentItems[0]!.text;
+        const page = reply.result.success ? JSON.parse(output) as ReturnType<typeof readWorkflowReviewSource> : undefined;
+        calls.push({ callId, tool, arguments: args, output, bytes: page?.bytes ?? 0 }); return page;
+      }
       const page = readWorkflowReviewSource(bundle, { kind, id, cursor });
       const output = JSON.stringify(page);
-      const request = record('receive', { id: requestId, method: 'item/tool/call', params: { threadId, turnId, callId, namespace: null, tool, arguments: args } });
       const response = record('request', { id: requestId, result: { contentItems: [{ type: 'inputText', text: output }], success: true } });
       const call = { callId, requestId, tool, arguments: args, request, response, receipt: workflowReviewSourceReceipt(page) };
       journal.append(wire(call)); writeFileSync(join(directory, 'calls', `${sha(callId)}.json`), wire(call));
-      calls.push({ callId, tool, arguments: args, output }); cursor = page.cursor ?? undefined;
+      calls.push({ callId, tool, arguments: args, output, bytes: page.bytes }); return page;
+  };
+  let refused = false;
+  const read = (kind: 'manifest' | 'entry', id?: string) => {
+    let cursor: string | undefined;
+    do {
+      if (recoverCursor && !refused && kind === 'entry' && id?.startsWith('src-') && cursor) {
+        // Same failure class as the real run: 100 base64url characters decoding to 75 non-JSON bytes.
+        expect(dispatch(kind, id, Buffer.alloc(75, 120).toString('base64url'))).toBeUndefined(); refused = true;
+      }
+      const page = dispatch(kind, id, cursor);
+      if (!page) throw new Error('expected source page after valid cursor');
+      cursor = page.cursor ?? undefined;
     } while (cursor);
   };
   read('manifest'); for (const entry of iterateWorkflowReviewManifestEntries(bundle)) read('entry', entry.id);
   const capture = frames.seal(); const correlation = correlations.seal(); frames.close(); correlations.close(); journal.close();
   const attestation = { bundleSha256: bundle.digest, reviewerId, complete: true, entries: bundle.entryCount,
-    ranges: calls.filter(call => (JSON.parse(call.output) as { bytes: number }).bytes > 0).length };
+    ranges: calls.filter(call => call.bytes > 0).length };
   const resultText = JSON.stringify({ findings: [], coverage: attestation });
   const events: unknown[] = []; let ordinal = 0;
   const payload = (kind: string, value: unknown) => {
@@ -238,9 +263,10 @@ function compactionTrace(input: ReturnType<typeof fixture>, request: string, fau
   const correlation = new WorkflowReviewOwnedFile(input.directory, 'manual-correlation.jsonl', true);
   const oldFrames = readFileSync(join(input.directory, input.capture.name));
   const calls = readFileSync(join(input.directory, 'calls.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
-  const positiveSource = (call: typeof calls[number]) => call.receipt.kind === 'entry' && call.receipt.id.startsWith('src-') && call.receipt.bytes > 0;
+  const positiveSource = (call: typeof calls[number]) => call.receipt?.kind === 'entry' && call.receipt.id.startsWith('src-') && call.receipt.bytes > 0;
   const firstCallCount = fault === 'manual-no-post-calls' ? calls.length : fault === 'manual-no-post-positive'
-    ? calls.findLastIndex(positiveSource) + 1 : calls.findIndex(positiveSource) + 1;
+    ? calls.findLastIndex(positiveSource) + 1 : fault === 'invalid-cursor-recovery'
+      ? calls.findIndex(call => call.refusal) + 1 : calls.findIndex(positiveSource) + 1;
   const compactTurnId = automatic ? input.turnId : 'manual-compact-turn';
   const postTurnId = automatic ? input.turnId : 'manual-post-turn'; const compactionId = 'manual-compaction';
   let frameSequence = 0;
@@ -257,7 +283,7 @@ function compactionTrace(input: ReturnType<typeof fixture>, request: string, fau
   writeFileSync(join(input.directory, 'calls.jsonl'), calls.map(call => wire(call).toString()).join(''));
   input.capture = frames.seal(); input.correlation = correlation.seal(); frames.close(); correlation.close();
   const firstResult = JSON.stringify({ findings: [], coverage: { ...input.attestation, complete: false,
-    ranges: calls.slice(0, firstCallCount).filter(call => call.receipt.bytes > 0).length } });
+    ranges: calls.slice(0, firstCallCount).filter(call => call.receipt?.bytes > 0).length } });
   const postRequest = 'Resume the remaining original source and read every empty terminal page.';
   const tools = { ...oldRequest.input[0], id: 'at_inventory', role: 'developer' };
   const message = (text: string, id: string, role = 'user') => ({ type: 'message', id, role, content: [{ type: 'input_text', text }] });
@@ -313,6 +339,13 @@ function compactionTrace(input: ReturnType<typeof fixture>, request: string, fau
   event({ type: 'rollout_started', root_thread_id: input.threadId });
   event(oldEvents[1].payload); event({ type: 'codex_turn_started', thread_id: input.threadId, codex_turn_id: turnId });
   infer('first', [tools, instructions, ...context, prompt], firstCalls);
+  for (const call of calls.slice(0, firstCallCount).filter(call => call.refusal)) {
+    event({ type: 'tool_call_started', tool_call_id: call.callId, requester: { type: 'model', model_visible_call_id: call.callId },
+      kind: { type: 'other', name: call.tool }, invocation_payload: payload('tool_invocation', { tool_name: call.tool, arguments: call.arguments }) });
+    const { id: _id, ...response_item } = outputs([call])[0]!;
+    event({ type: 'tool_call_ended', tool_call_id: call.callId, status: 'failed',
+      result_payload: payload('tool_result', { type: 'direct_response', response_item }) });
+  }
   if (!automatic) {
     infer('first-final', firstOutputs, [reasoning, firstFinal], 'resp_first');
     event({ type: 'codex_turn_ended', codex_turn_id: turnId, status: 'completed' });
@@ -345,7 +378,7 @@ function compactionTrace(input: ReturnType<typeof fixture>, request: string, fau
 }
 
 function observedFixture(fault?: string, cachedWarmup = false, manual: boolean | 'auto' = false) {
-  const input = fixture(undefined, manual ? 1000 : 300); const traceRoot = join(input.directory, 'trace', 'trace-1234');
+  const input = fixture(undefined, manual ? 1000 : 300, fault === 'invalid-cursor-recovery'); const traceRoot = join(input.directory, 'trace', 'trace-1234');
   const request = 'Read every source page, preserve progress and return the exact coverage result.';
   const manualProof = manual ? compactionTrace(input, request, fault, manual === 'auto') : undefined;
   const events = readFileSync(join(traceRoot, 'trace.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
@@ -426,6 +459,37 @@ function observedFixture(fault?: string, cachedWarmup = false, manual: boolean |
 }
 
 describe('offline selected transport and native trace join', () => {
+  it('continues after a malformed native cursor without source credit and retains the refusal through compaction', async () => {
+    const input = observedFixture('invalid-cursor-recovery', false, 'auto');
+    const calls = readFileSync(join(input.directory, 'calls.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    const refused = calls.filter(call => call.refusal);
+    expect(refused).toHaveLength(1);
+    const refusal = refused[0]!;
+    expect(refusal.refusal).toBe('workflow_review_source_invalid_cursor');
+    expect(refusal).not.toHaveProperty('receipt');
+    expect(refusal.arguments.cursor).toMatch(/^[A-Za-z0-9_-]{100}$/);
+    expect(() => JSON.parse(Buffer.from(refusal.arguments.cursor, 'base64url').toString('utf8'))).toThrow();
+    const index = calls.indexOf(refusal); const frames = readFileSync(join(input.directory, input.capture.name));
+    const response = (call: typeof refusal) => JSON.parse(frames.subarray(call.response.offset, call.response.offset + call.response.bytes).toString()).result;
+    const rejected = response(refusal);
+    expect(rejected.success).toBe(false); expect(refusal.response.bytes).toBeLessThanOrEqual(8192);
+    expect(calls[index + 1].arguments).toEqual({ id: refusal.arguments.id,
+      cursor: JSON.parse(response(calls[index - 1]).contentItems[0].text).cursor });
+    const traceRoot = join(input.directory, 'trace', 'trace-1234');
+    const events = readFileSync(join(traceRoot, 'trace.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    const compact = events.find(event => event.payload.type === 'compaction_request_started');
+    expect(JSON.parse(readFileSync(join(traceRoot, compact.payload.request_payload.path), 'utf8')).input).toContainEqual({
+      type: 'function_call_output', id: `fco_${refusal.callId}`, call_id: refusal.callId, output: rejected.contentItems[0].text,
+    });
+    const proof = await verifyWorkflowNativeReviewTrace(input);
+    expect(proof.native.compaction).toMatchObject({ authority: false, compactions: 1 });
+    expect(proof.ranges).toBe(input.attestation.ranges);
+    const observed = readFileSync(join(input.directory, proof.native.observed.name), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    const intended = readFileSync(join(input.directory, 'intended.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    expect(observed).toEqual(intended); expect(observed).toHaveLength(input.callCount - 1);
+    expect(calls.every(call => existsSync(join(input.directory, 'consumed', `${sha(call.callId)}.json`)))).toBe(true);
+    expect(() => requireWorkflowNativeReviewClientFactory({ ...input, mode: 'native' })).toThrow('workflow_review_reader_observation_required');
+  });
   it.each([false, true])('proves exact done/native outputs with explicit-empty completion arrays (manual=%s)', async manual => {
     const input = observedFixture('empty-completed', !manual, manual);
     const proof = await verifyWorkflowNativeReviewTrace(input);
