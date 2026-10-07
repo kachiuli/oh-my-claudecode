@@ -2139,7 +2139,7 @@ export class WorkflowReviewCoverageMachine {
   private sequence = 0;
   private releaseRecord: (() => void) | undefined;
   constructor(private readonly bundle: WorkflowReviewSourceBundle, private readonly owner?: WorkflowReviewProofOwner) {
-    this.scratch = owner?.directory ?? mkdtempSync(join(tmpdir(), 'omc-review-coverage-'));
+    this.scratch = owner?.directory ?? mkdtempSync(join(realpathSync(tmpdir()), 'omc-review-coverage-'));
     if (owner) { mkdirSync(this.scratch); this.proofFile = new WorkflowReviewOwnedFile(this.scratch, 'proof.jsonl', true); }
     this.objects = iterateWorkflowReviewManifestEntries(bundle);
     this.current = { key: 'manifest', kind: 'manifest', id: null, bytes: bundle.manifestBytes, sha256: bundle.digest, cursor: 0 };

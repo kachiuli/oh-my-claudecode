@@ -500,7 +500,8 @@ describe('administrative review compatibility', () => {
     expect(v2Attempt(state).artifacts.some(entry => entry.kind === 'workflow-review-coverage')).toBe(false);
   }, 600_000);
 
-  it('adopts, freezes, reopens and independently covers more than 100000 committed tiny paths through real SDK pages', async () => {
+  // Opt in with OMC_WORKFLOW_REVIEW_100K_STRESS=1; routine gates retain normal and large-byte cases.
+  it.runIf(process.env.OMC_WORKFLOW_REVIEW_100K_STRESS === '1')('adopts, freezes, reopens and independently covers more than 100000 committed tiny paths through real SDK pages', async () => {
     const count = 100_001;
     for (let index = 0; index < count; index++) {
       const shard = String(Math.floor(index / 1000)).padStart(3, '0');

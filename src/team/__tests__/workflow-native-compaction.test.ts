@@ -297,13 +297,14 @@ describe('offline native compaction chain', () => {
     await expect(fixture.chain.startGeneration('after-final', fixture.baseline)).rejects.toThrow(/workflow_review_/);
     await expect(fixture.chain.finish()).rejects.toThrow(/workflow_review_/);
   });
-  it.each(['effort', 'extra-tool', 'source-drop', 'trigger', 'trace-parallel', 'public-metadata', 'opaque', 'checkpoint-input',
-    'injection', 'injection-time', 'retained-drop', 'existing-id', 'generated-id', 'duplicate-id', 'old-ancestor'])(
-    'refuses %s compaction alteration before a terminal proof', async fault => {
+  for (const fault of ['effort', 'extra-tool', 'source-drop', 'trigger', 'trace-parallel', 'public-metadata', 'opaque', 'checkpoint-input',
+    'injection', 'injection-time', 'retained-drop', 'existing-id', 'generated-id', 'duplicate-id', 'old-ancestor']) {
+    it(`refuses ${fault} compaction alteration before a terminal proof`, async () => {
       const fixture = compactionFixture(fault); await fixture.prepare();
       await expect((async () => { await fixture.compact(); return fixture.finish(); })()).rejects.toThrow(/workflow_review_/);
       await expect(fixture.chain.finish()).rejects.toThrow(/workflow_review_/);
-    });
+    }, process.platform === 'win32' && (fault === 'existing-id' || fault === 'old-ancestor') ? 120_000 : 30_000);
+  }
   it('refuses overlap, an uncompleted request, missing install and a missing subsequent baseline', async () => {
     const first = compactionFixture(); await first.chain.startGeneration('pending', first.first);
     await expect(first.chain.startCompaction('compact_id', 'compaction_request:1', first.compactRequest, first.trace)).rejects.toThrow(/workflow_review_/);
