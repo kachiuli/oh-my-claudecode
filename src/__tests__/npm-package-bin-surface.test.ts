@@ -159,10 +159,12 @@ function getPackedPackage(): PackedPackage {
     }
     expect(tarballName).toBe(expectedTarballName);
     expect(basename(tarballName)).toBe(tarballName);
-    expect(tarballName).not.toMatch(/[\\/]/);
+    expect(tarballName).not.toMatch(/[\\/:]/);
+    expect(tarballName).not.toMatch(/^-/);
 
     tarballPathCache = join(packDirCache, tarballName);
-    const files = execFileSync("tar", ["-tzf", tarballPathCache], {
+    const files = execFileSync("tar", ["-tzf", tarballName], {
+      cwd: packDirCache,
       encoding: "utf-8",
     })
       .trim()
@@ -170,7 +172,7 @@ function getPackedPackage(): PackedPackage {
       .filter(Boolean)
       .map((file) => file.replace(/^package\//, ""));
 
-    execFileSync("tar", ["-xzf", tarballPathCache, "-C", packDirCache]);
+    execFileSync("tar", ["-xzf", tarballName], { cwd: packDirCache });
 
     const extractedPackageRoot = join(packDirCache, "package");
     packedPackageCache = {

@@ -123,6 +123,19 @@ function scratch(): string {
   scratchRoots.push(root);
   return root;
 }
+/** Reproduce an actual same-size Windows write whose observable timestamps did not advance. */
+function holdFileTimestamps(path: string): void {
+  const initial = fs.statSync(path); const fstat = fs.fstatSync; const lstat = fs.lstatSync;
+  const hold = <T extends fs.Stats | fs.BigIntStats | undefined>(stat: T): T => {
+    if (stat && stat.dev === initial.dev && stat.ino === initial.ino) {
+      Object.assign(stat, { mtimeMs: initial.mtimeMs, ctimeMs: initial.ctimeMs,
+        mtime: initial.mtime, ctime: initial.ctime });
+    }
+    return stat;
+  };
+  vi.spyOn(fs, 'fstatSync').mockImplementation(((...args: Parameters<typeof fs.fstatSync>) => hold(fstat(...args))) as typeof fs.fstatSync);
+  vi.spyOn(fs, 'lstatSync').mockImplementation(((...args: Parameters<typeof fs.lstatSync>) => hold(lstat(...args))) as typeof fs.lstatSync);
+}
 /** Freeze one bundle into its own private parent directory. */
 function freeze(materials: ReadonlyArray<WorkflowReviewMaterialInput> | Iterable<WorkflowReviewMaterialInput>,
   identity = IDENTITY): WorkflowReviewSourceBundle {
@@ -141,10 +154,14 @@ describe('trusted live reader boundaries', () => {
     const method = operation === 'append' ? 'append' : operation === 'revisit' ? 'read' : 'seal';
     const close = WorkflowReviewOwnedFile.prototype.close;
     const targets = new WeakSet<WorkflowReviewOwnedFile>(); let closed = false;
-    const fault = vi.spyOn(WorkflowReviewOwnedFile.prototype, method).mockImplementation(function (this: WorkflowReviewOwnedFile) {
+    const fault = operation === 'revisit' ? vi.spyOn(fs, 'readSync').mockImplementation(() => { throw undefined; })
+      : vi.spyOn(WorkflowReviewOwnedFile.prototype, method).mockImplementation(function (this: WorkflowReviewOwnedFile) {
       targets.add(this); throw undefined;
     });
-    const closing = vi.spyOn(WorkflowReviewOwnedFile.prototype, 'close').mockImplementation(function (this: WorkflowReviewOwnedFile) {
+    const closeDescriptor = fs.closeSync;
+    const closing = operation === 'revisit' ? vi.spyOn(fs, 'closeSync').mockImplementation(fd => {
+      closeDescriptor(fd); closed = true; throw new Error('secondary owned close');
+    }) : vi.spyOn(WorkflowReviewOwnedFile.prototype, 'close').mockImplementation(function (this: WorkflowReviewOwnedFile) {
       close.call(this); if (targets.has(this)) { closed = true; throw new Error('secondary owned close'); }
     });
     let failure: { value: unknown } | undefined;
@@ -228,6 +245,285 @@ describe('trusted live reader boundaries', () => {
       await expect(lines.next()).rejects.toThrow('workflow_review_evidence_custody');
       expect(() => owned.seal()).toThrow('workflow_review_evidence_custody');
     } finally { await lines.return(undefined); owned.close(); }
+  });
+
+  it('seals original opened bytes without allocating an unused snapshot', () => {
+    const root = scratch(), path = join(root, 'original'), initial = patternBytes(131081, 17); writeFileSync(path, initial);
+    const open = fs.openSync; let snapshots = 0;
+    vi.spyOn(fs, 'openSync').mockImplementation(((name: fs.PathLike, flags: string | number, mode?: number) => {
+      if (String(name).includes('omc-review-custody-')) snapshots++;
+      return open(name, flags, mode);
+    }) as typeof fs.openSync);
+    const owned = new WorkflowReviewOwnedFile(root, 'original');
+    try {
+      expect(owned.seal()).toEqual({ name: 'original', bytes: initial.length, sha256: digest(initial) });
+      expect(snapshots).toBe(0);
+      expect(owned.read(65531, 65536)).toEqual(initial.subarray(65531, 131067));
+      expect(snapshots).toBe(1);
+      expect(owned.read(0, 5)).toEqual(initial.subarray(0, 5)); expect(snapshots).toBe(1);
+    } finally { owned.close(); }
+  });
+
+  it.each(['read', 'seal', 'append'] as const)('refuses equal-timestamp mutation before the first owned %s', operation => {
+    const root = scratch(), path = join(root, 'original'); writeFileSync(path, 'first'); holdFileTimestamps(path);
+    const owned = new WorkflowReviewOwnedFile(root, 'original', operation === 'append' ? 'append' : false);
+    try {
+      writeFileSync(path, 'other');
+      expect(() => operation === 'read' ? owned.read(0, 5) : operation === 'seal' ? owned.seal() : owned.append(Buffer.from('!')))
+        .toThrow('workflow_review_evidence_custody');
+      expect(readFileSync(path, 'utf8')).toBe('other');
+    } finally { owned.close(); }
+  });
+
+  it.each(['read', 'seal'] as const)('refuses equal-timestamp same-size mutation at an owned %s boundary', operation => {
+    const root = scratch(); const path = join(root, 'original'); writeFileSync(path, 'first'); holdFileTimestamps(path);
+    const owned = new WorkflowReviewOwnedFile(root, 'original');
+    try {
+      expect(owned.read(0, 5).toString()).toBe('first'); writeFileSync(path, 'other');
+      expect(() => operation === 'read' ? owned.read(0, 5) : owned.seal()).toThrow('workflow_review_evidence_custody');
+    } finally { owned.close(); }
+  });
+
+  it.each(['cached-line', 'next-chunk', 'terminal-eof'] as const)('refuses equal-timestamp ledger mutation before %s', boundary => {
+    return (async () => {
+      const root = scratch(); const path = join(root, 'ledger');
+      const original = '"first"\n' + (boundary === 'cached-line' ? '"second"\n' : boundary === 'next-chunk' ? ' '.repeat(65536) + '"last"\n' : '');
+      writeFileSync(path, original); holdFileTimestamps(path);
+      const owned = new WorkflowReviewOwnedFile(root, 'ledger'); const lines = streamWorkflowReviewLines(owned);
+      try {
+        expect(await lines.next()).toEqual({ done: false, value: '"first"\n' });
+        writeFileSync(path, original.replace('first', 'other'));
+        await expect(lines.next()).rejects.toThrow('workflow_review_evidence_custody');
+      } finally { try { await lines.return(undefined); } finally { owned.close(); } }
+    })();
+  });
+
+  it.each(['unread-range', 'previous-range', 'whole-seal'] as const)('binds equal-timestamp %s bytes to the original opened file', boundary => {
+    const root = scratch(), path = join(root, 'original'); const initial = patternBytes(196608, 13);
+    writeFileSync(path, initial); holdFileTimestamps(path);
+    const owned = new WorkflowReviewOwnedFile(root, 'original');
+    try {
+      expect(owned.read(0, 32)).toEqual(initial.subarray(0, 32));
+      const changed = Buffer.from(initial); changed[boundary === 'previous-range' ? 0 : 131072] ^= 1; writeFileSync(path, changed);
+      expect(() => boundary === 'whole-seal' ? owned.seal() : owned.read(131072, 32)).toThrow('workflow_review_evidence_custody');
+    } finally { owned.close(); }
+  });
+
+  it('preserves exact unaligned opened bytes and short reads with bounded buffers', () => {
+    const root = scratch(), path = join(root, 'original'), initial = patternBytes(131081, 17); writeFileSync(path, initial);
+    resetWorkflowReviewResourceUsage(); const read = fs.readSync;
+    vi.spyOn(fs, 'readSync').mockImplementation(((fd: number, buffer: Buffer, offset: number, length: number, position: number) =>
+      read(fd, buffer, offset, Math.min(length, 997), position)) as typeof fs.readSync);
+    const owned = new WorkflowReviewOwnedFile(root, 'original');
+    try {
+      expect(owned.read(65531, 65536)).toEqual(initial.subarray(65531, 131067));
+      expect(owned.read(initial.length, 0)).toEqual(Buffer.alloc(0));
+      expect(owned.seal()).toEqual({ name: 'original', bytes: initial.length, sha256: digest(initial) });
+    } finally { owned.close(); }
+    expect(workflowReviewResourceUsage()).toMatchObject({ descriptors: 0, bufferBytes: 0 });
+    expect(workflowReviewResourceUsage().largestBuffer).toBeLessThanOrEqual(65536);
+    expect(workflowReviewResourceUsage().peakBufferBytes).toBeLessThanOrEqual(1024 * 1024);
+  });
+
+  it.each([true, 'append'] as const)('binds own appended bytes and detects old-byte mutation for mode %s', mode => {
+    const root = scratch(), path = join(root, 'original'); if (mode === 'append') writeFileSync(path, 'prefix');
+    const owned = new WorkflowReviewOwnedFile(root, 'original', mode);
+    try {
+      const prefix = mode === 'append' ? 'prefix' : '';
+      expect(owned.append(Buffer.from('first'))).toEqual({ offset: prefix.length, bytes: 5, sha256: digest('first') });
+      expect(owned.append(Buffer.from('second'))).toEqual({ offset: prefix.length + 5, bytes: 6, sha256: digest('second') });
+      expect(owned.seal().sha256).toBe(digest(prefix + 'firstsecond'));
+      holdFileTimestamps(path); writeFileSync(path, prefix + 'othersecond');
+      expect(() => owned.seal()).toThrow('workflow_review_evidence_custody');
+    } finally { owned.close(); }
+  });
+
+  it('seals the whole original ledger after the last buffered line resumes', async () => {
+    const root = scratch(), path = join(root, 'ledger'), original = 'first\n' + ' '.repeat(65536) + 'last\n';
+    writeFileSync(path, original); holdFileTimestamps(path);
+    const owned = new WorkflowReviewOwnedFile(root, 'ledger'), lines = streamWorkflowReviewLines(owned);
+    try {
+      expect((await lines.next()).value).toBe('first\n');
+      expect((await lines.next()).value).toBe(' '.repeat(65536) + 'last\n');
+      writeFileSync(path, original.replace('first', 'other'));
+      await expect(lines.next()).rejects.toThrow('workflow_review_evidence_custody');
+    } finally { try { await lines.return(undefined); } finally { owned.close(); } }
+  });
+
+  it('closes the original descriptor when its initial content hash fails', () => {
+    const root = scratch(), path = join(root, 'evidence'); writeFileSync(path, 'original');
+    resetWorkflowReviewResourceUsage();
+    vi.spyOn(fs, 'readSync').mockImplementation(() => { throw undefined; });
+    let failure: { value: unknown } | undefined;
+    try { new WorkflowReviewOwnedFile(root, 'evidence'); } catch (value) { failure = { value }; }
+    expect(failure).toEqual({ value: undefined });
+    expect(workflowReviewResourceUsage()).toMatchObject({ descriptors: 0, bufferBytes: 0 });
+  });
+
+  it.each(['open', 'unlink', 'copy'] as const)('closes claimed snapshot resources after lazy %s failure', point => {
+    const root = scratch(), path = join(root, 'evidence'); writeFileSync(path, 'original');
+    resetWorkflowReviewResourceUsage(); const failure = new Error('snapshot construction failure');
+    const open = fs.openSync, unlink = fs.unlinkSync, read = fs.readSync, close = fs.closeSync; const descriptors = new Set<number>();
+    vi.spyOn(fs, 'openSync').mockImplementation(((name: fs.PathLike, flags: string | number, mode?: number) => {
+      if (point === 'open' && String(name).includes('omc-review-custody-')) throw failure;
+      const fd = open(name, flags, mode); descriptors.add(fd); return fd;
+    }) as typeof fs.openSync);
+    vi.spyOn(fs, 'closeSync').mockImplementation(fd => { close(fd); descriptors.delete(fd); });
+    const owned = new WorkflowReviewOwnedFile(root, 'evidence'); let refusedUnlink = false;
+    vi.spyOn(fs, 'unlinkSync').mockImplementation(name => {
+      if (point === 'unlink' && !refusedUnlink) { refusedUnlink = true; throw failure; } unlink(name);
+    });
+    vi.spyOn(fs, 'readSync').mockImplementation(((...args: Parameters<typeof fs.readSync>) => {
+      if (point === 'copy') throw failure; return read(...args);
+    }) as typeof fs.readSync);
+    try { expect(() => owned.read(0, 8)).toThrow(failure); } finally { owned.close(); }
+    expect(descriptors.size).toBe(0); expect(readFileSync(path, 'utf8')).toBe('original');
+    expect(workflowReviewResourceUsage()).toMatchObject({ descriptors: 0, bufferBytes: 0 });
+  });
+
+  it('attempts both opened descriptors on close and preserves a first falsy failure', () => {
+    const root = scratch(); const owned = new WorkflowReviewOwnedFile(root, 'evidence', true); const close = fs.closeSync; let closed = 0;
+    owned.read(0, 0);
+    vi.spyOn(fs, 'closeSync').mockImplementation(fd => { close(fd); closed++; if (closed === 1) throw undefined; throw new Error('secondary snapshot close'); });
+    let failure: { value: unknown } | undefined;
+    try { owned.close(); } catch (value) { failure = { value }; }
+    expect(failure).toEqual({ value: undefined }); expect(closed).toBe(2); owned.close(); expect(closed).toBe(2);
+    expect(workflowReviewResourceUsage().descriptors).toBe(0);
+  });
+
+  it.each(['original', 'snapshot'] as const)('preserves a partial %s write failure and closes both handles', target => {
+    const root = scratch(), owned = new WorkflowReviewOwnedFile(root, 'evidence', true), write = fs.writeSync;
+    let first = true;
+    vi.spyOn(fs, 'writeSync').mockImplementation(((fd: number, bytes: Buffer, offset: number, length: number, position: number) => {
+      if ((fs.fstatSync(fd).nlink === 0) === (target === 'snapshot')) {
+        if (!first) throw undefined;
+        first = false; return write(fd, bytes, offset, 1, position);
+      }
+      return write(fd, bytes, offset, length, position);
+    }) as typeof fs.writeSync);
+    let failure: { value: unknown } | undefined;
+    try { owned.append(Buffer.from('original')); } catch (value) { failure = { value }; }
+    finally { owned.close(); }
+    expect(failure).toEqual({ value: undefined }); expect(first).toBe(false);
+    expect(workflowReviewResourceUsage()).toMatchObject({ descriptors: 0, bufferBytes: 0 });
+  });
+
+  it('refuses an intervening actual write before appended known bytes can be acknowledged', () => {
+    const root = scratch(), owned = new WorkflowReviewOwnedFile(root, 'evidence', true), write = fs.writeSync;
+    let changed = false;
+    vi.spyOn(fs, 'writeSync').mockImplementation(((fd: number, bytes: Buffer, offset: number, length: number, position: number) => {
+      const count = write(fd, bytes, offset, length, position);
+      if (!changed && fs.fstatSync(fd).nlink === 1) { changed = true; writeFileSync(join(root, 'evidence'), 'changed!'); }
+      return count;
+    }) as typeof fs.writeSync);
+    try { expect(() => owned.append(Buffer.from('original'))).toThrow('workflow_review_evidence_custody'); }
+    finally { owned.close(); }
+    expect(changed).toBe(true);
+  });
+
+  it('disposes both retained reconstruction and proof handles after a first falsy close failure', () => {
+    const bundle = freeze([{ kind: 'source', path: 'large.bin', content: patternBytes(20000, 7) }, ...singletons()]);
+    const directory = join(scratch(), 'proof'), machine = new WorkflowReviewCoverageMachine(bundle,
+      { directory, invocationId: 'invocation', reviewerId: 'synthetic-reviewer', effectiveInvocationDigest: digest('launch') });
+    const { receipts } = pageEveryRange(bundle), first = receipts.findIndex(item => item.id === 'src-0');
+    for (const receipt of receipts.slice(0, first + 1)) machine.record(receipt);
+    const close = WorkflowReviewOwnedFile.prototype.close; let proofClosed = false;
+    const fault = vi.spyOn(WorkflowReviewOwnedFile.prototype, 'close').mockImplementation(function (this: WorkflowReviewOwnedFile) {
+      close.call(this); if (this.name === 'entry-src-0') throw undefined;
+      if (this.name === 'proof.jsonl') { proofClosed = true; throw new Error('secondary proof close'); }
+    });
+    let failure: { value: unknown } | undefined;
+    try { machine.dispose(); } catch (value) { failure = { value }; }
+    finally { fault.mockRestore(); machine.dispose(); }
+    expect(failure).toEqual({ value: undefined }); expect(proofClosed).toBe(true);
+    expect(workflowReviewResourceUsage()).toMatchObject({ descriptors: 0, bufferBytes: 0, records: 0 });
+  });
+
+  it.each(['snapshot-bytes', 'source-and-snapshot', 'snapshot-truncation', 'snapshot-identity'] as const)('refuses %s corruption against the retained baseline digest', change => {
+    const root = scratch(), path = join(root, 'evidence'), originalFstat = fs.fstatSync; writeFileSync(path, 'first'); holdFileTimestamps(path);
+    const open = fs.openSync; let snapshot: number | undefined;
+    vi.spyOn(fs, 'openSync').mockImplementation(((name: fs.PathLike, flags: string | number, mode?: number) => {
+      const fd = open(name, flags, mode); if (String(name).includes('omc-review-custody-')) snapshot = fd; return fd;
+    }) as typeof fs.openSync);
+    const owned = new WorkflowReviewOwnedFile(root, 'evidence');
+    try {
+      expect(owned.read(0, 5).toString()).toBe('first');
+      expect(snapshot).toBeDefined(); expect(fs.fstatSync(snapshot!).nlink).toBe(0);
+      if (change === 'snapshot-truncation') fs.ftruncateSync(snapshot!, 1);
+      else if (change === 'snapshot-identity') {
+        vi.spyOn(fs, 'fstatSync').mockImplementation(((...args: Parameters<typeof fs.fstatSync>) => {
+          const stat = originalFstat(...args); if (args[0] === snapshot) Object.assign(stat, { ino: stat.ino === 0 ? 1 : 0 }); return stat;
+        }) as typeof fs.fstatSync);
+      } else {
+        fs.writeSync(snapshot!, Buffer.from('other'), 0, 5, 0);
+        if (change === 'source-and-snapshot') writeFileSync(path, 'other');
+      }
+      expect(() => owned.seal()).toThrow('workflow_review_evidence_custody');
+    } finally { owned.close(); }
+  });
+
+  it('keeps reconstruction append and completed revisit reads bounded independently of object size', () => {
+    const bundle = freeze([{ kind: 'source', path: 'large.bin', content: patternBytes(2 * 1024 * 1024, 5) }, ...singletons()]);
+    const directory = join(scratch(), 'proof'), machine = new WorkflowReviewCoverageMachine(bundle,
+      { directory, invocationId: 'invocation', reviewerId: 'synthetic-reviewer', effectiveInvocationDigest: digest('launch') });
+    const { receipts, ranges } = pageEveryRange(bundle); const revisit = receipts.find(item => item.id === 'src-0')!;
+    const open = fs.openSync, read = fs.readSync; let snapshots = 0, readBytes = 0, measure = false;
+    const target = join(directory, 'entry-src-0'); const targetDescriptors = new Set<number>();
+    vi.spyOn(fs, 'openSync').mockImplementation(((path: fs.PathLike, flags: string | number, mode?: number) => {
+      const fd = open(path, flags, mode); if (String(path).includes('omc-review-custody-')) snapshots++;
+      if (String(path) === target) targetDescriptors.add(fd); return fd;
+    }) as typeof fs.openSync);
+    vi.spyOn(fs, 'readSync').mockImplementation(((fd: number, buffer: Buffer, offset: number, length: number, position: number) => {
+      const count = read(fd, buffer, offset, length, position); if (measure && targetDescriptors.has(fd)) readBytes += count; return count;
+    }) as typeof fs.readSync);
+    try {
+      for (const receipt of receipts) machine.record(receipt);
+      expect(snapshots).toBe(bundle.entryCount + 2); // each entry, manifest and proof journal; never per page
+      measure = true; const before = snapshots;
+      expect(machine.record(revisit)).toBe(false);
+      expect(readBytes).toBe(revisit.bytes); expect(snapshots).toBe(before);
+      machine.finish(attestationFor(bundle, ranges + 1));
+    } finally { machine.dispose(); }
+    expect(workflowReviewResourceUsage().descriptors).toBe(0);
+    expect(workflowReviewResourceUsage().peakDescriptors).toBeLessThanOrEqual(20);
+  });
+
+  it.each(['changed-bytes', 'hardlink', 'replacement'] as const)('refuses a completed reconstruction revisit with %s', change => {
+    const bundle = freeze(singletons()), directory = join(scratch(), 'proof');
+    const machine = new WorkflowReviewCoverageMachine(bundle,
+      { directory, invocationId: 'invocation', reviewerId: 'synthetic-reviewer', effectiveInvocationDigest: digest('launch') });
+    const { receipts } = pageEveryRange(bundle); const receipt = receipts[0]!, path = join(directory, 'manifest');
+    try {
+      for (const item of receipts) machine.record(item);
+      if (change === 'changed-bytes') {
+        const bytes = readFileSync(path); bytes[0] ^= 1; writeFileSync(path, bytes);
+      } else if (change === 'hardlink') linkSync(path, join(directory, 'alias'));
+      else {
+        const read = fs.readSync; const before = fs.statSync(path); let replaced = false;
+        vi.spyOn(fs, 'readSync').mockImplementation(((...args: Parameters<typeof fs.readSync>) => {
+          const stat = fs.fstatSync(args[0]);
+          if (!replaced && stat.dev === before.dev && stat.ino === before.ino) {
+            replaced = true; fs.renameSync(path, path + '.original'); writeFileSync(path, readFileSync(path + '.original'));
+          }
+          return read(...args);
+        }) as typeof fs.readSync);
+      }
+      expect(() => machine.record(receipt)).toThrow(change === 'changed-bytes' ? 'workflow_review_coverage_incomplete' : 'workflow_review_evidence_custody');
+    } finally { machine.dispose(); }
+  });
+
+  it('uses the retained original snapshot for partial reconstruction revisits', () => {
+    const bundle = freeze([{ kind: 'source', path: 'large.bin', content: patternBytes(20000, 7) }, ...singletons()]);
+    const directory = join(scratch(), 'proof'), machine = new WorkflowReviewCoverageMachine(bundle,
+      { directory, invocationId: 'invocation', reviewerId: 'synthetic-reviewer', effectiveInvocationDigest: digest('launch') });
+    const { receipts } = pageEveryRange(bundle); const first = receipts.findIndex(item => item.id === 'src-0');
+    try {
+      for (const item of receipts.slice(0, first + 1)) machine.record(item);
+      expect(machine.record(receipts[first])).toBe(false);
+      const path = join(directory, 'entry-src-0'); holdFileTimestamps(path);
+      const bytes = readFileSync(path); bytes[0] ^= 1; writeFileSync(path, bytes);
+      expect(() => machine.record(receipts[first])).toThrow('workflow_review_evidence_custody');
+    } finally { machine.dispose(); }
   });
 
   it.each(['-r', '-r./unsealed.cjs', '-e', '--eval=import("./unsealed.mjs")', '-p', '--print', '--import', '--loader=./outside.mjs', '--experimental-loader'])('refuses unsealed Node bootstrap %s before creating a synthetic capsule', async flag => {
@@ -460,9 +756,11 @@ describe('trusted live reader boundaries', () => {
     const created = new WorkflowReviewOwnedFile(root, 'frames.bin', true);
     created.append(Buffer.from('first')); const reference = created.seal(); created.close();
     const opened = new WorkflowReviewOwnedFile(root, 'frames.bin');
-    expect(opened.read(0, 5).toString()).toBe('first');
-    writeFileSync(path, 'other');
-    expect(() => opened.read(0, 5)).toThrow('workflow_review_evidence_custody'); opened.close();
+    try {
+      expect(opened.read(0, 5).toString()).toBe('first');
+      writeFileSync(path, 'other');
+      expect(() => opened.read(0, 5)).toThrow('workflow_review_evidence_custody');
+    } finally { opened.close(); }
     expect(reference.bytes).toBe(5);
     linkSync(path, join(root, 'alias.bin'));
     expect(() => new WorkflowReviewOwnedFile(root, 'frames.bin')).toThrow('workflow_review_evidence_custody');
@@ -2073,7 +2371,7 @@ describe('lossless complete review source delivery', () => {
           receiptsPath: WORKFLOW_REVIEW_EPHEMERAL_PLACEHOLDERS.receipts }), '--json-schema', '{}'] });
     expect(claude.projection).not.toBe(expected.projection);
     expect(claude.catalog.projected).toBeNull();
-  });
+  }, process.platform === 'win32' ? 120_000 : 30_000);
 
   it('reopens a bundle through bounded structural streaming and refuses a mis-indexed one', () => {
     const bundle = freeze(syntheticMaterials());

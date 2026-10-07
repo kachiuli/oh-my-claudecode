@@ -32,7 +32,7 @@
  */
 import { createHash } from 'node:crypto';
 import { closeSync, constants, createReadStream, existsSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, opendirSync, readFileSync,
-  readSync, realpathSync, renameSync, rmSync, unlinkSync, writeFileSync, writeSync, type Stats } from 'node:fs';
+  readSync, realpathSync, renameSync, rmSync, rmdirSync, unlinkSync, writeFileSync, writeSync, type Stats } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, posix, relative, resolve, sep } from 'node:path';
@@ -1861,6 +1861,15 @@ function sameOwnedReviewFile(left: Stats, right: Stats): boolean {
   return left.isFile() && right.isFile() && left.nlink === 1 && right.nlink === 1
     && left.dev === right.dev && left.ino === right.ino;
 }
+function checkOwnedReviewFile(root: string, name: string, path: string, descriptor: number, initial: Stats, expected: Stats): Stats {
+  if (ownedReviewPath(root, name) !== path) throw new Error('workflow_review_evidence_custody');
+  const current = fstatSync(descriptor); const named = lstatSync(path);
+  if (named.isSymbolicLink() || !sameOwnedReviewFile(initial, current) || !sameOwnedReviewFile(current, named)
+    || current.size !== named.size || current.mtimeMs !== named.mtimeMs || current.ctimeMs !== named.ctimeMs
+    || current.size !== expected.size || current.mtimeMs !== expected.mtimeMs
+    || current.ctimeMs !== expected.ctimeMs) throw new Error('workflow_review_evidence_custody');
+  return current;
+}
 /** Opened-handle custody for original frames, correlation and reconstructed proof. */
 export class WorkflowReviewOwnedFile {
   private readonly descriptor: number;
@@ -1869,6 +1878,12 @@ export class WorkflowReviewOwnedFile {
   private readonly path: string;
   private closed = false;
   private releaseDescriptor: () => void = () => {};
+  #snapshotDescriptor: number | undefined;
+  #snapshotIdentity: Stats | undefined;
+  #snapshotSize = 0;
+  #originalHash = createHash('sha256');
+  private releaseSnapshot: () => void = () => {};
+  private previousRange: { offset: number; bytes: number } | undefined;
   constructor(private readonly root: string, readonly name: string, private readonly create: boolean | 'append' = false) {
     this.path = ownedReviewPath(root, name);
     const before = create === true ? undefined : lstatSync(this.path);
@@ -1882,33 +1897,126 @@ export class WorkflowReviewOwnedFile {
       this.expected = this.initial;
       if (before && !sameOwnedReviewFile(before, this.initial)) throw new Error('workflow_review_evidence_custody');
       this.check();
-    } catch (error) { try { closeSync(this.descriptor); } catch { /* preserve the custody failure */ } this.releaseDescriptor(); throw error; }
+      const buffer = Buffer.allocUnsafe(Math.max(1, Math.min(this.initial.size, WORKFLOW_REVIEW_BUFFER_LIMIT_BYTES)));
+      const release = holdReviewResource('bufferBytes', buffer.length);
+      try {
+        for (let offset = 0; offset < this.initial.size;) {
+          const bytes = Math.min(buffer.length, this.initial.size - offset);
+          this.readExact(this.descriptor, buffer, bytes, offset);
+          this.#originalHash.update(buffer.subarray(0, bytes)); offset += bytes;
+        }
+      } finally { release(); }
+      this.check();
+    } catch (error) {
+      try { this.close(); } catch { /* preserve the first constructor failure */ }
+      throw error;
+    }
+  }
+  /** Seal-only callers need the original digest; reads/writes additionally need private range bytes. */
+  private ensureSnapshot(): void {
+    if (this.#snapshotDescriptor !== undefined) return;
+    const before = this.check();
+    let snapshotDirectory: string | undefined; let snapshotPath: string | undefined;
+    try {
+      snapshotDirectory = mkdtempSync(join(realpathSync(tmpdir()), 'omc-review-custody-'));
+      snapshotPath = join(snapshotDirectory, 'original');
+      this.#snapshotDescriptor = openSync(snapshotPath, constants.O_CREAT | constants.O_EXCL | constants.O_RDWR | (constants.O_NOFOLLOW ?? 0), 0o600);
+      this.releaseSnapshot = holdReviewResource('descriptors');
+      this.#snapshotIdentity = fstatSync(this.#snapshotDescriptor);
+      if (!sameOwnedReviewFile(this.#snapshotIdentity, lstatSync(snapshotPath))) throw new Error('workflow_review_evidence_custody');
+      unlinkSync(snapshotPath); snapshotPath = undefined;
+      this.checkSnapshot();
+      rmdirSync(snapshotDirectory); snapshotDirectory = undefined;
+      const hash = createHash('sha256');
+      const buffer = Buffer.allocUnsafe(Math.max(1, Math.min(before.size, WORKFLOW_REVIEW_BUFFER_LIMIT_BYTES)));
+      const release = holdReviewResource('bufferBytes', buffer.length);
+      try {
+        for (let offset = 0; offset < before.size;) {
+          const bytes = Math.min(buffer.length, before.size - offset);
+          this.readExact(this.descriptor, buffer, bytes, offset);
+          const chunk = buffer.subarray(0, bytes);
+          this.writeSnapshot(chunk, offset); hash.update(chunk); offset += bytes;
+        }
+      } finally { release(); }
+      this.check(); this.checkSnapshot();
+      if (hash.digest('hex') !== this.#originalHash.copy().digest('hex')) throw new Error('workflow_review_evidence_custody');
+    } catch (error) {
+      try { this.close(); } catch { /* preserve the first constructor failure */ }
+      if (snapshotPath && this.#snapshotIdentity) {
+        try { if (sameOwnedReviewFile(this.#snapshotIdentity, lstatSync(snapshotPath))) unlinkSync(snapshotPath); } catch { /* only remove the claimed file */ }
+      }
+      if (snapshotDirectory) try { rmdirSync(snapshotDirectory); } catch { /* never recursively remove an unverified directory */ }
+      throw error;
+    }
   }
   private check(): Stats {
-    if (this.closed || ownedReviewPath(this.root, this.name) !== this.path) throw new Error('workflow_review_evidence_custody');
-    const current = fstatSync(this.descriptor); const named = lstatSync(this.path);
-    if (named.isSymbolicLink() || !sameOwnedReviewFile(this.initial, current) || !sameOwnedReviewFile(current, named)
-      || current.size !== named.size || current.mtimeMs !== named.mtimeMs || current.ctimeMs !== named.ctimeMs
-      || current.size !== this.expected.size || current.mtimeMs !== this.expected.mtimeMs
-      || current.ctimeMs !== this.expected.ctimeMs) throw new Error('workflow_review_evidence_custody');
-    return current;
+    if (this.closed) throw new Error('workflow_review_evidence_custody');
+    return checkOwnedReviewFile(this.root, this.name, this.path, this.descriptor, this.initial, this.expected);
+  }
+  private checkSnapshot(): void {
+    if (this.closed || this.#snapshotDescriptor === undefined || !this.#snapshotIdentity) throw new Error('workflow_review_evidence_custody');
+    const current = fstatSync(this.#snapshotDescriptor);
+    if (!current.isFile() || current.nlink !== 0 || current.dev !== this.#snapshotIdentity.dev
+      || current.ino !== this.#snapshotIdentity.ino || current.size !== this.#snapshotSize) throw new Error('workflow_review_evidence_custody');
+  }
+  private readExact(descriptor: number, buffer: Buffer, bytes: number, offset: number): void {
+    for (let filled = 0; filled < bytes;) {
+      const count = readSync(descriptor, buffer, filled, bytes - filled, offset + filled);
+      if (!count) throw new Error('workflow_review_evidence_custody');
+      filled += count;
+    }
+  }
+  private writeSnapshot(bytes: Buffer, offset: number): void {
+    for (let written = 0; written < bytes.length;) {
+      const count = writeSync(this.#snapshotDescriptor!, bytes, written, bytes.length - written, offset + written);
+      if (!count) throw new Error('workflow_review_evidence_write_failed');
+      written += count;
+    }
+    this.#snapshotSize = offset + bytes.length;
+  }
+  private compareSnapshot(offset: number, bytes: Buffer): void {
+    this.checkSnapshot();
+    const original = Buffer.allocUnsafe(bytes.length); const release = holdReviewResource('bufferBytes', original.length);
+    try {
+      this.readExact(this.#snapshotDescriptor!, original, original.length, offset);
+      if (!original.equals(bytes)) throw new Error('workflow_review_evidence_custody');
+    } finally { release(); }
+  }
+  /** Revalidate the last bounded buffer before a consumer resumes yielding its cached records. */
+  assertUnchanged(): void {
+    this.ensureSnapshot();
+    if (this.check().size !== this.#snapshotSize) throw new Error('workflow_review_evidence_custody');
+    this.checkSnapshot();
+    if (this.previousRange) {
+      const { offset, bytes } = this.previousRange; const current = Buffer.allocUnsafe(bytes);
+      const release = holdReviewResource('bufferBytes', bytes);
+      try { this.readExact(this.descriptor, current, bytes, offset); this.compareSnapshot(offset, current); }
+      finally { release(); }
+      this.check();
+    }
   }
   append(bytes: Buffer): { offset: number; bytes: number; sha256: string } {
     if (!this.create) throw new Error('workflow_review_evidence_readonly');
     if (bytes.length > WORKFLOW_REVIEW_BUFFER_LIMIT_BYTES) throw new Error('workflow_review_evidence_record_unbounded');
-    const offset = this.check().size;
+    this.assertUnchanged(); const offset = this.check().size;
+    const supplied = Buffer.from(bytes); const release = holdReviewResource('bufferBytes', supplied.length);
+    try {
     let written = 0;
-    while (written < bytes.length) {
-      const count = writeSync(this.descriptor, bytes, written, bytes.length - written, offset + written);
+    while (written < supplied.length) {
+      const count = writeSync(this.descriptor, supplied, written, supplied.length - written, offset + written);
       if (!count) throw new Error('workflow_review_evidence_write_failed');
       written += count;
     }
+    this.writeSnapshot(supplied, offset);
+    this.#originalHash.update(supplied);
     this.expected = fstatSync(this.descriptor);
-    if (this.check().size !== offset + bytes.length) throw new Error('workflow_review_evidence_custody');
-    return { offset, bytes: bytes.length, sha256: digest(bytes) };
+    if (this.check().size !== offset + supplied.length) throw new Error('workflow_review_evidence_custody');
+    this.read(offset, supplied.length);
+    return { offset, bytes: supplied.length, sha256: digest(supplied) };
+    } finally { release(); }
   }
   read(offset: number, bytes: number): Buffer {
-    const before = this.check();
+    this.assertUnchanged(); const before = this.check();
     if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(bytes) || bytes < 0
       || bytes > WORKFLOW_REVIEW_BUFFER_LIMIT_BYTES || offset + bytes > before.size) throw new Error('workflow_review_evidence_corrupt');
     const buffer = Buffer.allocUnsafe(bytes); let filled = 0;
@@ -1917,11 +2025,13 @@ export class WorkflowReviewOwnedFile {
       if (!count) throw new Error('workflow_review_evidence_corrupt');
       filled += count;
     }
+    this.compareSnapshot(offset, buffer);
     const after = this.check();
     if (before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs) throw new Error('workflow_review_evidence_custody');
-    return buffer;
+    this.previousRange = { offset, bytes }; return buffer;
   }
   seal(): WorkflowReviewOwnedReference {
+    if (this.#snapshotDescriptor !== undefined) this.assertUnchanged();
     const before = this.check(); const hash = createHash('sha256');
     const buffer = Buffer.allocUnsafe(Math.max(1, Math.min(before.size, WORKFLOW_REVIEW_BUFFER_LIMIT_BYTES)));
     const release = holdReviewResource('bufferBytes', buffer.length);
@@ -1929,14 +2039,25 @@ export class WorkflowReviewOwnedFile {
     for (let offset = 0; offset < before.size;) {
       const count = readSync(this.descriptor, buffer, 0, Math.min(buffer.length, before.size - offset), offset);
       if (!count) throw new Error('workflow_review_evidence_corrupt');
+      if (this.#snapshotDescriptor !== undefined) this.compareSnapshot(offset, buffer.subarray(0, count));
       hash.update(buffer.subarray(0, count)); offset += count;
     }
     const after = this.check();
     if (before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs) throw new Error('workflow_review_evidence_custody');
-    return Object.freeze({ name: this.name, bytes: before.size, sha256: hash.digest('hex') });
+    const sha256 = hash.digest('hex');
+    if (sha256 !== this.#originalHash.copy().digest('hex')) throw new Error('workflow_review_evidence_custody');
+    return Object.freeze({ name: this.name, bytes: before.size, sha256 });
     } finally { release(); }
   }
-  close(): void { if (!this.closed) { this.closed = true; try { closeSync(this.descriptor); } finally { this.releaseDescriptor(); } } }
+  close(): void {
+    if (this.closed) return;
+    this.closed = true; let failure: { value: unknown } | undefined;
+    try { closeSync(this.descriptor); } catch (error) { failure = { value: error }; } finally { this.releaseDescriptor(); }
+    if (this.#snapshotDescriptor !== undefined) {
+      try { closeSync(this.#snapshotDescriptor); } catch (error) { failure ??= { value: error }; } finally { this.releaseSnapshot(); }
+    }
+    if (failure) throw failure.value;
+  }
 }
 export function verifyWorkflowReviewOwnedReference(root: string, reference: WorkflowReviewOwnedReference): void {
   const file = new WorkflowReviewOwnedFile(root, reference.name);
@@ -1950,12 +2071,30 @@ export function verifyWorkflowReviewOwnedReference(root: string, reference: Work
 
 /** Compare one revisited range against the bytes that were actually reconstructed for that object. */
 function verifyWorkflowReviewReconstruction(path: string, offset: number, bytes: Buffer): void {
-  const file = new WorkflowReviewOwnedFile(dirname(path), relative(dirname(path), path));
+  const root = dirname(path), name = relative(root, path);
+  if (!Number.isSafeInteger(offset) || offset < 0 || bytes.length > WORKFLOW_REVIEW_BUFFER_LIMIT_BYTES) throw new Error('workflow_review_evidence_corrupt');
+  if (ownedReviewPath(root, name) !== path) throw new Error('workflow_review_evidence_custody');
+  const before = lstatSync(path);
+  if (before.isSymbolicLink() || !before.isFile() || before.nlink !== 1) throw new Error('workflow_review_evidence_custody');
+  const descriptor = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  const releaseDescriptor = holdReviewResource('descriptors'); const releaseBuffer = holdReviewResource('bufferBytes', bytes.length);
   let failed = false;
   try {
-    if (!file.read(offset, bytes.length).equals(bytes)) throw new Error('workflow_review_coverage_incomplete');
+    const current = checkOwnedReviewFile(root, name, path, descriptor, before, before);
+    if (offset + bytes.length > current.size) throw new Error('workflow_review_evidence_corrupt');
+    const actual = Buffer.allocUnsafe(bytes.length);
+    for (let filled = 0; filled < actual.length;) {
+      const count = readSync(descriptor, actual, filled, actual.length - filled, offset + filled);
+      if (!count) throw new Error('workflow_review_evidence_corrupt');
+      filled += count;
+    }
+    checkOwnedReviewFile(root, name, path, descriptor, before, before);
+    if (!actual.equals(bytes)) throw new Error('workflow_review_coverage_incomplete');
   } catch (error) { failed = true; throw error; }
-  finally { if (failed) { try { file.close(); } catch { /* preserve the integrity failure */ } } else file.close(); }
+  finally {
+    try { if (failed) { try { closeSync(descriptor); } catch { /* preserve the integrity failure */ } } else closeSync(descriptor); }
+    finally { releaseDescriptor(); releaseBuffer(); }
+  }
 }
 
 interface WorkflowReviewCoverageObject {
@@ -1996,6 +2135,7 @@ export class WorkflowReviewCoverageMachine {
   private ranges = 0;
   private finished = false;
   private readonly proofFile?: WorkflowReviewOwnedFile;
+  private currentFile: WorkflowReviewOwnedFile | undefined;
   private sequence = 0;
   private releaseRecord: (() => void) | undefined;
   constructor(private readonly bundle: WorkflowReviewSourceBundle, private readonly owner?: WorkflowReviewProofOwner) {
@@ -2011,7 +2151,8 @@ export class WorkflowReviewCoverageMachine {
   /** Complete the current object and advance to the expected next one. */
   private completeObject(): void {
     const object = this.current!;
-    const file = new WorkflowReviewOwnedFile(this.scratch, relative(this.scratch, this.scratchPath(object.key)));
+    const file = this.currentFile ?? new WorkflowReviewOwnedFile(this.scratch, relative(this.scratch, this.scratchPath(object.key)));
+    this.currentFile = undefined;
     let hashed: WorkflowReviewOwnedReference;
     let failed = false;
     try { hashed = file.seal(); } catch (error) { failed = true; throw error; }
@@ -2062,8 +2203,7 @@ export class WorkflowReviewCoverageMachine {
     // The bound is over the bytes the client actually received, never over a re-read of source disk.
     const bytes = receiptBytes(record);
     if (record.bytes === 0) {
-      const empty = new WorkflowReviewOwnedFile(this.scratch, relative(this.scratch, this.scratchPath(key)), true);
-      empty.close();
+      this.currentFile = new WorkflowReviewOwnedFile(this.scratch, relative(this.scratch, this.scratchPath(key)), true);
       this.completeObject();
       return true;
     }
@@ -2071,17 +2211,20 @@ export class WorkflowReviewCoverageMachine {
     if (current && current.key === key) {
       if (record.offset + record.bytes > current.bytes) throw new Error('workflow_review_coverage_incomplete');
       if (record.offset === current.cursor) {
-        const file = new WorkflowReviewOwnedFile(this.scratch, relative(this.scratch, this.scratchPath(key)), current.cursor === 0 ? true : 'append');
-        let failed = false;
-        try { file.append(bytes); } catch (error) { failed = true; throw error; }
-        finally { if (failed) { try { file.close(); } catch { /* preserve the write failure */ } } else file.close(); }
+        const file = this.currentFile ??= new WorkflowReviewOwnedFile(this.scratch, relative(this.scratch, this.scratchPath(key)), true);
+        try { file.append(bytes); }
+        catch (error) {
+          this.currentFile = undefined;
+          try { file.close(); } catch { /* preserve the write failure */ }
+          throw error;
+        }
         current.cursor += record.bytes;
         if (current.cursor === current.bytes) this.completeObject();
         return true;
       }
       if (record.offset < current.cursor) {
         if (record.offset + record.bytes > current.cursor) throw new Error('workflow_review_coverage_incomplete');
-        verifyWorkflowReviewReconstruction(this.scratchPath(key), record.offset, bytes);
+        if (!this.currentFile || !this.currentFile.read(record.offset, bytes.length).equals(bytes)) throw new Error('workflow_review_coverage_incomplete');
         return false;
       }
       throw new Error('workflow_review_coverage_incomplete');
@@ -2133,6 +2276,8 @@ export class WorkflowReviewCoverageMachine {
     // machine is discarded through early failure paths where the manifest was never walked to its end.
     let failure: { value: unknown } | undefined;
     try { this.objects.return?.(undefined as never); } catch (error) { failure = { value: error }; }
+    try { this.currentFile?.close(); } catch (error) { failure ??= { value: error }; }
+    this.currentFile = undefined;
     try { this.proofFile?.close(); } catch (error) { failure ??= { value: error }; }
     this.releaseRecord?.(); this.releaseRecord = undefined;
     if (!this.owner) try { rmSync(this.scratch, { recursive: true, force: true }); } catch { /* best effort */ }
@@ -2259,6 +2404,7 @@ export async function verifyWorkflowReviewCoverageArtifact(bundle: WorkflowRevie
 
 /** Stream one file as JSONL lines through a bounded buffer, never reading it whole. */
 export async function* streamWorkflowReviewLines(path: string | WorkflowReviewOwnedFile): AsyncGenerator<string> {
+  const owned = typeof path === 'string' ? undefined : path;
   let stream: AsyncIterable<Buffer>;
   if (typeof path === 'string') {
     if (!existsSync(path)) return;
@@ -2282,13 +2428,16 @@ export async function* streamWorkflowReviewLines(path: string | WorkflowReviewOw
     for (;;) {
       const index = pending.indexOf('\n');
       if (index < 0) break;
+      owned?.assertUnchanged();
       yield pending.slice(0, index + 1);
+      owned?.assertUnchanged();
       pending = pending.slice(index + 1);
     }
     if (pending.length > WORKFLOW_REVIEW_BUFFER_LIMIT_BYTES * 4) throw new Error('workflow_review_source_invalid_receipt');
   }
   pending += decoder.decode();
-  if (pending.trim()) yield pending;
+  if (pending.trim()) { owned?.assertUnchanged(); yield pending; owned?.assertUnchanged(); }
+  owned?.seal();
 }
 /**
  * One artifact's lines, synchronously, through the same bounded buffer and the same stateful UTF-8

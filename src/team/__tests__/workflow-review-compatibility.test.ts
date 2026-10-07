@@ -802,6 +802,7 @@ describe('administrative review compatibility', () => {
     fixture.configure({ findings: [{ severity: 'P1', message: 'Synthetic compatibility finding', file: 'feature/a.txt', line: 1 }],
       tasks: { review: {} } });
     const adopted = await adopt(scope, integrated, ['README.md', 'feature/a.txt']);
+    resetWorkflowReviewResourceUsage();
     const reviewed = await review(scope, selection('compat-adoption-1', ['feature/a.txt', 'README.md']));
     expect(reviewed.reviewPasses).toBe(1);
     // The adapter binding records the exact adopted controller and reader builds.
@@ -873,6 +874,14 @@ describe('administrative review compatibility', () => {
     const ledgerName = `review-source-receipts-${attempt.invocationId}.jsonl`;
     expect(record.ledger).toEqual({ name: ledgerName, bytes: statSync(artifact(ledgerName)).size, sha256: hash(readFileSync(artifact(ledgerName))) });
     const deliveryRoot = artifact(record.delivery.directory);
+    const readerResources = JSON.parse(readFileSync(join(deliveryRoot, 'reader-resources.json'), 'utf8'));
+    for (const usage of [workflowReviewResourceUsage(), readerResources]) {
+      expect(usage.records).toBe(0); expect(usage.descriptors).toBe(0); expect(usage.bufferBytes).toBe(0);
+      expect(usage.peakRecords).toBeLessThanOrEqual(20);
+      expect(usage.peakDescriptors).toBeLessThanOrEqual(20);
+      expect(usage.peakBufferBytes).toBeLessThanOrEqual(1024 * 1024);
+      expect(usage.largestBuffer).toBeLessThanOrEqual(WORKFLOW_REVIEW_BUFFER_LIMIT_BYTES);
+    }
     expect(record.delivery).toMatchObject({ invocationId: attempt.invocationId, reviewerId: REVIEWER_ID });
     expect(record.delivery.capture).toEqual({ name: 'frames.bin', bytes: statSync(join(deliveryRoot, 'frames.bin')).size,
       sha256: hash(readFileSync(join(deliveryRoot, 'frames.bin'))) });

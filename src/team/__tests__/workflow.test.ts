@@ -39,7 +39,7 @@ describe('Claude/GLM/Codex workflow with real local fake providers', () => {
     fixture = createWorkflowFixture();
     vi.stubEnv('OMC_WORKFLOW_TEST_CONFIG', fixture.configPath);
     vi.stubEnv('OMC_STATE_DIR', '');
-  });
+  }, process.platform === 'win32' ? 60_000 : 10_000);
   afterEach(() => {
     vi.unstubAllEnvs();
     fixture.dispose();
@@ -489,7 +489,7 @@ describe('Claude/GLM/Codex workflow with real local fake providers', () => {
     expect(readFileSync(join(rejected.worktree!, 'feature/a.txt'), 'utf8')).toBe('fix-one\n');
     expect(fixture.git('rev-parse', rejected.branch!)).toBe(rejected.handoff!.commitSha);
     expect(readFileSync(join(fixture.cwd, 'feature/a.txt'), 'utf8')).toBe('fix-two\n');
-  }, 30000);
+  }, process.platform === 'win32' ? 120_000 : 30_000);
 
   it.each(['hardlink', 'parent', 'directory'])('refuses a provider-controlled result %s without modifying protected files', async resultLink => {
     const protectedRoot = join(fixture.root, 'protected');

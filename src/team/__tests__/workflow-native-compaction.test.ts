@@ -337,8 +337,11 @@ describe('offline native compaction chain', () => {
     await fixture.chain.startGeneration('post_second', fixture.write(fixture.wireRequest([fixture.tools, fixture.instructions, ...baseline]), 'input'));
     fixture.chain.completeGeneration('post_second', 'response_final', fixture.final);
     expect(await fixture.chain.finish()).toMatchObject({ authority: false, compactions: 2 });
-    // Raw input handles belong to this fixture. The chain itself retains only its fixed journals.
-    expect(workflowReviewResourceUsage().descriptors).toBeLessThanOrEqual(fixture.files.length + 5);
+    // Input handles are no longer needed; each fixed journal owns its original and anonymous snapshot.
+    for (const file of fixture.files) file.close();
+    expect(workflowReviewResourceUsage().descriptors).toBeLessThanOrEqual(10);
+    fixture.chain.dispose();
+    expect(workflowReviewResourceUsage().descriptors).toBe(0);
   });
   it('refuses duplicate compaction identities and newly invented calibration turns', async () => {
     const fixture = compactionFixture(); await fixture.prepare();
