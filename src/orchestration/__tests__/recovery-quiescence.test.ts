@@ -7,6 +7,7 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  statSync,
   symlinkSync,
   utimesSync,
   writeFileSync,
@@ -16,11 +17,17 @@ import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { clearWorktreeCache, getOmcRoot } from "../../lib/worktree-paths.js";
 import { currentProcessStartIdentity } from "../../team/team-owner-epoch.js";
+import { teamCreateTask, teamReadTask } from "../../team/team-ops.js";
 import {
   assertOrchestratorQuiescent,
   assertOrchestratorRecoveryQuiescent,
 } from "../quiescence.js";
 import { resolveOrchestratorPaths } from "../state.js";
+import {
+  acquireOrchestratorLease,
+  readOrchestratorStatus,
+  recoverOrchestratorLease,
+} from "../selection.js";
 
 interface RecoveryFixture {
   readonly root: string;
@@ -786,5 +793,267 @@ describe("orchestrator recovery quiescence", () => {
     ).not.toThrow();
 
     expect(readFileSync(workflow)).toEqual(before);
+  });
+
+  describe("canonical task projection byte ceiling", () => {
+    /** A process that has verifiably exited, so only the byte bound can refuse it. */
+    function exitedPid(): number {
+      const child = spawnSync(process.execPath, ["-e", "process.exit(0)"], {
+        windowsHide: true,
+      });
+      expect(child.status).toBe(0);
+      expect(child.pid).toBeGreaterThan(0);
+      return child.pid!;
+    }
+
+    /**
+     * The canonical writer only mutates a live team, so the team stays `active`
+     * while its recorded owner epoch is verifiably dead — the crash shape.
+     */
+    function writerTeamConfig() {
+      return {
+        ...teamConfig(),
+        lifecycle_state: "active",
+        runtime_owner_epoch: {
+          epoch: 1,
+          nonce: randomUUID(),
+          pid: exitedPid(),
+          process_started_at: currentProcessStartIdentity(),
+          created_at: "2026-09-21T00:00:00.000Z",
+        },
+      };
+    }
+
+    it.each([
+      ["completed", null],
+      ["completed", { owner: " " }],
+      ["completed", { token: false }],
+      ["completed", { leased_until: "not-a-date" }],
+      ["failed", []],
+      ["failed", { owner: 42 }],
+      ["failed", { token: " " }],
+      ["failed", { leased_until: 42 }],
+      ["failed", { launch_attempt_id: null }],
+      ["in_progress", { launch_attempt_id: 42 }],
+      ["cancelled", null],
+    ] as const)(
+      "refuses supported recovery of a large %s projection with malformed claim %j without mutation",
+      async (status, invalidClaim) => {
+        const testFixture = fixture();
+        await acquireOrchestratorLease(testFixture.root, {
+          host: "claude",
+          sessionId: "malformed-projection",
+        });
+        const paths = resolveOrchestratorPaths(testFixture.root);
+        const runtime = JSON.parse(readFileSync(paths.state, "utf8"));
+        const deadPid = exitedPid();
+        const processStartedAt = currentProcessStartIdentity();
+        runtime.lease.ownerPid = deadPid;
+        writeJson(paths.state, runtime);
+        writeJson(paths.operationLock, {
+          schemaVersion: 1,
+          kind: "orchestrator-operation",
+          pid: deadPid,
+          processStartedAt,
+          nonce: randomUUID(),
+          repositoryRoot: paths.repositoryRoot,
+          repositoryKey: paths.repositoryKey,
+          stateRoot: realpathSync(dirname(paths.operationLock)),
+          acquiredAt: "2026-09-21T00:00:00.000Z",
+        });
+
+        const teamRoot = join(testFixture.stateRoot, "team", "recovery");
+        const workflowPath = join(teamRoot, "workflow.json");
+        const workflow = workflowState("running");
+        // Every projection matches an otherwise recoverable orphan; this cannot excuse a malformed claim.
+        writeJson(workflowPath, {
+          ...workflow,
+          tasks: workflow.tasks.map((task) => ({
+            ...task,
+            attempts: 1,
+            invocations: [
+              {
+                attempt: 1,
+                outcome: "failed",
+                error: "workflow_invocation_incomplete",
+                process: { pid: deadPid, processStartedAt },
+              },
+            ],
+          })),
+          reviews: [{ summary: "Preserve review history 界" }],
+        });
+        const taskPath = join(teamRoot, "tasks", "task-1.json");
+        const validClaim = {
+          owner: "task-one",
+          token: "claim-token",
+          leased_until: "2026-09-21T01:00:00.000Z",
+        };
+        writeJson(taskPath, {
+          ...pendingTask(),
+          owner: "task-one",
+          status,
+          result: "r".repeat(20_000),
+          claim:
+            invalidClaim === null || Array.isArray(invalidClaim)
+              ? invalidClaim
+              : { ...validClaim, ...invalidClaim },
+          metadata: { workflow: "recovery", task_id: "one" },
+        });
+        expect(statSync(taskPath).size).toBeGreaterThan(16 * 1024);
+        expect(statSync(taskPath).size).toBeLessThanOrEqual(16 * 1024 * 1024);
+        const evidencePath = join(teamRoot, "evidence", "executor-report.txt");
+        mkdirSync(dirname(evidencePath), { recursive: true });
+        writeFileSync(evidencePath, "Retain executor evidence 界\n", "utf8");
+        const before = [
+          paths.state,
+          paths.operationLock,
+          taskPath,
+          workflowPath,
+          evidencePath,
+        ].map((path) => ({ path, bytes: readFileSync(path) }));
+
+        await expect(
+          teamReadTask("recovery", "1", testFixture.root),
+        ).rejects.toThrow("invalid_persisted_state");
+        await expect(
+          recoverOrchestratorLease(testFixture.root, { kind: "checkpointed" }),
+        ).rejects.toThrow("orchestrator_quiescence_unverified");
+        for (const { path, bytes } of before)
+          expect(readFileSync(path)).toEqual(bytes);
+        expect(
+          readOrchestratorStatus(testFixture.root, { probe: () => true }),
+        ).toMatchObject({
+          lease: { ownerPid: deadPid, sessionId: "malformed-projection" },
+          lastRecovery: null,
+        });
+      },
+    );
+
+    it.each(["completed", "failed"] as const)(
+      "accepts a large %s projection with a valid retained claim",
+      async (status) => {
+        const testFixture = fixture();
+        const taskPath = join(testFixture.teamRoot, "tasks", "task-1.json");
+        writeJson(taskPath, {
+          ...pendingTask(),
+          owner: "task-one",
+          status,
+          result: "r".repeat(20_000),
+          claim: {
+            owner: "task-one",
+            token: "claim-token",
+            leased_until: "2026-09-21T01:00:00.000Z",
+            launch_attempt_id: "",
+          },
+        });
+        const before = readFileSync(taskPath);
+        await expect(
+          teamReadTask("demo-team", "1", testFixture.root),
+        ).resolves.toMatchObject({ status, claim: { launch_attempt_id: "" } });
+        expect(() =>
+          assertOrchestratorQuiescent(testFixture.root),
+        ).not.toThrow();
+        expect(() =>
+          assertOrchestratorRecoveryQuiescent(testFixture.root),
+        ).not.toThrow();
+        expect(readFileSync(taskPath)).toEqual(before);
+      },
+    );
+
+    it("accepts a writer-produced completed projection above the 16 KiB ceiling", async () => {
+      const testFixture = fixture();
+      writeJson(join(testFixture.teamRoot, "config.json"), writerTeamConfig());
+      const created = await teamCreateTask(
+        "demo-team",
+        {
+          subject: "Completed projection",
+          description: "Canonical writer output retained after completion",
+          status: "completed",
+          result: "r".repeat(20_000),
+        },
+        testFixture.root,
+      );
+      const path = join(
+        testFixture.teamRoot,
+        "tasks",
+        `task-${created.id}.json`,
+      );
+      expect(statSync(path).size).toBeGreaterThan(16 * 1024);
+      const before = readFileSync(path);
+
+      expect(() => assertOrchestratorQuiescent(testFixture.root)).not.toThrow();
+      expect(() =>
+        assertOrchestratorRecoveryQuiescent(testFixture.root),
+      ).not.toThrow();
+      expect(readFileSync(path)).toEqual(before);
+    });
+
+    it("still refuses a large claimed projection that is not a proven orphan", async () => {
+      const testFixture = fixture();
+      writeJson(join(testFixture.teamRoot, "config.json"), writerTeamConfig());
+      const created = await teamCreateTask(
+        "demo-team",
+        {
+          subject: "Claimed projection",
+          description: "d".repeat(20_000),
+          status: "in_progress",
+          claim: {
+            owner: "task-one",
+            token: "claim-token",
+            leased_until: "2026-09-21T01:00:00.000Z",
+          },
+          metadata: { workflow: "demo-team", task_id: "one" },
+        },
+        testFixture.root,
+      );
+      const path = join(
+        testFixture.teamRoot,
+        "tasks",
+        `task-${created.id}.json`,
+      );
+      expect(statSync(path).size).toBeGreaterThan(16 * 1024);
+
+      expect(() => assertOrchestratorQuiescent(testFixture.root)).toThrow(
+        "orchestrator_active_attempt",
+      );
+      expect(() =>
+        assertOrchestratorRecoveryQuiescent(testFixture.root),
+      ).toThrow("orchestrator_active_attempt");
+    });
+
+    it("still refuses a task projection above the explicit 16 MiB reader ceiling", () => {
+      const testFixture = fixture();
+      writeJson(join(testFixture.teamRoot, "tasks", "task-1.json"), {
+        ...pendingTask(),
+        result: "r".repeat(16 * 1024 * 1024 + 64 * 1024),
+      });
+
+      expect(() =>
+        assertOrchestratorRecoveryQuiescent(testFixture.root),
+      ).toThrow("orchestrator_quiescence_unverified");
+    });
+
+    it("still refuses an unrelated small-state file above its original 16 KiB ceiling", () => {
+      const testFixture = fixture();
+      const bridgeHeartbeat = join(
+        testFixture.stateRoot,
+        "team-bridge",
+        "demo-team",
+        "worker-1.heartbeat.json",
+      );
+      writeJson(bridgeHeartbeat, { ...heartbeat("shutdown"), pid: exitedPid() });
+      expect(() =>
+        assertOrchestratorRecoveryQuiescent(testFixture.root),
+      ).not.toThrow();
+
+      writeJson(bridgeHeartbeat, {
+        ...heartbeat("shutdown"),
+        pid: exitedPid(),
+        detail: "d".repeat(17 * 1024),
+      });
+      expect(() =>
+        assertOrchestratorRecoveryQuiescent(testFixture.root),
+      ).toThrow("orchestrator_quiescence_unverified");
+    });
   });
 });

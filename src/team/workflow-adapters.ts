@@ -6,6 +6,7 @@ import { StringDecoder } from 'node:string_decoder';
 import { isDeepStrictEqual } from 'node:util';
 import { isExternalLLMDisabled } from '../lib/security-config.js';
 import { parseWorkflowBinding, type WorkflowProviderRoute, type WorkflowRoleBinding, type WorkflowReviewProvenance } from './workflow-contracts.js';
+import type { WorkflowSyntheticReviewClientFactory, WorkflowNativeReviewClientFactory } from './workflow-review-source-server.js';
 
 export interface WorkflowAuthProfile {
   ref: string;
@@ -16,11 +17,45 @@ export interface WorkflowAuthProfile {
   /** Additional private values known only to the trusted runner, never sent to a child implicitly. */
   redactionValues?: readonly string[];
 }
+/**
+ * The private host qualification of the read-only review reader. It names the receipt file and its
+ * expected digest; the controller resolves and validates the typed record itself. Absence is not a
+ * default: a review that projects the reader refuses until the host supplies one.
+ */
+export interface WorkflowReaderQualificationSource {
+  /** Absolute path of the typed reader qualification receipt. */
+  readonly path: string;
+  /** Expected sha256 of that receipt's exact bytes. */
+  readonly sha256: string;
+  /** Absolute path of the host Codex model catalog to project for a reader-only invocation. */
+  readonly catalogPath?: string;
+}
+/** Consistency declaration only; a live runtime factory separately authorizes delivery. */
+export interface WorkflowReaderObservation {
+  readonly mode: 'native' | 'synthetic';
+  readonly tools: readonly string[];
+  /** Historical identity; files/labels confer no runtime observation authority. */
+  readonly identity?: WorkflowReaderObservationIdentity;
+}
+/** Retained for parsing older private configs; these fields confer no observation authority. */
+export interface WorkflowReaderObservationIdentity {
+  readonly id: string;
+  readonly sha256: string;
+  readonly observedPath: string;
+}
 export interface WorkflowRuntime {
   resolveBinding(binding: WorkflowRoleBinding): { authProfile: WorkflowAuthProfile; capabilityEvidencePath: string };
   /** Synthetic evidence is permitted only by an explicit test/compatibility runner. */
   allowSyntheticCapabilities?: boolean;
   reviewAuthorship?: { path: string; sha256: string };
+  /** Historical qualification guard; native records are refused in every entry point. */
+  readerQualification?: WorkflowReaderQualificationSource;
+  /** Historical mode/tool consistency guard; never a substitute for the live factory capability. */
+  readerObservation?: WorkflowReaderObservation;
+  /** Controller-selected, closed synthetic transport. Saved labels and files cannot create this capability. */
+  syntheticReviewClientFactory?: WorkflowSyntheticReviewClientFactory;
+  /** Minted only by the controller's actual authenticated native calibration. Never loaded from JSON. */
+  nativeReviewClientFactory?: WorkflowNativeReviewClientFactory;
 }
 export interface PreparedWorkflowBinding {
   binding: WorkflowRoleBinding;
@@ -29,6 +64,12 @@ export interface PreparedWorkflowBinding {
   redactionEnvironment: NodeJS.ProcessEnv;
   actorId?: string;
   validation: 'synthetic' | 'authenticated';
+}
+const preparedBindings = new WeakMap<PreparedWorkflowBinding, PreparedWorkflowBinding>();
+/** A structural object or copied capability receipt is not a prepared native launch. */
+export function requirePreparedWorkflowBinding(prepared: PreparedWorkflowBinding): void {
+  const captured = preparedBindings.get(prepared);
+  if (!captured || !isDeepStrictEqual(prepared, captured)) throw new Error('workflow_prepared_binding_required');
 }
 const digest = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
 function object(value: unknown): Record<string, unknown> {
@@ -151,8 +192,9 @@ export function prepareWorkflowBinding(bindingValue: WorkflowRoleBinding, runtim
   if (evidence.actorId !== undefined && (typeof evidence.actorId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,199}$/.test(evidence.actorId))) throw new Error('workflow_invalid_runner_identity');
   const secretValues = [...Object.entries(environment).filter(([key]) => /key|token|secret|password|credential|authorization/i.test(key)).map(([, value]) => value),
     ...Object.values(captured.redactionEnvironment)].filter((value): value is string => value !== undefined);
-  return { binding, command, environment, redactionEnvironment: Object.fromEntries(secretValues.map((value, index) => [`WORKFLOW_PRIVATE_SECRET_${index}`, value])), validation: evidence.validation,
+  const prepared: PreparedWorkflowBinding = { binding, command, environment, redactionEnvironment: Object.fromEntries(secretValues.map((value, index) => [`WORKFLOW_PRIVATE_SECRET_${index}`, value])), validation: evidence.validation,
     ...(typeof evidence.actorId === 'string' ? { actorId: evidence.actorId } : {}) };
+  preparedBindings.set(prepared, structuredClone(prepared)); return prepared;
 }
 export function workflowWorkerArguments(prepared: PreparedWorkflowBinding, session?: { id: string; resume: boolean }): string[] {
   const binding = prepared.binding;
@@ -161,13 +203,50 @@ export function workflowWorkerArguments(prepared: PreparedWorkflowBinding, sessi
     ...(session ? [session.resume ? '--resume' : '--session-id', session.id] : ['--no-session-persistence']),
     '--output-format', 'stream-json', '--verbose'];
 }
-export function workflowReviewerArguments(prepared: PreparedWorkflowBinding, schemaFile: string, resultFile: string, schema: unknown): string[] {
+/**
+ * The controller-owned read-only reader as it is projected onto one reviewer
+ * invocation. `mcpConfig` is the ephemeral Claude `--mcp-config` document; `codex`
+ * is the equivalent repeated dotted-TOML `--config` override list, because Codex
+ * accepts neither that flag nor a global config rewrite. The authenticated
+ * provider/profile settings the binding selected are never touched by either.
+ */
+export interface WorkflowReviewReaderInvocation {
+  readonly mcpConfig: string;
+  readonly codex: readonly string[];
+}
+/**
+ * Reviewer argv. A compatibility review adds only an ephemeral read-only reader to
+ * the selected native invocation — a Claude `--mcp-config` document or a Codex
+ * per-invocation override list; without one the native argv stays byte-identical
+ * and no global auth, config or tool surface is mutated.
+ */
+export function workflowReviewerArguments(prepared: PreparedWorkflowBinding, schemaFile: string, resultFile: string, schema: unknown,
+  reader?: WorkflowReviewReaderInvocation): string[] {
   const binding = prepared.binding;
   if (binding.role !== 'reviewer') throw new Error('workflow_adapter_operation_mismatch');
+  return reviewerArgumentsFor(binding, schemaFile, resultFile, schema, reader);
+}
+/**
+ * The prospective reviewer argv of one binding over its own reader projection. The provider flags, the
+ * model, the effort, the sandbox and tool surface and every argument position are the real ones this
+ * invocation will carry, so a fingerprint taken over this list names the effective invocation rather
+ * than the controller's own reader overrides alone. The caller names the two per-attempt reviewer
+ * artifacts — the output schema file and the result file — by the placeholders this controller invents
+ * inside one attempt, and states the reviewer result schema itself, which is controller-fixed.
+ */
+export function workflowReviewerProjectionArguments(binding: WorkflowRoleBinding, reader: WorkflowReviewReaderInvocation | undefined,
+  input: { schemaFile: string; resultFile: string; schema: unknown }): string[] {
+  return reviewerArgumentsFor(binding, input.schemaFile, input.resultFile, input.schema, reader);
+}
+function reviewerArgumentsFor(binding: WorkflowRoleBinding, schemaFile: string, resultFile: string, schema: unknown,
+  reader: WorkflowReviewReaderInvocation | undefined): string[] {
   if (binding.providerRoute === 'codex') return ['exec', '--sandbox', 'read-only', '--ephemeral', '--json', '--model', binding.model,
-    ...(binding.effort ? ['--config', `model_reasoning_effort=${JSON.stringify(binding.effort)}`] : []), '--output-schema', schemaFile, '--output-last-message', resultFile, '-'];
+    ...(binding.effort ? ['--config', `model_reasoning_effort=${JSON.stringify(binding.effort)}`] : []),
+    ...(reader ? reader.codex : []),
+    '--output-schema', schemaFile, '--output-last-message', resultFile, '-'];
   return ['--print', '--model', binding.model, ...(binding.effort ? ['--effort', binding.effort] : []), '--safe-mode', '--restricted',
-    '--tools', 'Read,Glob,Grep', '--permission-mode', 'dontAsk', '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}',
+    '--tools', 'Read,Glob,Grep', '--permission-mode', 'dontAsk', '--strict-mcp-config', '--mcp-config',
+    reader ? reader.mcpConfig : '{"mcpServers":{}}',
     '--no-chrome', '--disable-slash-commands', '--no-session-persistence', '--output-format', 'stream-json', '--verbose', '--json-schema', JSON.stringify(schema)];
 }
 export function workflowReviewProvenance(prepared: PreparedWorkflowBinding, head: string, runtime: WorkflowRuntime): WorkflowReviewProvenance {

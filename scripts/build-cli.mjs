@@ -30,6 +30,7 @@ const cliConfig = {
   },
   define: {
     'import.meta.url': 'importMetaUrl',
+    OMC_SYNTHETIC_LIBRARY: 'true',
   },
   external: sharedExternal,
 };
@@ -43,6 +44,7 @@ const teamConfig = {
   target: 'node18',
   format: 'esm',
   outfile: teamOutfile,
+  define: { OMC_SYNTHETIC_LIBRARY: 'true' },
   external: sharedExternal,
 };
 

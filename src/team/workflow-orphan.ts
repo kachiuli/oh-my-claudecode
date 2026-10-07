@@ -27,16 +27,20 @@ export function recordedProcessOutcome(identity: unknown): RecordedProcessOutcom
 
 /**
  * The single rule shared by explicit recovery and explicit rejection. The task's latest attempt must be the
- * current, still-incomplete one. It is orphaned when its recorded provider process is verifiably dead, or,
+ * current, still-incomplete one. A running task may also retain a terminal pre-provider persistence
+ * failure, with failed outcome and no recorded provider identity or process result. It is orphaned
+ * when its recorded provider process is verifiably dead, or,
  * when no provider was ever recorded, when the controller that started the attempt is verifiably dead.
  * Anything else stays an active attempt that requires inspection.
  */
-export function classifyOrphanedAttempt(task: { attempts?: unknown; invocations?: unknown }): OrphanedAttemptOutcome {
+export function classifyOrphanedAttempt(task: { status?: unknown; attempts?: unknown; invocations?: unknown }): OrphanedAttemptOutcome {
   const invocations = task.invocations;
   const last = Array.isArray(invocations) ? invocations.at(-1) : undefined;
   if (!last || typeof last !== 'object' || Array.isArray(last)) return 'unverifiable';
-  const record = last as { attempt?: unknown; error?: unknown; process?: unknown; controller?: unknown };
-  if (record.error !== 'workflow_invocation_incomplete' || record.attempt !== task.attempts) return 'unverifiable';
+  const record = last as { attempt?: unknown; outcome?: unknown; error?: unknown; process?: unknown; processResult?: unknown; controller?: unknown };
+  const preProviderPersistence = task.status === 'running' && record.outcome === 'failed'
+    && record.error === 'workflow_worker_persistence_failed' && record.process === undefined && record.processResult === undefined;
+  if ((!preProviderPersistence && record.error !== 'workflow_invocation_incomplete') || record.attempt !== task.attempts) return 'unverifiable';
   if (record.process !== undefined) {
     const provider = recordedProcessOutcome(record.process);
     return provider === 'dead' ? 'orphaned' : provider === 'alive' ? 'provider-alive' : 'unverifiable';

@@ -65,6 +65,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Prepare owned esbuild compiler files
+        run: node scripts/prepare-ci-esbuild-custody.mjs
+
       - name: Run functional tests
         run: npm test -- --run
 

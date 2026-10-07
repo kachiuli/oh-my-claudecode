@@ -12,7 +12,7 @@ import {
   symlinkSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
   PLUGIN_JSON_PATH,
@@ -29,6 +29,10 @@ import { collectPluginRuntimeClosure } from "../../scripts/plugin-shipping-surfa
 
 const PACKAGE_ROOT = process.cwd();
 const PACKAGE_JSON_PATH = join(PACKAGE_ROOT, "package.json");
+const NPM_COMMAND = process.platform === "win32" ? process.execPath : "npm";
+const NPM_PREFIX = process.platform === "win32"
+  ? [join(dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js")]
+  : [];
 
 type PackageJson = {
   bin?: Record<string, string>;
@@ -138,8 +142,8 @@ function getPackedPackage(): PackedPackage {
     mkdirSync(packDirCache, { recursive: true });
 
     const stdout = execFileSync(
-      "npm",
-      ["pack", "--pack-destination", packDirCache, "--silent"],
+      NPM_COMMAND,
+      [...NPM_PREFIX, "pack", "--pack-destination", packDirCache, "--silent"],
       {
         cwd: packWorkspaceCache,
         encoding: "utf-8",
@@ -155,10 +159,12 @@ function getPackedPackage(): PackedPackage {
     }
     expect(tarballName).toBe(expectedTarballName);
     expect(basename(tarballName)).toBe(tarballName);
-    expect(tarballName).not.toMatch(/[\\/]/);
+    expect(tarballName).not.toMatch(/[\\/:]/);
+    expect(tarballName).not.toMatch(/^-/);
 
     tarballPathCache = join(packDirCache, tarballName);
-    const files = execFileSync("tar", ["-tzf", tarballPathCache], {
+    const files = execFileSync("tar", ["-tzf", tarballName], {
+      cwd: packDirCache,
       encoding: "utf-8",
     })
       .trim()
@@ -166,7 +172,7 @@ function getPackedPackage(): PackedPackage {
       .filter(Boolean)
       .map((file) => file.replace(/^package\//, ""));
 
-    execFileSync("tar", ["-xzf", tarballPathCache, "-C", packDirCache]);
+    execFileSync("tar", ["-xzf", tarballName], { cwd: packDirCache });
 
     const extractedPackageRoot = join(packDirCache, "package");
     packedPackageCache = {
@@ -296,8 +302,9 @@ describe("npm package bin surface regression", () => {
     mkdirSync(consumerRoot, { recursive: true });
     writeFileSync(join(consumerRoot, "package.json"), JSON.stringify({ type: "module", private: true }));
     execFileSync(
-      "npm",
+      NPM_COMMAND,
       [
+        ...NPM_PREFIX,
         "install",
         tarballPathCache!,
         `typescript@${typescriptVersion}`,
@@ -352,6 +359,16 @@ describe("npm package bin surface regression", () => {
     );
     expect(resultHelp).toContain("team_name");
     expect(resultHelp).toContain("request_id");
+
+    // The team bundle is a library with an exported main, not the standalone reader.
+    const packedTeam = join(packDirCache!, "package", "bridge", "team.js");
+    expect(execFileSync(process.execPath, [packedTeam], { cwd: tmpdir(), encoding: "utf-8" })).toBe("");
+    const teamHelp = execFileSync(process.execPath, ["--input-type=module", "-e",
+      `const { main } = await import(${JSON.stringify(pathToFileURL(packedTeam).href)}); await main(['api', '--help']);`,
+    ], { cwd: tmpdir(), encoding: "utf-8" });
+    expect(teamHelp).toContain("recover-worker");
+    expect(teamHelp).toContain("write-task-checkpoint");
+    expect(teamHelp).toContain("read-recovery-result");
   });
 
   it("packs the fixed worktree-paths dist with hidden Windows git subprocesses", () => {

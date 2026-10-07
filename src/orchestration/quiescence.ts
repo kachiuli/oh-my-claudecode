@@ -2,6 +2,7 @@ import { lstatSync, readdirSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { getOmcRoot } from "../lib/worktree-paths.js";
 import { isProcessAlive } from "../platform/index.js";
+import { isValidTaskClaim } from "../team/state/tasks.js";
 import {
   validateLegacyTeamConfig,
   validateRevisionedTeamConfig,
@@ -20,6 +21,12 @@ import {
 
 const WORKFLOW_BYTES = 16 * 1024 * 1024;
 const SMALL_STATE_BYTES = 16 * 1024;
+/**
+ * Canonical task projections are writer output, not bookkeeping: a completed
+ * attempt may retain an executor report whose canonical JSON exceeds the small
+ * state ceiling. They therefore share the workflow record's bounded ceiling.
+ */
+const TASK_STATE_BYTES = WORKFLOW_BYTES;
 const TEAM_CONFIG_BYTES = 1024 * 1024;
 const MAX_QUIESCENCE_ENTRIES = 4096;
 
@@ -119,7 +126,7 @@ function assertTaskFileQuiescent(
 ): void {
   const raw = readBoundedJson(
     path,
-    SMALL_STATE_BYTES,
+    TASK_STATE_BYTES,
     "orchestrator_quiescence_unverified",
   );
   if (!raw || typeof raw !== "object" || Array.isArray(raw))
@@ -137,6 +144,9 @@ function assertTaskFileQuiescent(
     "failed",
   ]);
   if (typeof task.status !== "string" || !statuses.has(task.status)) {
+    throw new Error("orchestrator_quiescence_unverified");
+  }
+  if (task.claim !== undefined && !isValidTaskClaim(task.claim)) {
     throw new Error("orchestrator_quiescence_unverified");
   }
   const terminal = ["completed", "failed"].includes(task.status);

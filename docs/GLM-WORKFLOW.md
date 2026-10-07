@@ -315,6 +315,16 @@ schedule distributed jobs. Cheap deterministic checks precede AI review and CI.
 - **Failed retained task:** run `inspect-task` first. Recover only an exact clean
   completed handoff; preserve dirty, missing, active or unverifiable work for
   inspection and use a new scoped task when the saved contract no longer fits.
+- **Reservation persistence failed:** no publication, provider or task check starts
+  when the reserved attempt cannot be saved. Managed cleanup records the task and
+  invocation as failed with `workflow_worker_persistence_failed` when storage allows
+  it, spends that attempt, and prevents automatic redispatch. Persistent write
+  failure preserves the original error and cleanup errors; it cannot guarantee a
+  new durable state. For a historical running task with this terminal invocation,
+  `inspect-task` and explicit `reject` permit settlement only when no provider or
+  process result was recorded and the recorded controller is verifiably dead.
+  Rejection preserves the original invocation, setup history and attempt counter.
+  Alive or unverifiable identities remain blocked; do not edit or reinitialize state.
 - **Verification or review blocked:** ensure intended commits are accepted, the
   integration checkout is clean, local commands pass, and evidence matches HEAD.
 - **Review budget exhausted:** inspect remaining findings; completion stays blocked.
