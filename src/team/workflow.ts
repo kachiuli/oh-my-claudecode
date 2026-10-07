@@ -79,6 +79,7 @@ const legacyProvider = (state: WorkflowState): 'glm' | 'mimo' => state.schemaVer
 const resolveLegacyExecutable = (state: WorkflowState): string => legacyProvider(state) === 'mimo'
   ? resolveMimoExecutable(state.options.glmCommand) : resolveGlmExecutable(state.options.glmCommand);
 const savedSnapshots = new WeakMap<WorkflowState, unknown>();
+const pendingTaskProjections = new WeakSet<WorkflowState>();
 const MAX_WORKFLOW_STATE_BYTES = 16 * 1024 * 1024;
 function gitRaw(cwd: string, args: string[]): string {
   try { return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: 'pipe', timeout: 30_000, windowsHide: true }); }
@@ -110,7 +111,8 @@ type WorkflowResultTransport =
   | { kind: 'provider-designated-json' }
   | { kind: 'claude-native-structured' };
 async function runWorkflowProvider(input: Omit<Parameters<typeof runWorkflowProcess>[0], 'stdin'> & { stdin?: string },
-  resultFile: string, transport: WorkflowResultTransport, stdin?: string, observe?: (chunk: Buffer) => void) {
+  resultFile: string, transport: WorkflowResultTransport, stdin?: string, observe?: (chunk: Buffer) => void,
+  onCompletion?: (result: WorkflowProcessResult) => void) {
   // Capture before launch: an unsuccessful provider can still write or redirect its result path.
   const canonicalParent = realpathSync(dirname(resultFile));
   let result: Awaited<ReturnType<typeof runWorkflowProcess>> | undefined;
@@ -146,6 +148,7 @@ async function runWorkflowProvider(input: Omit<Parameters<typeof runWorkflowProc
   try {
     result = await runWorkflowProcess({ ...input, ...(input.onInput ? {} : { stdin: input.stdin ?? stdin ?? '' }), ...(input.timeoutMs === null ? { superviseProcessTree: true } : {}),
       onStdout });
+    onCompletion?.(result);
     if (decoder) {
       try {
         const decoded = decoder.finish();
@@ -218,6 +221,7 @@ function save(state: WorkflowState): void {
   if (Buffer.byteLength(`${JSON.stringify(state, null, 2)}\n`) > MAX_WORKFLOW_STATE_BYTES) throw new Error('workflow_state_too_large');
   atomicWriteJson(statePath(state.cwd, state.plan.name), state);
   savedSnapshots.set(state, JSON.parse(JSON.stringify(state)));
+  pendingTaskProjections.add(state);
   // Canonical task projections retain numeric IDs and claim identities; workflow.json owns integration decisions.
   for (const entry of state.tasks) {
     atomicWriteJson(absPath(state.cwd, TeamPaths.taskFile(state.plan.name, entry.canonicalId)), {
@@ -229,6 +233,7 @@ function save(state: WorkflowState): void {
         integration: entry.status, handoff: entry.handoff },
     });
   }
+  pendingTaskProjections.delete(state);
 }
 export function readWorkflow(cwd: string, name: string): WorkflowState {
   let state = boundedJson(statePath(cwd, name), 16 * 1024 * 1024) as WorkflowState;
@@ -256,7 +261,18 @@ async function mutate(cwd: string, name: string,
       savedSnapshots.set(state, JSON.parse(JSON.stringify(state)));
       if (!options.allowComplete) assertMutable(state);
       let saveRequired = true;
-      try { saveRequired = await action(state, active) !== false; } finally { if (saveRequired) save(state); }
+      let failure: { error: unknown } | undefined;
+      try { saveRequired = await action(state, active) !== false; }
+      catch (error) { failure = { error }; }
+      finally {
+        if (saveRequired && (!failure || pendingTaskProjections.has(state) || !isDeepStrictEqual(savedSnapshots.get(state), state))) {
+          try { save(state); }
+          catch (error) {
+            failure = { error: failure ? new AggregateError([failure.error, error], 'workflow_worker_persistence_failed', { cause: failure.error }) : error };
+          }
+        }
+      }
+      if (failure) throw failure.error;
       return state;
     }, { timeoutMs: 0 }));
 }
@@ -271,6 +287,7 @@ function count(value: number | undefined, fallback: number, max: number, min = 1
  * never be silently re-dispatched, and its original attempt and artifacts stay inspectable.
  */
 const NON_RETRYABLE_WORKER_ERRORS = ['workflow_timeout', 'workflow_interrupted', 'workflow_invocation_interrupted', 'workflow_output_incomplete',
+  'workflow_worker_persistence_failed',
   'workflow_designated_result_missing', 'workflow_worker_modified_protected_refs', 'workflow_protected_refs_changed',
   'workflow_protected_ref_audit_failed', 'workflow_session_identity_mismatch'] as const;
 function nonRetryableWorkerError(error: string | undefined): boolean {
@@ -301,8 +318,9 @@ function designatedResultOverridesProcessFailure(result: WorkflowProcessResult, 
 function settleOrphanedAttempt(state: WorkflowState, entry: WorkflowTaskState): void {
   if (classifyOrphanedAttempt(entry) !== 'orphaned') throw new Error('workflow_interrupted_worker_requires_inspection');
   const invocation = entry.invocations!.at(-1)!;
-  invocation.outcome = 'failed'; invocation.error = 'workflow_invocation_interrupted';
-  entry.status = 'failed'; entry.error = 'workflow_invocation_interrupted'; delete entry.claimToken; entry.updatedAt = now();
+  const error = invocation.error === 'workflow_worker_persistence_failed' ? invocation.error : 'workflow_invocation_interrupted';
+  invocation.outcome = 'failed'; invocation.error = error;
+  entry.status = 'failed'; entry.error = error; delete entry.claimToken; entry.updatedAt = now();
   revokeOrphanedPublication(state, entry);
 }
 /** The dead controller never revoked the attempt's one-shot publication capability; remove it so nothing can publish for a settled attempt. */
@@ -628,6 +646,7 @@ async function executeTask(state: WorkflowState, entry: WorkflowTaskState, comma
   const balanced = state.options.mode === 'balanced';
   const resuming = resumeReason !== undefined;
   const setupMode = resuming ? 'resume' : 'fresh';
+  let persistenceFailure: { error: unknown } | undefined;
   if (entry.attempts === 0 && !entry.setupAttempts?.length && entry.task.dependencies.length) {
     entry.task.baseCommit = state.dispatchSupplements?.find(supplement => supplement.taskId === entry.task.id)?.expectedInputHead
       ?? state.integrationHead;
@@ -659,8 +678,10 @@ async function executeTask(state: WorkflowState, entry: WorkflowTaskState, comma
     (entry.invocations ??= []).push(invocation);
     const settlement: ReservedInvocationSettlement = { entry, invocation, outcome: 'failed', error: 'workflow_worker_persistence_failed' };
     settlements.push(settlement);
-    save(state);
+    let reservationSaved = false;
+    let reservationFailure: { error: unknown } | undefined;
     try {
+      save(state); reservationSaved = true;
       const prefix = join(root, `${entry.worker}-${entry.attempts}`);
       const resultFile = `${prefix}.result.json`;
       if (existsSync(resultFile)) throw new Error('workflow_result_already_exists');
@@ -752,8 +773,13 @@ async function executeTask(state: WorkflowState, entry: WorkflowTaskState, comma
       entry.status = 'completed'; delete entry.error; break;
     } catch (error) {
       const message = error instanceof Error ? error.message : '';
-      entry.error = /^workflow_[a-z_]+$/.test(message) ? message : 'workflow_worker_failed';
+      entry.error = !reservationSaved ? 'workflow_worker_persistence_failed'
+        : /^workflow_[a-z_]+$/.test(message) ? message : 'workflow_worker_failed';
       entry.status = 'failed';
+      if (!reservationSaved) {
+        invocation.outcome = 'failed'; invocation.error = entry.error;
+        reservationFailure = { error }; persistenceFailure = reservationFailure; break;
+      }
       if (state.schemaVersion === 2) break;
       if (resuming) break;
       // A wall-less provider can end without a complete stream; that is terminal, not a retry prompt.
@@ -774,9 +800,16 @@ async function executeTask(state: WorkflowState, entry: WorkflowTaskState, comma
       }
       settlement.outcome = entry.status === 'completed' ? 'completed' : 'failed';
       settlement.error = entry.error;
-      delete entry.claimToken; delete entry.backoffUntil; entry.updatedAt = now(); save(state);
+      delete entry.claimToken; delete entry.backoffUntil; entry.updatedAt = now();
+      try { save(state); }
+      catch (error) {
+        persistenceFailure = { error: reservationFailure
+          ? new AggregateError([reservationFailure.error, error], 'workflow_worker_persistence_failed', { cause: reservationFailure.error }) : error };
+      }
     }
+    if (persistenceFailure) break;
   }
+  if (persistenceFailure) throw persistenceFailure.error;
 }
 function attachRefAudit(entries: WorkflowTaskState[], artifact: ArtifactDescriptor | undefined): void {
   if (!artifact) return;
@@ -836,7 +869,8 @@ export async function runWorkflow(cwd: string, name: string, runtime?: WorkflowR
     // batch's durable reservations; untouched pending tasks retain their original state for a later inspected run.
     const reservedEntries = [...new Set(settlements.map(settlement => settlement.entry))];
     try {
-      if (state.schemaVersion === 1 && pools.some(pool => pool.status === 'rejected')) throw new Error('workflow_worker_persistence_failed');
+      const failedPool = pools.find(pool => pool.status === 'rejected');
+      if (state.schemaVersion === 1 && failedPool?.status === 'rejected') throw new Error('workflow_worker_persistence_failed', { cause: failedPool.reason });
       let audit;
       try {
         audit = refAudit.finalize(() => join(artifactsRoot(state), `ref-audit-${randomUUID()}.json`),
@@ -1519,10 +1553,10 @@ function reviewCoverageSchema(): Record<string, unknown> {
  * The reviewer result schema. It is one controller-fixed document, so the prospective invocation the
  * reader qualification is computed over carries exactly the schema this attempt writes to disk and
  * names in its argv: a compatibility review may only be accepted together with an attributed complete
- * delivery, so its schema additionally admits the compact coverage attestation.
+ * delivery, so its schema additionally requires the compact coverage attestation.
  */
 export function reviewReviewerResultSchema(compatibility: boolean): Record<string, unknown> {
-  return { type: 'object', additionalProperties: false, required: ['findings'], properties: {
+  return { type: 'object', additionalProperties: false, required: compatibility ? ['findings', 'coverage'] : ['findings'], properties: {
     findings: { type: 'array', maxItems: 50, items: { type: 'object', additionalProperties: false, required: ['severity', 'message', 'file', 'line'], properties: {
       severity: { type: 'string', enum: ['P0', 'P1', 'P2', 'P3'] }, message: { type: 'string', maxLength: 2000 },
       file: { type: ['string', 'null'], minLength: 1, maxLength: 400,
@@ -1790,7 +1824,7 @@ function prepareReviewCompatibility(state: WorkflowState, authorized: Authorized
       tools: [WORKFLOW_REVIEW_READER_TOOL_MANIFEST, WORKFLOW_REVIEW_READER_TOOL_READ],
       adoptionSequence: adoption.sequence, manifestDigest: bundle.digest, entries: bundle.entryCount,
       responseBytes: WORKFLOW_REVIEW_READ_LIMIT_BYTES, reviewerId,
-      instructions: 'The complete frozen logical source for this review is served only through the read-only reader above by bundle id and continuation cursor. Page the manifest, then read every entry by following each result cursor until it is null; every page is bounded but the whole object is delivered. It carries the authorized files, the governed instructions, the inventory, the binary-safe patch, the objective, the shared context and the accepted task contracts with their acceptance criteria. Return the required JSON findings plus a coverage attestation {bundleSha256, reviewerId, complete, entries, ranges} for exactly this manifestDigest. Read every empty terminal page too. Count ranges as returned pages whose bytes is greater than zero.' }) });
+      instructions: 'The complete frozen logical source for this review is served only through the read-only reader above by bundle id and continuation cursor. Page the manifest, then read every entry by following each result cursor until it is null; every page is bounded but the whole object is delivered. It carries the authorized files, the governed instructions, the inventory, the binary-safe patch, the objective, the shared context and the accepted task contracts with their acceptance criteria. Preserve the current manifest or entry cursor, completed entry IDs, positive-byte page count and concrete findings across compaction, then resume unread material. Return the required JSON findings plus a coverage attestation {bundleSha256, reviewerId, complete, entries, ranges} for exactly this manifestDigest only after reading every empty terminal page too. Count ranges as actual returned pages whose bytes is greater than zero, including successful revisits.' }) });
 }
 /**
  * Resolve everything one compatibility selection must hold before its review may reserve a pass: the
@@ -1895,6 +1929,7 @@ export async function reviewWorkflow(cwd: string, name: string, runtime?: Workfl
       : composeWorkflowReviewRequest(state, context, head);
     if (nativePlan && authority && runtime?.nativeReviewClientFactory && compatibility) {
       const files = ['workflow', 'workflow-adapters', 'workflow-contracts', 'workflow-review-source', 'workflow-review-source-server',
+        'workflow-native-compaction', 'workflow-native-model-events', 'workflow-native-review-observer', 'workflow-native-body-observer',
         'workflow-process', 'workflow-process-supervisor'].map(name => {
           const emitted = fileURLToPath(new URL(`./${name}.js`, import.meta.url));
           const path = realpathSync(existsSync(emitted) ? emitted : emitted.replace(/\.js$/, '.ts'));
@@ -1939,10 +1974,11 @@ export async function reviewWorkflow(cwd: string, name: string, runtime?: Workfl
       try {
         if (session) await session.start();
         result = await runWorkflowProvider(session instanceof WorkflowNativeReviewSession
-          ? { ...input, onInput: session.onInput, collectUsage: false } : input, resultFile,
+          ? { ...input, onInput: session.onInput, abortSignal: session.abortSignal, collectUsage: false } : input, resultFile,
           prepared?.binding.providerRoute === 'claude' ? { kind: 'claude-native-structured' } : { kind: 'provider-designated-json' },
           session instanceof WorkflowNativeReviewSession ? undefined : request,
-          session instanceof WorkflowNativeReviewSession ? session.onStdout : session?.assertHealthy);
+          session instanceof WorkflowNativeReviewSession ? session.onStdout : session?.assertHealthy,
+          session instanceof WorkflowNativeReviewSession ? value => session.acceptProcessCompletion(value) : undefined);
       } finally { if (session) await session.settle(); }
       if (session?.integrityDiagnostic) Object.assign(result, { integrityDiagnostic: session.integrityDiagnostic });
       if (attempt) {

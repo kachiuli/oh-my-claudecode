@@ -2,7 +2,7 @@ import { existsSync, linkSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { runWorkflowProcess } from '../workflow-process.js';
+import { runWorkflowProcess, requireWorkflowProcessCompletion } from '../workflow-process.js';
 import { superviseWindowsWorkflowInvocation } from '../workflow-process-supervisor.js';
 import { resolveValidatedCliInvocation } from '../model-contract.js';
 
@@ -464,6 +464,29 @@ describe('controller-owned duplex workflow process', () => {
   afterEach(() => rmSync(cwd, { recursive: true, force: true }));
   const echo = "process.stdin.on('data',b=>process.stdout.write(b)); process.stdin.on('end',()=>process.exit(0));";
 
+  it.runIf(process.platform === 'win32')('binds one native completion to the actual protected close and exact launch', async () => {
+    const controller = new AbortController();
+    const input: Parameters<typeof runWorkflowProcess>[0] = { command: process.execPath, args: ['-e', echo], cwd,
+      artifactPrefix: join(cwd, 'completion'), timeoutMs: null, superviseProcessTree: true, abortSignal: controller.signal,
+      diagnosticOutput: 'omit', provider: 'codex', onStdout() {}, onInput(transport) { transport.end(); } };
+    const result = await runWorkflowProcess(input);
+    expect(result).toMatchObject({ passed: true, settlement: { descendants: 'cleaned', outputComplete: true } });
+    expect(() => requireWorkflowProcessCompletion(structuredClone(result), input)).toThrow('workflow_process_completion_required');
+    expect(() => requireWorkflowProcessCompletion(result, { ...input, artifactPrefix: join(cwd, 'other') })).toThrow('workflow_process_completion_required');
+    expect(() => requireWorkflowProcessCompletion(result, { ...input, abortSignal: new AbortController().signal })).toThrow('workflow_process_completion_required');
+    expect(() => requireWorkflowProcessCompletion(result, input)).not.toThrow();
+    expect(() => requireWorkflowProcessCompletion(result, input)).toThrow('workflow_process_completion_required');
+  }, 90000);
+
+  it.runIf(process.platform === 'win32')('does not let mutated failure evidence claim native completion', async () => {
+    const input: Parameters<typeof runWorkflowProcess>[0] = { command: process.execPath, args: ['-e', 'process.exit(17)'], cwd,
+      artifactPrefix: join(cwd, 'failed-completion'), timeoutMs: null, superviseProcessTree: true,
+      diagnosticOutput: 'omit', provider: 'codex', onStdout() {}, onInput(transport) { transport.end(); } };
+    const result = await runWorkflowProcess(input);
+    result.passed = true; result.settlement!.parentExitCode = 0;
+    expect(() => requireWorkflowProcessCompletion(result, input)).toThrow('workflow_process_completion_required');
+  }, 90000);
+
   it('delivers later protocol frames and returns the actual child close outcome', async () => {
     let input: Parameters<NonNullable<Parameters<typeof runWorkflowProcess>[0]['onInput']>>[0];
     let replies = '';
@@ -523,6 +546,36 @@ describe('controller-owned duplex workflow process', () => {
       artifactPrefix: join(cwd, 'unfinished'), timeoutMs: 100, onInput() {} });
     expect(result.passed).toBe(false);
     expect(result.error).toBe('timeout');
+  });
+
+  it('omits native diagnostic contents while the controller observes every protocol byte', async () => {
+    const secret = 'private-header-contents-must-never-persist'; let observed = '';
+    const result = await runWorkflowProcess({ command: process.execPath,
+      args: ['-e', 'process.stdin.on("data",b=>{process.stdout.write(b);process.stderr.write(b)});process.stdin.on("end",()=>process.exit(0));'],
+      provider: 'codex', cwd, artifactPrefix: join(cwd, 'private-output'), timeoutMs: 5000, diagnosticOutput: 'omit',
+      onInput(writer) { writer.write(Buffer.from(secret)); writer.end(); }, onStdout(bytes) { observed += bytes.toString(); } });
+    expect(result.passed).toBe(true); expect(result.diagnosticsOmitted).toBe(true); expect(observed).toBe(secret);
+    for (const artifact of result.artifacts) {
+      const text = readFileSync(artifact.path, 'utf8'); expect(text).not.toContain(secret);
+      expect(JSON.parse(text)).toMatchObject({ type: 'native-diagnostics-omitted', contentsCaptured: false, bytes: String(Buffer.byteLength(secret)) });
+    }
+  });
+
+  it('uses owned cleanup for asynchronous controller abort and preserves actual settlement', async () => {
+    const controller = new AbortController();
+    const result = await runWorkflowProcess({ command: process.execPath, args: ['-e', 'process.stdout.write("ready");setInterval(()=>{},1000);'],
+      cwd, artifactPrefix: join(cwd, 'observer-abort'), timeoutMs: null, abortSignal: controller.signal,
+      onInput() {}, onStdout() { controller.abort(); } });
+    expect(result.passed).toBe(false); expect(result.error).toBe('protocol_failed');
+    expect(result.settlement?.termination).toMatch(/attempted|failed/); expect(result.settlement?.directChild).toBe('exited');
+  });
+
+  it('refuses a pre-aborted controller before launching or claiming artifacts', async () => {
+    const controller = new AbortController(); controller.abort(); const launched = vi.fn();
+    await expect(runWorkflowProcess({ command: process.execPath, args: ['-e', echo], cwd,
+      artifactPrefix: join(cwd, 'pre-abort'), timeoutMs: null, abortSignal: controller.signal, onInput: launched }))
+      .rejects.toThrow('workflow_process_protocol_aborted');
+    expect(launched).not.toHaveBeenCalled(); expect(existsSync(join(cwd, 'pre-abort.stdout.log'))).toBe(false);
   });
 });
 

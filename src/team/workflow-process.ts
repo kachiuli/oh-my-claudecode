@@ -1,6 +1,7 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { dirname, isAbsolute } from 'node:path';
 import { lstatSync, realpathSync } from 'node:fs';
+import { isDeepStrictEqual } from 'node:util';
 import { writeTextArtifact, type ArtifactDescriptor } from '../shared/artifact-descriptor.js';
 import { isExternalLLMDisabled } from '../lib/security-config.js';
 import { ensureDirWithMode, validateResolvedPath } from './fs-utils.js';
@@ -68,6 +69,8 @@ export interface WorkflowProcessResult {
   parentExitedSuccessfully: boolean;
   /** True when non-filtered stdout exceeded the bounded artifact capture. */
   stdoutTruncated: boolean;
+  /** A controller protocol observed the stream while free-form native diagnostics were omitted. */
+  diagnosticsOmitted?: true;
   /** Present only for an explicitly unbounded (timeoutMs: null) run. */
   settlement?: WorkflowProcessSettlement;
   telemetry?: WorkflowTelemetry;
@@ -77,6 +80,24 @@ export interface WorkflowProcessResult {
 export interface WorkflowProcessInputTransport {
   write(frame: Buffer): void;
   end(): void;
+}
+type WorkflowProcessCompletionInput = Pick<Parameters<typeof runWorkflowProcess>[0],
+  'command' | 'args' | 'cwd' | 'environment' | 'artifactPrefix' | 'timeoutMs' | 'provider' | 'superviseProcessTree' | 'diagnosticOutput' | 'onInput' | 'abortSignal'>;
+const processCompletions = new WeakMap<WorkflowProcessResult, { input: WorkflowProcessCompletionInput; settlement?: WorkflowProcessSettlement; passed: boolean }>();
+function completionInput(input: WorkflowProcessCompletionInput): WorkflowProcessCompletionInput {
+  return { command: input.command, args: [...input.args], cwd: input.cwd, environment: input.environment ? { ...input.environment } : undefined,
+    artifactPrefix: input.artifactPrefix, timeoutMs: input.timeoutMs, provider: input.provider,
+    superviseProcessTree: input.superviseProcessTree, diagnosticOutput: input.diagnosticOutput, onInput: input.onInput, abortSignal: input.abortSignal };
+}
+/** Only an actual protected process close can satisfy a native transport completion. */
+export function requireWorkflowProcessCompletion(result: WorkflowProcessResult, expected: WorkflowProcessCompletionInput): void {
+  const completion = processCompletions.get(result);
+  if (!completion || completion.input.abortSignal !== expected.abortSignal || !isDeepStrictEqual(completion.input, completionInput(expected)) || !completion.passed
+    || !completion.settlement || completion.settlement.parentExitCode !== 0 || completion.settlement.parentExitSignal !== null
+    || !completion.settlement.outputComplete || completion.settlement.directChild !== 'exited'
+    || completion.settlement.termination !== 'not-requested' || completion.settlement.descendants !== 'cleaned'
+    || expected.superviseProcessTree !== true) throw new Error('workflow_process_completion_required');
+  processCompletions.delete(result);
 }
 /** Protected execution; no shell, transcript handoff or env serialization. */
 export async function runWorkflowProcess(input: {
@@ -94,6 +115,10 @@ export async function runWorkflowProcess(input: {
   onStdout?: (chunk: Buffer) => void;
   /** A trusted controller protocol, mutually exclusive with one-shot stdin. */
   onInput?: (transport: WorkflowProcessInputTransport) => void;
+  /** Controller-only asynchronous protocol failure, using the same owned termination path. */
+  abortSignal?: AbortSignal;
+  /** Native duplex transport keeps selected receipts itself; no raw diagnostic contents are saved. */
+  diagnosticOutput?: 'omit';
   /** Receives the launch owner's identity so an interrupted attempt can later be proven dead. */
   onSpawn?: (identity: WorkflowProviderProcessIdentity) => void;
   /** On Windows, keep an owned Job boundary alive until provider descendants have been cleaned up. */
@@ -104,6 +129,9 @@ export async function runWorkflowProcess(input: {
   if (!input.command || /[\0\r\n]/.test(input.command) || input.args.some(arg => arg.includes('\0'))) throw new Error('workflow_invalid_process_arguments');
   if (process.platform === 'win32' && /\.(cmd|bat|ps1)$/i.test(input.command)) throw new Error('workflow_shell_wrapper_unsupported');
   if (input.onInput && input.stdin !== undefined) throw new Error('workflow_invalid_process_input');
+  if (input.abortSignal && (!input.onInput || input.abortSignal.aborted)) throw new Error('workflow_process_protocol_aborted');
+  if (input.diagnosticOutput !== undefined && (input.diagnosticOutput !== 'omit' || input.provider !== 'codex'
+    || !input.onInput || !input.onStdout || input.collectUsage === true)) throw new Error('workflow_invalid_process_input');
   // Validate the lifetime bound before any artifact path is created or a child is spawned.
   // Null is the sole unbounded value; every other invalid input is refused, never coerced to null.
   const timeoutMs = input.timeoutMs;
@@ -111,6 +139,8 @@ export async function runWorkflowProcess(input: {
     throw new Error('workflow_invalid_timeout');
   }
   const noWall = timeoutMs === null;
+  const completionLaunch = input.diagnosticOutput === 'omit' && input.provider === 'codex' && input.onInput && input.onStdout
+    && input.superviseProcessTree === true && noWall ? completionInput(input) : undefined;
   const artifactParent = dirname(input.artifactPrefix);
   ensureDirWithMode(artifactParent);
   if (lstatSync(artifactParent).isSymbolicLink()) throw new Error('workflow_artifact_parent_symlink');
@@ -166,6 +196,7 @@ export async function runWorkflowProcess(input: {
     let stdout: Buffer | undefined; const stderr: Buffer[] = [];
     let stdoutBytes = 0; let stdoutOffset = 0; let stdoutObservedBytes = 0; let stderrBytes = 0;
     let stdoutTruncated = false; let stderrTruncated = false;
+    let omittedStdoutBytes = 0n; let omittedStderrBytes = 0n;
     let error: WorkflowProcessResult['error'];
     let finished = false;
     let reapTimer: ReturnType<typeof setTimeout> | undefined;
@@ -196,6 +227,7 @@ export async function runWorkflowProcess(input: {
       descendants: !started ? 'not-started' : supervisedCleanupVerified && streamClose ? 'cleaned' : 'unverified',
     });
     const captureStdout = (chunk: Buffer) => {
+      if (input.diagnosticOutput === 'omit') { omittedStdoutBytes += BigInt(chunk.length); return; }
       stdoutObservedBytes = Math.min(MAX_LOG_BYTES + 1, stdoutObservedBytes + chunk.length);
       stdout ??= Buffer.allocUnsafe(MAX_LOG_BYTES);
       if (!retainStdoutTail) {
@@ -269,6 +301,7 @@ export async function runWorkflowProcess(input: {
       if (reapTimer) clearTimeout(reapTimer);
       if (settlementTimer) clearTimeout(settlementTimer);
       process.removeListener('SIGINT', interrupt); process.removeListener('SIGTERM', interrupt);
+      input.abortSignal?.removeEventListener('abort', protocolAbort);
       // Partial and oversized records are ordinary provider output, never silently filtered.
       flushStreamJsonLine();
       // Strip any incomplete sensitive env value at the capture boundary before redacting complete values.
@@ -317,8 +350,9 @@ export async function runWorkflowProcess(input: {
         }
         return Buffer.concat([marker, safeTail]);
       };
-      resolve({ code, error, stdout: capturedStdout(),
-        stderr: captured(stderr, stderrTruncated), stdoutTruncated, stderrTruncated, outputComplete: streamClose,
+      const omitted = (bytes: bigint) => Buffer.from(JSON.stringify({ type: 'native-diagnostics-omitted', bytes: bytes.toString(), contentsCaptured: false }) + '\n');
+      resolve({ code, error, stdout: input.diagnosticOutput === 'omit' ? omitted(omittedStdoutBytes) : capturedStdout(),
+        stderr: input.diagnosticOutput === 'omit' ? omitted(omittedStderrBytes) : captured(stderr, stderrTruncated), stdoutTruncated, stderrTruncated, outputComplete: streamClose,
         ...(noWall ? { settlement: settlement() } : {}) });
     };
     /** Wait out the shared grace before dropping this controller's stream handles. */
@@ -349,6 +383,9 @@ export async function runWorkflowProcess(input: {
       scheduleReap();
     };
     const interrupt = () => { error = 'interrupted'; terminate(); };
+    const protocolAbort = () => { if (!finished) { error = 'protocol_failed'; terminate(); } };
+    input.abortSignal?.addEventListener('abort', protocolAbort, { once: true });
+    if (input.abortSignal?.aborted) protocolAbort();
     process.on('SIGINT', interrupt); process.on('SIGTERM', interrupt);
     const elapsedTimer = timeoutMs === null ? undefined : setTimeout(() => { error = 'timeout'; terminate(); }, timeoutMs);
     child.on('spawn', () => { started = true; });
@@ -373,6 +410,7 @@ export async function runWorkflowProcess(input: {
       captureFilteredStdout(chunk);
     });
     child.stderr.on('data', (chunk: Buffer) => {
+      if (input.diagnosticOutput === 'omit') { omittedStderrBytes += BigInt(chunk.length); return; }
       const kept = chunk.subarray(0, Math.max(0, MAX_LOG_BYTES - stderrBytes));
       if (kept.length) stderr.push(kept);
       stderrTruncated ||= kept.length < chunk.length; stderrBytes += kept.length;
@@ -447,7 +485,11 @@ export async function runWorkflowProcess(input: {
   const failure = result.error ?? (result.code !== 0
     ? /\b429\b|rate[_ -]?limit|too many requests/i.test(`${result.stdout.toString('utf8')}\n${result.stderr.toString('utf8')}`) ? 'throttled' : 'process_failed'
     : telemetry && telemetry.terminal !== 'success' ? 'process_failed' : undefined);
-  return { passed: result.code === 0 && !failure, ...(failure ? { error: failure } : {}), artifacts,
+  const completed: WorkflowProcessResult = { passed: result.code === 0 && !failure, ...(failure ? { error: failure } : {}), artifacts,
     parentExitedSuccessfully, stdoutTruncated: result.stdoutTruncated,
+    ...(input.diagnosticOutput === 'omit' ? { diagnosticsOmitted: true as const } : {}),
     ...(result.settlement ? { settlement: result.settlement } : {}), ...(telemetry ? { telemetry } : {}) };
+  if (completionLaunch) processCompletions.set(completed, { input: completionLaunch, passed: completed.passed,
+    ...(result.settlement ? { settlement: { ...result.settlement } } : {}) });
+  return completed;
 }

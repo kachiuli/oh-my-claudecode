@@ -1703,6 +1703,35 @@ describe('lossless complete review source delivery', () => {
     }
   });
 
+  it('projects the host model catalog record-for-record with long discarded instruction strings', () => {
+    const directory = scratch(); const source = join(directory, 'long-instructions.json');
+    const messages = { persistent_instructions: 'p'.repeat(5000), instructions_template: 't'.repeat(21000),
+      confirmation_policies: { browser_use: 'b'.repeat(11000), computer_use: 'c'.repeat(11000) },
+      escaped: '🙂"\\\n'.repeat(800) };
+    const other = { slug: 'gpt-other', tool_mode: 'code_mode', experimental_supported_tools: ['retained'], model_messages: messages };
+    const selected = { ...other, slug: 'gpt-6.1-sol', context_window: 272000, tool_mode: 'code_mode_only' };
+    const host = { version: 3, models: [other, selected], metadata: { preserved: ['after-models', 1] } };
+    for (const model of host.models) {
+      expect(Buffer.byteLength(JSON.stringify(model))).toBeLessThan(WORKFLOW_REVIEW_BUFFER_LIMIT_BYTES);
+      expect(Buffer.byteLength(model.model_messages.instructions_template)).toBeGreaterThan(4096);
+    }
+    writeFileSync(source, JSON.stringify(host, null, 2)); const original = readFileSync(source);
+    expect(original.length).toBeGreaterThan(WORKFLOW_REVIEW_BUFFER_LIMIT_BYTES);
+    expect([...iterateWorkflowReviewJsonFields({ path: source, arrayKey: 'models' })].map(field => field.key))
+      .toEqual(['version', 'metadata']);
+    for (const native of [false, true]) {
+      const output = join(directory, `projected-${native}.json`);
+      const preview = projectWorkflowReviewCodexCatalog({ source, path: output, model: selected.slug, native, preview: true });
+      expect(existsSync(output)).toBe(false);
+      const projected = projectWorkflowReviewCodexCatalog({ source, path: output, model: selected.slug, native });
+      expect(projected).toEqual(preview);
+      const expected = { ...host, models: [other, { ...selected, tool_mode: 'direct', ...(native ? { experimental_supported_tools: [] } : {}) }] };
+      expect(JSON.parse(readFileSync(output, 'utf8'))).toEqual(expected);
+      expect(projected.models).toBe(2); expect(projected.sha256).toBe(digest(readFileSync(output)));
+    }
+    expect(readFileSync(source)).toEqual(original);
+  });
+
   it('refuses a catalog record that opens before the chunk seam and closes past its bound', () => {
     // The projection documents that only one bounded record is ever held, so the record bound has to
     // hold on the byte that ends the record too. A record whose bound is checked only while its

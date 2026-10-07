@@ -6,14 +6,14 @@
     "base": "05c800f40d1ad53b42a78609d2667ef4f726808b",
     "planningHead": "0a91273e61dbbd47eb0af4c02844409251e08398",
     "head": "3b63b1ea20b5a5aef7c6c68f6342dc050bd01643",
-    "sourceSha256": "6331d7660289b1fafdd2686150499a0e227fc8dce9981bf6b4a3c0a8fdb5b81b",
+    "sourceSha256": "51ddbd881cb470b59fa5fbd16c590f5bd87a48b318bc676ee440cc156cdd0a9e",
     "generatedAt": null,
     "generator": "scripts/generate-inventory-graph.mjs"
   },
   "base": "05c800f40d1ad53b42a78609d2667ef4f726808b",
   "planningHead": "0a91273e61dbbd47eb0af4c02844409251e08398",
   "head": "3b63b1ea20b5a5aef7c6c68f6342dc050bd01643",
-  "sourceSha256": "6331d7660289b1fafdd2686150499a0e227fc8dce9981bf6b4a3c0a8fdb5b81b",
+  "sourceSha256": "51ddbd881cb470b59fa5fbd16c590f5bd87a48b318bc676ee440cc156cdd0a9e",
   "counts": {
     "public": {
       "skills": 43,
@@ -28,8 +28,8 @@
       "toolFiles": 61,
       "libFiles": 44,
       "templateHooks": 22,
-      "srcFiles": 1464,
-      "total": 1486
+      "srcFiles": 1474,
+      "total": 1496
     },
     "generated": {
       "distFiles": 5094,
@@ -33533,6 +33533,11 @@
         "path": "node:http"
       },
       {
+        "id": "external:node:https",
+        "kind": "external",
+        "path": "node:https"
+      },
+      {
         "id": "external:node:module",
         "kind": "external",
         "path": "node:module"
@@ -33571,6 +33576,11 @@
         "id": "external:node:string_decoder",
         "kind": "external",
         "path": "node:string_decoder"
+      },
+      {
+        "id": "external:node:tls",
+        "kind": "external",
+        "path": "node:tls"
       },
       {
         "id": "external:node:url",
@@ -40643,6 +40653,11 @@
         "path": "src/team/__tests__/helpers/git-fixture.ts"
       },
       {
+        "id": "src/team/__tests__/helpers/native-body-tls-fixture.ts",
+        "kind": "src",
+        "path": "src/team/__tests__/helpers/native-body-tls-fixture.ts"
+      },
+      {
         "id": "src/team/__tests__/helpers/workflow-fixture.ts",
         "kind": "src",
         "path": "src/team/__tests__/helpers/workflow-fixture.ts"
@@ -41188,9 +41203,34 @@
         "path": "src/team/__tests__/workflow-issue-48.repro.test.ts"
       },
       {
+        "id": "src/team/__tests__/workflow-issue-64.repro.test.ts",
+        "kind": "src",
+        "path": "src/team/__tests__/workflow-issue-64.repro.test.ts"
+      },
+      {
         "id": "src/team/__tests__/workflow-lead-integration.test.ts",
         "kind": "src",
         "path": "src/team/__tests__/workflow-lead-integration.test.ts"
+      },
+      {
+        "id": "src/team/__tests__/workflow-native-body-observer.test.ts",
+        "kind": "src",
+        "path": "src/team/__tests__/workflow-native-body-observer.test.ts"
+      },
+      {
+        "id": "src/team/__tests__/workflow-native-compaction.test.ts",
+        "kind": "src",
+        "path": "src/team/__tests__/workflow-native-compaction.test.ts"
+      },
+      {
+        "id": "src/team/__tests__/workflow-native-model-events.test.ts",
+        "kind": "src",
+        "path": "src/team/__tests__/workflow-native-model-events.test.ts"
+      },
+      {
+        "id": "src/team/__tests__/workflow-native-review-observer.test.ts",
+        "kind": "src",
+        "path": "src/team/__tests__/workflow-native-review-observer.test.ts"
       },
       {
         "id": "src/team/__tests__/workflow-native-review.test.ts",
@@ -41686,6 +41726,26 @@
         "id": "src/team/workflow-contracts.ts",
         "kind": "src",
         "path": "src/team/workflow-contracts.ts"
+      },
+      {
+        "id": "src/team/workflow-native-body-observer.ts",
+        "kind": "src",
+        "path": "src/team/workflow-native-body-observer.ts"
+      },
+      {
+        "id": "src/team/workflow-native-compaction.ts",
+        "kind": "src",
+        "path": "src/team/workflow-native-compaction.ts"
+      },
+      {
+        "id": "src/team/workflow-native-model-events.ts",
+        "kind": "src",
+        "path": "src/team/workflow-native-model-events.ts"
+      },
+      {
+        "id": "src/team/workflow-native-review-observer.ts",
+        "kind": "src",
+        "path": "src/team/workflow-native-review-observer.ts"
       },
       {
         "id": "src/team/workflow-orphan.ts",
@@ -73155,6 +73215,31 @@
         "kind": "type-imports"
       },
       {
+        "from": "src/team/__tests__/helpers/native-body-tls-fixture.ts",
+        "to": "external:node:child_process",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/helpers/native-body-tls-fixture.ts",
+        "to": "external:node:fs",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/helpers/native-body-tls-fixture.ts",
+        "to": "external:node:os",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/helpers/native-body-tls-fixture.ts",
+        "to": "external:node:path",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/helpers/native-body-tls-fixture.ts",
+        "to": "external:node:tls",
+        "kind": "imports"
+      },
+      {
         "from": "src/team/__tests__/helpers/workflow-fixture.ts",
         "to": "external:node:child_process",
         "kind": "imports"
@@ -76875,6 +76960,86 @@
         "kind": "imports"
       },
       {
+        "from": "src/team/__tests__/workflow-issue-64.repro.test.ts",
+        "to": "external:node:child_process",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-issue-64.repro.test.ts",
+        "to": "external:node:crypto",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-issue-64.repro.test.ts",
+        "to": "external:node:events",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-issue-64.repro.test.ts",
+        "to": "external:node:fs",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-issue-64.repro.test.ts",
+        "to": "external:node:path",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-issue-64.repro.test.ts",
+        "to": "external:node:url",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-issue-64.repro.test.ts",
+        "to": "external:vitest",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-issue-64.repro.test.ts",
+        "to": "src/team/__tests__/helpers/workflow-fixture.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-issue-64.repro.test.ts",
+        "to": "src/team/__tests__/helpers/workflow-v2-fixture.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-issue-64.repro.test.ts",
+        "to": "src/team/fs-utils.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-issue-64.repro.test.ts",
+        "to": "src/team/git-worktree.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-issue-64.repro.test.ts",
+        "to": "src/team/team-owner-epoch.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-issue-64.repro.test.ts",
+        "to": "src/team/workflow-contracts.ts",
+        "kind": "type-imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-issue-64.repro.test.ts",
+        "to": "src/team/workflow-process.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-issue-64.repro.test.ts",
+        "to": "src/team/workflow-publication.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-issue-64.repro.test.ts",
+        "to": "src/team/workflow.ts",
+        "kind": "imports"
+      },
+      {
         "from": "src/team/__tests__/workflow-lead-integration.test.ts",
         "to": "external:node:child_process",
         "kind": "imports"
@@ -76912,6 +77077,236 @@
       {
         "from": "src/team/__tests__/workflow-lead-integration.test.ts",
         "to": "src/team/workflow.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-native-body-observer.test.ts",
+        "to": "external:node:crypto",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-native-body-observer.test.ts",
+        "to": "external:node:events",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-native-body-observer.test.ts",
+        "to": "external:node:fs",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-native-body-observer.test.ts",
+        "to": "external:node:http",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-native-body-observer.test.ts",
+        "to": "external:node:https",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-native-body-observer.test.ts",
+        "to": "external:node:net",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-native-body-observer.test.ts",
+        "to": "external:node:net",
+        "kind": "type-imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-native-body-observer.test.ts",
+        "to": "external:node:os",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-native-body-observer.test.ts",
+        "to": "external:node:path",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-native-body-observer.test.ts",
+        "to": "external:node:tls",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-native-body-observer.test.ts",
+        "to": "external:node:zlib",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-native-body-observer.test.ts",
+        "to": "external:vitest",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-native-body-observer.test.ts",
+        "to": "src/team/__tests__/helpers/native-body-tls-fixture.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-native-body-observer.test.ts",
+        "to": "src/team/workflow-native-body-observer.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-native-body-observer.test.ts",
+        "to": "src/team/workflow-native-body-observer.ts",
+        "kind": "type-imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-native-body-observer.test.ts",
+        "to": "src/team/workflow-native-review-observer.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-native-body-observer.test.ts",
+        "to": "src/team/workflow-review-source.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-native-compaction.test.ts",
+        "to": "external:node:crypto",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-native-compaction.test.ts",
+        "to": "external:node:fs",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-native-compaction.test.ts",
+        "to": "external:node:os",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-native-compaction.test.ts",
+        "to": "external:node:path",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-native-compaction.test.ts",
+        "to": "external:vitest",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-native-compaction.test.ts",
+        "to": "src/team/workflow-native-compaction.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-native-compaction.test.ts",
+        "to": "src/team/workflow-native-compaction.ts",
+        "kind": "type-imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-native-compaction.test.ts",
+        "to": "src/team/workflow-review-source.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-native-compaction.test.ts",
+        "to": "src/team/workflow-review-source.ts",
+        "kind": "type-imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-native-model-events.test.ts",
+        "to": "external:node:crypto",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-native-model-events.test.ts",
+        "to": "external:node:fs",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-native-model-events.test.ts",
+        "to": "external:node:os",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-native-model-events.test.ts",
+        "to": "external:node:path",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-native-model-events.test.ts",
+        "to": "external:vitest",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-native-model-events.test.ts",
+        "to": "src/team/workflow-native-model-events.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-native-model-events.test.ts",
+        "to": "src/team/workflow-native-model-events.ts",
+        "kind": "type-imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-native-model-events.test.ts",
+        "to": "src/team/workflow-review-source.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-native-review-observer.test.ts",
+        "to": "external:node:fs",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-native-review-observer.test.ts",
+        "to": "external:node:net",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-native-review-observer.test.ts",
+        "to": "external:node:os",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-native-review-observer.test.ts",
+        "to": "external:node:path",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-native-review-observer.test.ts",
+        "to": "external:node:tls",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-native-review-observer.test.ts",
+        "to": "external:node:zlib",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-native-review-observer.test.ts",
+        "to": "external:vitest",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-native-review-observer.test.ts",
+        "to": "src/team/__tests__/helpers/native-body-tls-fixture.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-native-review-observer.test.ts",
+        "to": "src/team/workflow-native-review-observer.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-native-review-observer.test.ts",
+        "to": "src/team/workflow-review-source.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-native-review.test.ts",
+        "to": "external:@modelcontextprotocol/sdk/client/index.js",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-native-review.test.ts",
+        "to": "external:@modelcontextprotocol/sdk/inMemory.js",
         "kind": "imports"
       },
       {
@@ -76967,6 +77362,11 @@
       {
         "from": "src/team/__tests__/workflow-native-review.test.ts",
         "to": "src/team/workflow-review-source.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/__tests__/workflow-native-review.test.ts",
+        "to": "src/team/workflow.ts",
         "kind": "imports"
       },
       {
@@ -81005,6 +81405,181 @@
         "kind": "type-imports"
       },
       {
+        "from": "src/team/workflow-native-body-observer.ts",
+        "to": "external:node:crypto",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow-native-body-observer.ts",
+        "to": "external:node:events",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow-native-body-observer.ts",
+        "to": "external:node:fs",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow-native-body-observer.ts",
+        "to": "external:node:http",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow-native-body-observer.ts",
+        "to": "external:node:http",
+        "kind": "type-imports"
+      },
+      {
+        "from": "src/team/workflow-native-body-observer.ts",
+        "to": "external:node:https",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow-native-body-observer.ts",
+        "to": "external:node:net",
+        "kind": "type-imports"
+      },
+      {
+        "from": "src/team/workflow-native-body-observer.ts",
+        "to": "external:node:stream",
+        "kind": "type-imports"
+      },
+      {
+        "from": "src/team/workflow-native-body-observer.ts",
+        "to": "external:node:tls",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow-native-body-observer.ts",
+        "to": "external:node:tls",
+        "kind": "type-imports"
+      },
+      {
+        "from": "src/team/workflow-native-body-observer.ts",
+        "to": "external:node:zlib",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow-native-body-observer.ts",
+        "to": "src/team/workflow-native-model-events.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow-native-body-observer.ts",
+        "to": "src/team/workflow-native-model-events.ts",
+        "kind": "type-imports"
+      },
+      {
+        "from": "src/team/workflow-native-body-observer.ts",
+        "to": "src/team/workflow-review-source.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow-native-body-observer.ts",
+        "to": "src/team/workflow-review-source.ts",
+        "kind": "type-imports"
+      },
+      {
+        "from": "src/team/workflow-native-compaction.ts",
+        "to": "external:node:crypto",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow-native-compaction.ts",
+        "to": "external:node:fs",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow-native-compaction.ts",
+        "to": "external:node:path",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow-native-compaction.ts",
+        "to": "src/team/workflow-native-model-events.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow-native-compaction.ts",
+        "to": "src/team/workflow-native-model-events.ts",
+        "kind": "type-imports"
+      },
+      {
+        "from": "src/team/workflow-native-compaction.ts",
+        "to": "src/team/workflow-review-source.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow-native-compaction.ts",
+        "to": "src/team/workflow-review-source.ts",
+        "kind": "type-imports"
+      },
+      {
+        "from": "src/team/workflow-native-model-events.ts",
+        "to": "external:node:crypto",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow-native-review-observer.ts",
+        "to": "external:node:crypto",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow-native-review-observer.ts",
+        "to": "external:node:fs",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow-native-review-observer.ts",
+        "to": "external:node:path",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow-native-review-observer.ts",
+        "to": "external:node:tls",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow-native-review-observer.ts",
+        "to": "external:node:util",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow-native-review-observer.ts",
+        "to": "external:node:zlib",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow-native-review-observer.ts",
+        "to": "src/team/workflow-native-body-observer.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow-native-review-observer.ts",
+        "to": "src/team/workflow-native-body-observer.ts",
+        "kind": "type-imports"
+      },
+      {
+        "from": "src/team/workflow-native-review-observer.ts",
+        "to": "src/team/workflow-native-compaction.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow-native-review-observer.ts",
+        "to": "src/team/workflow-native-compaction.ts",
+        "kind": "type-imports"
+      },
+      {
+        "from": "src/team/workflow-native-review-observer.ts",
+        "to": "src/team/workflow-review-source.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow-native-review-observer.ts",
+        "to": "src/team/workflow-review-source.ts",
+        "kind": "type-imports"
+      },
+      {
         "from": "src/team/workflow-orphan.ts",
         "to": "src/team/team-owner-epoch.ts",
         "kind": "imports"
@@ -81037,6 +81612,11 @@
       {
         "from": "src/team/workflow-process.ts",
         "to": "external:node:path",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow-process.ts",
+        "to": "external:node:util",
         "kind": "imports"
       },
       {
@@ -81342,6 +81922,26 @@
       {
         "from": "src/team/workflow-review-source-server.ts",
         "to": "src/team/workflow-contracts.ts",
+        "kind": "type-imports"
+      },
+      {
+        "from": "src/team/workflow-review-source-server.ts",
+        "to": "src/team/workflow-native-body-observer.ts",
+        "kind": "type-imports"
+      },
+      {
+        "from": "src/team/workflow-review-source-server.ts",
+        "to": "src/team/workflow-native-compaction.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow-review-source-server.ts",
+        "to": "src/team/workflow-native-review-observer.ts",
+        "kind": "imports"
+      },
+      {
+        "from": "src/team/workflow-review-source-server.ts",
+        "to": "src/team/workflow-native-review-observer.ts",
         "kind": "type-imports"
       },
       {
@@ -84906,12 +85506,12 @@
       }
     ],
     "stats": {
-      "nodeCount": 7209,
-      "edgeCount": 8466,
-      "importEdgeCount": 6982,
+      "nodeCount": 7221,
+      "edgeCount": 8574,
+      "importEdgeCount": 7071,
       "registerEdgeCount": 64
     }
   },
-  "inventorySha256": "f055ad7bfa13fc654746a723c62f94ada9dba0b2753981dec1e6e663dd14b99d",
-  "manifestSha256": "675962489e633342f77dfa4f9e27b203528bbee2e0c447c414c08a81fe0b08ee"
+  "inventorySha256": "ab4ba345584c1a0e80890ecc478990ec92e028989ddf7236a3d30396f3f93aa9",
+  "manifestSha256": "a5fb786ed25e09a011b50428a45025fc67c10d9adf39d2b2e6423e48bce7883b"
 }

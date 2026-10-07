@@ -33,13 +33,23 @@ import { openWorkflowReviewSourceBundle, readWorkflowReviewSource, workflowRevie
   parseWorkflowReviewEvidenceArtifact, assertWorkflowReviewCoverageAttribution,
   WorkflowReviewCoverageMachine, WorkflowReviewOwnedFile, verifyWorkflowReviewOwnedReference,
   workflowReviewResourceUsage, workflowReviewSourceObjectBytes,
+  iterateWorkflowReviewNativeItems, readWorkflowReviewNativeRequestControls, fingerprintWorkflowReviewNativeRequest,
+  workflowReviewNativeTextContentSha256,
   type WorkflowReviewSourceBundle, type WorkflowReviewSourceReceipt, type WorkflowReviewEvidenceArtifact,
   type WorkflowReviewCoverageProof, type WorkflowReviewOwnedReference } from './workflow-review-source.js';
 import { buildWorkflowReviewSourceBundle, streamWorkflowReviewLines } from './workflow-review-source.js';
-import { runWorkflowProcess, type WorkflowProcessInputTransport } from './workflow-process.js';
+import { runWorkflowProcess, requireWorkflowProcessCompletion, type WorkflowProcessInputTransport, type WorkflowProcessResult } from './workflow-process.js';
 import { workflowReviewerArguments, requirePreparedWorkflowBinding, type PreparedWorkflowBinding } from './workflow-adapters.js';
 import type { WorkflowRoleBinding } from './workflow-contracts.js';
 import { superviseWindowsWorkflowInvocation } from './workflow-process-supervisor.js';
+import { createWorkflowNativeReviewObserver, workflowNativeReviewObserverConfiguration, disposeWorkflowNativeReviewObserver,
+  beginWorkflowNativeReviewObservation, beginWorkflowNativeReviewClientShutdown, assertWorkflowNativeReviewObservationHealthy,
+  settleWorkflowNativeReviewObservation, consumeWorkflowNativeReviewObservationCompletion,
+  iterateWorkflowNativeObservedTransactions, type WorkflowNativeObservedTransaction,
+  type WorkflowNativeReviewObserver, type WorkflowNativeReviewObservation, type WorkflowNativeReviewObservationCompletion,
+  type WorkflowNativeReviewTransportBootstrap } from './workflow-native-review-observer.js';
+import { WorkflowNativeCompactionChain } from './workflow-native-compaction.js';
+import type { WorkflowNativeBodyObserverSettlement } from './workflow-native-body-observer.js';
 
 export const WORKFLOW_REVIEW_SOURCE_SERVER_NAME = 'omc-review-source';
 export const WORKFLOW_REVIEW_READER_TOOL_MANIFEST = 'review_source_manifest';
@@ -784,6 +794,7 @@ export interface WorkflowSyntheticReviewLaunch {
   readonly provider: 'codex' | 'claude';
   readonly collectUsage?: boolean;
   readonly superviseProcessTree?: boolean;
+  readonly diagnosticOutput?: 'omit';
 }
 /** Mirror the closed reviewer branch in protected workflow-process.ts; bind and recheck its source. */
 export function workflowSyntheticEffectiveProcess(launch: WorkflowSyntheticReviewLaunch): unknown {
@@ -808,7 +819,8 @@ export function workflowSyntheticEffectiveProcess(launch: WorkflowSyntheticRevie
     intendedEnvironment: sha(JSON.stringify(Object.entries(environment).sort())),
     systemRoot: process.env.SystemRoot ?? null, nodeVersion: process.version, platform: process.platform, arch: process.arch,
     timeoutMs: launch.timeoutMs, superviseProcessTree: launch.superviseProcessTree === true,
-    artifactPrefix: launch.artifactPrefix, provider: launch.provider, collectUsage: launch.collectUsage === true });
+    artifactPrefix: launch.artifactPrefix, provider: launch.provider, collectUsage: launch.collectUsage === true,
+    ...(launch.diagnosticOutput ? { diagnosticOutput: launch.diagnosticOutput } : {}) });
 }
 /** Conservative transitive closure: controller sources/native helpers and every production package tree.
  * Package trees cover opaque computed imports; package manifests/lock bind resolution. No source inventory
@@ -1496,22 +1508,35 @@ export async function connectWorkflowSyntheticReviewBridge(): Promise<{
 
 /** Supported native producer. A differently built CLI needs a new implementation/qualification. */
 const NATIVE_CODEX = Object.freeze({ version: '0.159.1', sha256: '1203922d910426522182b35a52402085d0955101bb585a87bd7c88110d8d68d8' });
+export const WORKFLOW_REVIEW_NATIVE_COMPACTION_LIMIT = 98304;
 export const WORKFLOW_REVIEW_NATIVE_NAMESPACE = 'functions';
+// Codex 0.159.1's finite JsonSchema omits these three pattern fields on the model wire.
+// Keep the declared MCP/thread schemas and the reader's argument/cursor/membership guards intact.
+const NATIVE_WIRE_TOOLS = structuredClone(TOOLS);
+Reflect.deleteProperty(NATIVE_WIRE_TOOLS[0]!.inputSchema.properties.cursor, 'pattern');
+Reflect.deleteProperty(NATIVE_WIRE_TOOLS[1]!.inputSchema.properties.id!, 'pattern');
+Reflect.deleteProperty(NATIVE_WIRE_TOOLS[1]!.inputSchema.properties.cursor, 'pattern');
 const NATIVE_EXCLUDED_FEATURES = ['shell_tool', 'unified_exec', 'image_generation', 'goals', 'multi_agent', 'multi_agent_v2',
   'apps', 'plugins', 'remote_plugin', 'browser_use', 'browser_use_external', 'computer_use', 'in_app_browser',
   'code_mode', 'code_mode_only', 'code_mode_host', 'deferred_executor', 'token_budget', 'current_time_reminder', 'sleep_tool',
   'send_message_to_user_async', 'tool_suggest', 'skill_search', 'workspace_dependencies', 'view_image', 'hooks', 'skill_mcp_dependency_install'];
 /** Exact native launch, scoped to one invocation; ordinary reviewer argv is untouched. */
 export function workflowNativeReviewArguments(catalogPath: string, mcpServers: readonly string[] = []): string[] {
+  // The pinned CLI splits override keys on dots without parsing TOML quoted keys.
+  if (mcpServers.some(name => !name || /[.=\0\r\n]/.test(name))) throw new Error('workflow_review_native_mcp_name_unsupported');
   return ['app-server', '--listen', 'stdio://', '--config', `model_catalog_json=${JSON.stringify(catalogPath)}`,
     '--config', 'model="gpt-6.1-sol"', '--config', 'model_reasoning_effort="ultra"',
+    '--config', `model_auto_compact_token_limit=${WORKFLOW_REVIEW_NATIVE_COMPACTION_LIMIT}`, '--config', 'model_auto_compact_token_limit_scope="body_after_prefix"',
+    '--config', 'features.respect_system_proxy=false', '--config', 'features.system_proxy_fallback=false',
+    '--config', 'analytics.enabled=false',
     '--config', 'mcp_servers={}', '--config', 'web_search="disabled"', '--config', 'agents.enabled=false',
     '--config', 'tools.update_plan.enabled=false', '--config', 'tools.experimental_request_user_input.enabled=false',
-    '--config', 'project_doc_max_bytes=0', ...mcpServers.flatMap(name => ['--config', `mcp_servers.${JSON.stringify(name)}.enabled=false`]),
+    '--config', 'project_doc_max_bytes=0', ...mcpServers.flatMap(name => ['--config', `mcp_servers.${name}.enabled=false`]),
     ...NATIVE_EXCLUDED_FEATURES.flatMap(feature => ['--config', `features.${feature}=false`])];
 }
 function nativeThread(binding: WorkflowRoleBinding, cwd: string): Record<string, unknown> {
   return { model: binding.model, cwd, ephemeral: true, sandbox: 'read-only', approvalPolicy: 'never',
+    config: { model_auto_compact_token_limit: WORKFLOW_REVIEW_NATIVE_COMPACTION_LIMIT, model_auto_compact_token_limit_scope: 'body_after_prefix', 'analytics.enabled': false },
     allowProviderModelFallback: false, environments: [], dynamicTools:
       TOOLS.map(tool => ({ type: 'function', name: tool.name, description: tool.description, inputSchema: tool.inputSchema, deferLoading: false })) };
 }
@@ -1524,12 +1549,14 @@ export function workflowNativeReviewProjection(input: { binding: WorkflowRoleBin
 export interface WorkflowNativeReviewClientFactory { readonly mode: 'native' }
 interface NativeFactoryPins {
   readonly prepared: PreparedWorkflowBinding;
+  readonly preparedSnapshot: PreparedWorkflowBinding;
   readonly cwd: string;
   readonly catalogSource: string;
   readonly expected: WorkflowReviewEffectiveInvocation;
   readonly schema: unknown;
   readonly closure: { sha256: string; files: number };
   readonly mcpServers: readonly string[];
+  readonly observer: WorkflowNativeReviewObserver;
   qualification?: WorkflowReviewReaderQualification;
   certificate?: readonly { path: string; sha256: string }[];
 }
@@ -1538,6 +1565,7 @@ const nativeFactoryPins = new WeakSet<NativeFactoryPins>();
 const nativeSessions = new WeakSet<WorkflowNativeReviewSession>();
 const nativeCompletions = new WeakMap<object, WorkflowNativeReviewSession>();
 function revalidateNativeCertificate(pins: NativeFactoryPins): void {
+  workflowNativeReviewObserverConfiguration(pins.observer);
   for (const artifact of pins.certificate ?? []) {
     const file = new WorkflowReviewOwnedFile(dirname(artifact.path), artifact.path.slice(dirname(artifact.path).length + 1));
     try {
@@ -1556,6 +1584,19 @@ function revalidateNativeCertificate(pins: NativeFactoryPins): void {
 }
 export function requireWorkflowNativeReviewClientFactory(factory?: WorkflowNativeReviewClientFactory): void {
   if (!factory || !nativeFactories.get(factory)?.qualification) throw new Error('workflow_review_reader_observation_required');
+  revalidateNativeCertificate(nativeFactories.get(factory)!);
+}
+/** Revokes live authority and closes the factory listener, channels and held certificate handles. */
+export async function disposeWorkflowNativeReviewClientFactory(factory: WorkflowNativeReviewClientFactory): Promise<void> {
+  const pins = nativeFactories.get(factory);
+  if (!pins) return;
+  nativeFactories.delete(factory); nativeFactoryPins.delete(pins);
+  await disposeWorkflowNativeReviewObserver(pins.observer);
+}
+function nativeObserverEnvironment(prepared: PreparedWorkflowBinding, observer: WorkflowNativeReviewObserver, trace?: string): NodeJS.ProcessEnv {
+  const overlay = { ...workflowNativeReviewObserverConfiguration(observer).environment, ...(trace ? { CODEX_ROLLOUT_TRACE_ROOT: trace } : {}) };
+  const names = new Set(Object.keys(overlay).map(name => name.toUpperCase()));
+  return { ...Object.fromEntries(Object.entries(prepared.environment).filter(([name]) => !names.has(name.toUpperCase()))), ...overlay };
 }
 export function workflowNativeReviewQualification(factory: WorkflowNativeReviewClientFactory, expected?: WorkflowReviewEffectiveInvocation): WorkflowReviewReaderQualification {
   requireWorkflowNativeReviewClientFactory(factory);
@@ -1573,7 +1614,7 @@ export function verifyWorkflowNativeReviewPrepared(factory: WorkflowNativeReview
   cwd: string, schema: unknown): void {
   requireWorkflowNativeReviewClientFactory(factory); const pins = nativeFactories.get(factory)!;
   assertNativePrepared(prepared);
-  if (!isDeepStrictEqual(prepared, pins.prepared) || realpathSync(cwd) !== pins.cwd || !isDeepStrictEqual(schema, pins.schema)
+  if (!isDeepStrictEqual(prepared, pins.preparedSnapshot) || realpathSync(cwd) !== pins.cwd || !isDeepStrictEqual(schema, pins.schema)
     || !isDeepStrictEqual(workflowSyntheticRuntimeClosure(), pins.closure)) throw new Error('workflow_review_reader_qualification_mismatch');
   revalidateNativeCertificate(pins);
 }
@@ -1587,8 +1628,12 @@ function assertNativePrepared(prepared: PreparedWorkflowBinding): void {
     || hashWorkflowReviewArtifact(prepared.command).sha256 !== NATIVE_CODEX.sha256) throw new Error('workflow_review_reader_qualification_required');
 }
 /** Discover inherited MCP names through the supported CLI before creating any provider thread. */
-async function discoverNativeServers(input: { prepared: PreparedWorkflowBinding; cwd: string; directory: string; catalogPath: string }): Promise<readonly string[]> {
+async function discoverNativeServers(input: { prepared: PreparedWorkflowBinding; cwd: string; directory: string; catalogPath: string;
+  observer: WorkflowNativeReviewObserver }): Promise<{ readonly servers: readonly string[]; readonly observation: WorkflowNativeBodyObserverSettlement }> {
   const names = new Set<string>(); let writer: WorkflowProcessInputTransport | undefined; let initialized = false; let ended = false;
+  const abortController = new AbortController(); const invocationId = randomUUID();
+  const observation = beginWorkflowNativeReviewObservation(input.observer, { directory: join(input.directory, 'discovery-bodies'),
+    invocationId, onFirstFailure: () => abortController.abort() });
   const decoder = new WorkflowReviewFrameDecoder(frame => {
     const message = frameObject(frame);
     if ('error' in message) throw new Error('workflow_review_reader_rpc_error');
@@ -1604,21 +1649,31 @@ async function discoverNativeServers(input: { prepared: PreparedWorkflowBinding;
         names.add(server.name);
       }
       if (result.nextCursor) writer!.write(wire({ id: 2, method: 'mcpServerStatus/list', params: { limit: 1, cursor: result.nextCursor } }));
-      else { ended = true; writer!.end(); }
+      else { beginWorkflowNativeReviewClientShutdown(observation); ended = true; writer!.end(); }
       return;
     }
     if ('id' in message) throw new Error('workflow_review_transport_request_mismatch');
   }, 65536);
-  const result = await runWorkflowProcess({ command: input.prepared.command, args: workflowNativeReviewArguments(input.catalogPath),
-    cwd: input.cwd, environment: input.prepared.environment, redactionEnvironment: input.prepared.redactionEnvironment,
+  let result: WorkflowProcessResult;
+  let completion: WorkflowNativeReviewObservationCompletion;
+  try { result = await runWorkflowProcess({ command: input.prepared.command, args: workflowNativeReviewArguments(input.catalogPath),
+    cwd: input.cwd, environment: nativeObserverEnvironment(input.prepared, input.observer),
+    redactionEnvironment: { ...input.prepared.redactionEnvironment, ...workflowNativeReviewObserverConfiguration(input.observer).redactionEnvironment },
     artifactPrefix: join(input.directory, 'discovery'), timeoutMs: null, provider: 'codex', superviseProcessTree: true,
+    diagnosticOutput: 'omit', abortSignal: abortController.signal,
     onInput(transport) { writer = transport; writer.write(wire({ id: 1, method: 'initialize', params: {
       clientInfo: { name: 'omc-native-reader-discovery', version: '1.0.0' }, capabilities: { experimentalApi: true } } })); },
-    onStdout(chunk) { decoder.write(chunk); } });
+    onStdout(chunk) { decoder.write(chunk); } }); }
+  finally { completion = await settleWorkflowNativeReviewObservation(observation); }
   decoder.end();
   if (!result.passed || !ended || result.settlement?.parentExitCode !== 0) throw new Error('workflow_review_native_bootstrap_failed');
   writeWorkflowReviewArtifact({ path: join(input.directory, 'discovery-result.json'), chunks: [wire({ result, servers: [...names].sort() })] });
-  return Object.freeze([...names].sort());
+  const observed = consumeWorkflowNativeReviewObservationCompletion(observation, completion!);
+  for await (const _transaction of iterateWorkflowNativeObservedTransactions({ directory: join(input.directory, 'discovery-bodies'), invocationId, settlement: observed })) {
+    throw new Error('workflow_review_native_discovery_model_forbidden');
+  }
+  writeWorkflowReviewArtifact({ path: join(input.directory, 'discovery-observer.json'), chunks: [wire(observed)] });
+  return Object.freeze({ servers: Object.freeze([...names].sort()), observation: observed });
 }
 /**
  * Explicit controller bootstrap: a real authenticated native calibration is the sole producer of
@@ -1627,21 +1682,28 @@ async function discoverNativeServers(input: { prepared: PreparedWorkflowBinding;
  */
 export async function qualifyWorkflowNativeReviewClientFactory(input: {
   prepared: PreparedWorkflowBinding; cwd: string; directory: string; catalogSource: string;
-  expected: WorkflowReviewEffectiveInvocation; schema: unknown;
+  expected: WorkflowReviewEffectiveInvocation; schema: unknown; transport: WorkflowNativeReviewTransportBootstrap;
 }): Promise<WorkflowNativeReviewClientFactory> {
   assertNativePrepared(input.prepared);
+  const observer = await createWorkflowNativeReviewObserver(input.transport);
+  try {
   mkdirSync(input.directory); const directory = realpathSync(input.directory); const cwd = realpathSync(input.cwd);
   const catalog = projectWorkflowReviewCodexCatalog({ source: input.catalogSource, path: join(directory, 'catalog.json'), model: input.prepared.binding.model, native: true });
-  const mcpServers = await discoverNativeServers({ prepared: input.prepared, cwd, directory, catalogPath: catalog.path });
+  for (const record of iterateWorkflowReviewJsonRecords({ path: catalog.path, arrayKey: 'models', found: { value: false } })) {
+    const model = JSON.parse(record) as Record<string, unknown>;
+    if (model.slug === input.prepared.binding.model && model.context_window !== 272000) throw new Error('workflow_review_reader_qualification_mismatch');
+  }
+  const discovery = await discoverNativeServers({ prepared: input.prepared, cwd, directory, catalogPath: catalog.path, observer });
+  const mcpServers = discovery.servers;
   const expected = freezeReviewValue({ ...structuredClone(input.expected), projection: workflowNativeReviewProjection({ binding: input.prepared.binding, schema: input.schema, mcpServers }) });
   if (expected.cli.path !== input.prepared.binding.executableIdentity!.path || expected.cli.sha256 !== NATIVE_CODEX.sha256
     || expected.cli.version !== NATIVE_CODEX.version || expected.model !== input.prepared.binding.model || expected.effort !== input.prepared.binding.effort
     || expected.auth.profile !== input.prepared.binding.authProfileRef || expected.auth.fingerprint !== input.prepared.binding.authFingerprint
     || expected.route !== 'codex' || !isDeepStrictEqual(expected.catalog, { input: catalog.input, projected: { bytes: catalog.bytes, sha256: catalog.sha256 } })
     || !isDeepStrictEqual(expected.tools, WORKFLOW_REVIEW_READER_TOOLS)) throw new Error('workflow_review_reader_qualification_mismatch');
-  const pins: NativeFactoryPins = { prepared: freezeReviewValue(structuredClone(input.prepared)), cwd,
+  const pins: NativeFactoryPins = { prepared: input.prepared, preparedSnapshot: freezeReviewValue(structuredClone(input.prepared)), cwd,
     catalogSource: input.catalogSource, expected, schema: freezeReviewValue(structuredClone(input.schema)),
-    closure: workflowSyntheticRuntimeClosure(), mcpServers };
+    closure: workflowSyntheticRuntimeClosure(), mcpServers, observer };
   nativeFactoryPins.add(pins);
   const factory = Object.freeze({ mode: 'native' as const }); nativeFactories.set(factory, pins);
   const plan = planWorkflowSyntheticReview({ invocationId: randomUUID(), reviewerId: input.prepared.actorId ?? `unknown:${input.prepared.binding.id}`,
@@ -1659,17 +1721,23 @@ export async function qualifyWorkflowNativeReviewClientFactory(input: {
   writeWorkflowReviewArtifact({ path: schemaPath, chunks: [JSON.stringify(input.schema, null, 2) + '\n'] });
   const request = JSON.stringify({ operation: 'native-reader-calibration', bundleSha256: bundle.digest, reviewerId: plan.reviewerId,
     entries: bundle.entryCount, server: WORKFLOW_REVIEW_NATIVE_NAMESPACE, tools: WORKFLOW_REVIEW_READER_TOOLS,
-    instruction: 'Read the entire manifest using its cursor, then every entry using its id and cursor until complete. Include every empty terminal page. Return findings:[] and coverage with this bundleSha256/reviewerId, complete:true, entries equal to the manifest entry count and ranges equal to the number of returned pages whose bytes is greater than zero. Every required byte and empty terminal page must be read before the final answer.' });
+    instruction: 'Calibration phase one: read the entire manifest using its cursor. Read entries in manifest order through the first nonempty source page, then stop this turn. Preserve the next id and cursor and every received page. Return findings:[] and coverage with this bundleSha256/reviewerId, complete:false, entries equal to the manifest entry count and ranges equal to the number of returned pages whose bytes is greater than zero. The controller will compact only after this turn completes, then ask you to finish.' });
+  const postRequest = JSON.stringify({ operation: 'native-reader-calibration-after-compaction', bundleSha256: bundle.digest, reviewerId: plan.reviewerId,
+    instruction: 'Continue from the preserved entry id/cursor in manifest order. Read every remaining source byte and every empty terminal page. Preserve exact reader progress and cumulative nonzero-page range count across compaction; revisit reader pages if needed. Return findings:[] and complete:true coverage for this bundle and reviewer only after the entire original manifest and all entries have been received.' });
   const launch: WorkflowSyntheticReviewLaunch = { command: input.prepared.command, args: workflowNativeReviewArguments(catalog.path, mcpServers), cwd,
-    environment: { ...input.prepared.environment, CODEX_ROLLOUT_TRACE_ROOT: join(plan.directory, 'trace') },
-    redactionEnvironment: input.prepared.redactionEnvironment, artifactPrefix: prefix, timeoutMs: null, provider: 'codex', superviseProcessTree: true, collectUsage: false };
+    environment: nativeObserverEnvironment(input.prepared, observer, join(plan.directory, 'trace')),
+    redactionEnvironment: { ...input.prepared.redactionEnvironment, ...workflowNativeReviewObserverConfiguration(observer).redactionEnvironment },
+    artifactPrefix: prefix, timeoutMs: null, provider: 'codex', superviseProcessTree: true, collectUsage: false, diagnosticOutput: 'omit' };
   const session = new WorkflowNativeReviewSession(plan, pins, launch, () => bundle, request,
     [{ path: realpathSync(input.prepared.command), sha256: NATIVE_CODEX.sha256 }],
-    [{ path: schemaPath, sha256: hashWorkflowReviewArtifact(schemaPath).sha256 }, { path: catalog.path, sha256: catalog.sha256 }]);
+    [{ path: schemaPath, sha256: hashWorkflowReviewArtifact(schemaPath).sha256 }, { path: catalog.path, sha256: catalog.sha256 }], postRequest);
   let processResult: Awaited<ReturnType<typeof runWorkflowProcess>> | undefined;
   try {
     await session.start();
-    try { processResult = await runWorkflowProcess({ ...launch, onInput: session.onInput, onStdout: session.onStdout }); }
+    try {
+      processResult = await runWorkflowProcess({ ...launch, abortSignal: session.abortSignal, onInput: session.onInput, onStdout: session.onStdout });
+      session.acceptProcessCompletion(processResult);
+    }
     finally { await session.settle(); }
     writeWorkflowReviewArtifact({ path: join(directory, 'native-process.json'), chunks: [wire({ processResult, integrityDiagnostic: session.integrityDiagnostic ?? null })] });
     if (!processResult.passed || processResult.settlement?.parentExitCode !== 0 || session.integrityDiagnostic) throw new Error('workflow_review_native_bootstrap_failed');
@@ -1677,6 +1745,7 @@ export async function qualifyWorkflowNativeReviewClientFactory(input: {
     const proof = await session.prove(session.completion(), output.coverage);
     const observed = hashWorkflowReviewArtifact(join(plan.directory, 'native-observed.jsonl'));
     const intended = hashWorkflowReviewArtifact(plan.receiptsPath);
+    if (!proof.native?.calibration || !proof.native.compaction?.compactions) throw new Error('workflow_review_native_manual_calibration_required');
     pins.qualification = parseWorkflowReviewReaderQualification({ schemaVersion: 2, validation: 'native', invocation: expected,
       evidence: { bundleSha256: bundle.digest, proof: { ranges: proof.ranges, reconstructionSha256: proof.reconstructionSha256 },
         observed: { path: join(plan.directory, 'native-observed.jsonl'), ...observed, ranges: proof.ranges },
@@ -1684,10 +1753,12 @@ export async function qualifyWorkflowNativeReviewClientFactory(input: {
       ...(input.prepared.actorId ? { actorId: input.prepared.actorId } : {}) });
     writeWorkflowReviewArtifact({ path: join(directory, 'qualification.json'), chunks: [wire(pins.qualification)] });
     writeWorkflowReviewArtifact({ path: join(directory, 'qualification-native-proof.json'), chunks: [wire(proof)] });
-    pins.certificate = Object.freeze(['qualification.json', 'qualification-native-proof.json', 'delivery/native-seals.jsonl',
+    verifyWorkflowReviewOwnedReference(join(directory, 'discovery-bodies'), discovery.observation.journal);
+    pins.certificate = Object.freeze([...['qualification.json', 'qualification-native-proof.json', 'delivery/native-seals.jsonl',
       'delivery/native-observed.jsonl', 'delivery/frames.bin', 'delivery/correlation.jsonl', 'delivery/calls.jsonl',
-      'delivery/reconstruction/proof.jsonl', 'source/manifest.json', 'intended.jsonl', 'catalog.json']
-      .map(name => ({ path: join(directory, name), sha256: hashWorkflowReviewArtifact(join(directory, name)).sha256 })));
+      'delivery/reconstruction/proof.jsonl', 'source/manifest.json', 'intended.jsonl', 'catalog.json', 'discovery-result.json', 'discovery-observer.json']
+      .map(name => ({ path: join(directory, name), sha256: hashWorkflowReviewArtifact(join(directory, name)).sha256 })),
+      { path: join(directory, 'discovery-bodies', discovery.observation.journal.name), sha256: discovery.observation.journal.sha256 }]);
     return factory;
   } catch (error) {
     nativeFactories.delete(factory);
@@ -1695,6 +1766,10 @@ export async function qualifyWorkflowNativeReviewClientFactory(input: {
     catch { /* Preserve the original failure and any actual process evidence already retained. */ }
     throw error;
   } finally { await session.settle(); session.dispose(); }
+  } catch (error) {
+    try { await disposeWorkflowNativeReviewObserver(observer); } catch { /* Preserve the failed bootstrap's original evidence. */ }
+    throw error;
+  }
 }
 export function prepareWorkflowNativeReview(input: {
   factory: WorkflowNativeReviewClientFactory; plan: WorkflowSyntheticReviewPlan; prepared: PreparedWorkflowBinding;
@@ -1704,13 +1779,13 @@ export function prepareWorkflowNativeReview(input: {
 }): WorkflowNativeReviewSession {
   requireWorkflowNativeReviewClientFactory(input.factory); const pins = nativeFactories.get(input.factory)!;
   assertNativePrepared(input.prepared);
-  if (!isDeepStrictEqual(input.prepared, pins.prepared) || !isDeepStrictEqual(input.schema, pins.schema)
+  if (input.timeoutMs !== null || !isDeepStrictEqual(input.prepared, pins.preparedSnapshot) || !isDeepStrictEqual(input.schema, pins.schema)
     || input.catalog.input.path !== pins.catalogSource || !isDeepStrictEqual(pins.expected.catalog,
       { input: input.catalog.input, projected: { bytes: input.catalog.bytes, sha256: input.catalog.sha256 } })) throw new Error('workflow_review_reader_qualification_mismatch');
   const launch: WorkflowSyntheticReviewLaunch = { command: input.prepared.command, args: workflowNativeReviewArguments(input.catalog.path, pins.mcpServers),
-    cwd: pins.cwd, environment: { ...input.prepared.environment, CODEX_ROLLOUT_TRACE_ROOT: join(input.plan.directory, 'trace') },
-    redactionEnvironment: input.prepared.redactionEnvironment, artifactPrefix: input.artifactPrefix,
-    timeoutMs: input.timeoutMs, provider: 'codex', superviseProcessTree: true, collectUsage: false };
+    cwd: pins.cwd, environment: nativeObserverEnvironment(input.prepared, pins.observer, join(input.plan.directory, 'trace')),
+    redactionEnvironment: { ...input.prepared.redactionEnvironment, ...workflowNativeReviewObserverConfiguration(pins.observer).redactionEnvironment }, artifactPrefix: input.artifactPrefix,
+    timeoutMs: input.timeoutMs, provider: 'codex', superviseProcessTree: true, collectUsage: false, diagnosticOutput: 'omit' };
   const session = new WorkflowNativeReviewSession(input.plan, pins, launch, input.bundle, input.request, input.files, input.artifacts);
   session.revalidate(); return session;
 }
@@ -1732,6 +1807,14 @@ function nativeCallName(callId: string): string {
   if (typeof callId !== 'string' || !callId || callId.length > 200) throw new Error('workflow_review_transport_identity_mismatch');
   return `${sha(callId)}.json`;
 }
+interface NativeCalibrationTrace {
+  readonly firstTurnId: string; readonly compactTurnId: string; readonly postTurnId: string;
+  readonly compactionId: string; readonly firstResult: string; readonly postRequest: string; readonly firstCallCount: number;
+}
+function assertNativePartialCalibration(bundle: WorkflowReviewSourceBundle, result: string, reviewerId: string, ranges: number): void {
+  if (!isDeepStrictEqual(JSON.parse(result), { findings: [], coverage: { bundleSha256: bundle.digest, reviewerId,
+    complete: false, entries: bundle.entryCount, ranges } })) throw new Error('workflow_review_native_manual_calibration_required');
+}
 /** Direct pinned app-server process, with no model-accessible filesystem or write capability. */
 export class WorkflowNativeReviewSession {
   readonly launch: WorkflowSyntheticReviewLaunch;
@@ -1751,25 +1834,38 @@ export class WorkflowNativeReviewSession {
   private finalResult?: string;
   private finished = false;
   private settled = false;
+  private processCompleted = false;
+  private observation?: WorkflowNativeReviewObservation;
+  private observationCompletion?: WorkflowNativeReviewObservationCompletion;
   private failure?: { value: unknown };
   private sealed?: { capture: WorkflowReviewOwnedReference; correlation: WorkflowReviewOwnedReference };
   private readonly decoder: WorkflowReviewFrameDecoder;
   private incoming?: NativeCallRecord['request'];
+  private readonly abortController = new AbortController();
+  private readonly calibration?: { readonly postRequest: string; phase: 'first' | 'compact' | 'post'; firstManifest: boolean; firstSource: boolean; postSource: boolean;
+    firstTurnId?: string; compactTurnId?: string; compactionId?: string; firstResult?: string; firstCallCount?: number;
+    ranges: number; acknowledged: boolean; itemStarted: boolean; itemCompleted: boolean };
   constructor(readonly plan: WorkflowSyntheticReviewPlan, pins: NativeFactoryPins,
     launch: WorkflowSyntheticReviewLaunch, private readonly bundle: () => WorkflowReviewSourceBundle,
     private readonly request: string, private readonly files: readonly { path: string; sha256: string }[],
-    private readonly artifacts: readonly { path: string; sha256: string }[]) {
+    private readonly artifacts: readonly { path: string; sha256: string }[], postCalibrationRequest?: string) {
     if (!nativeFactoryPins.has(pins)) throw new Error('workflow_review_reader_observation_required');
     this.#pins = pins; nativeSessions.add(this);
+    if (postCalibrationRequest !== undefined) this.calibration = { postRequest: postCalibrationRequest, phase: 'first', firstManifest: false,
+      firstSource: false, postSource: false, ranges: 0, acknowledged: false, itemStarted: false, itemCompleted: false };
     this.launch = freezeReviewValue(launch); freezeReviewValue(plan); freezeReviewValue(files); freezeReviewValue(artifacts);
     this.effectiveProcess = workflowSyntheticEffectiveProcess(launch);
     this.effectiveInvocationDigest = sha(JSON.stringify({ invocationId: plan.invocationId, reviewerId: plan.reviewerId,
-      process: this.effectiveProcess, closure: pins.closure, expected: pins.expected, files, artifacts,
-      thread: nativeThread(pins.prepared.binding, launch.cwd), schema: pins.schema, requestSha256: sha(request), bundle: plan.bundlePath }));
+      process: this.effectiveProcess, observer: workflowNativeReviewObserverConfiguration(pins.observer).descriptor,
+      closure: pins.closure, expected: pins.expected, files, artifacts,
+      thread: nativeThread(pins.prepared.binding, launch.cwd), schema: pins.schema, requestSha256: sha(request),
+      ...(postCalibrationRequest ? { postCalibrationRequestSha256: sha(postCalibrationRequest) } : {}), bundle: plan.bundlePath }));
     this.decoder = new WorkflowReviewFrameDecoder(frame => this.receive(frame), 65536,
-      frame => { this.incoming = this.record('receive', frame); });
+      frame => { this.incoming = this.captureSelectedFrame(frame); });
   }
   revalidate(materialized = false): void {
+    assertNativePrepared(this.#pins.prepared);
+    if (!isDeepStrictEqual(this.#pins.prepared, this.#pins.preparedSnapshot)) throw new Error('workflow_review_prepared_launch_changed');
     revalidateNativeCertificate(this.#pins);
     if (!isDeepStrictEqual(workflowSyntheticEffectiveProcess(this.launch), this.effectiveProcess)
       || !isDeepStrictEqual(workflowSyntheticRuntimeClosure(), this.#pins.closure)) throw new Error('workflow_review_prepared_launch_changed');
@@ -1777,13 +1873,54 @@ export class WorkflowNativeReviewSession {
       if (realpathSync(pin.path) !== pin.path || hashWorkflowReviewArtifact(pin.path).sha256 !== pin.sha256) throw new Error('workflow_review_prepared_launch_changed');
     }
   }
-  assertHealthy = (): void => { if (this.failure) throw this.failure.value; };
+  assertHealthy = (): void => {
+    if (this.failure) throw this.failure.value;
+    if (this.observation) assertWorkflowNativeReviewObservationHealthy(this.observation);
+  };
+  get abortSignal(): AbortSignal { return this.abortController.signal; }
+  onObserverFailure = (): void => {
+    if (this.failure) return;
+    try {
+      if (this.writer && this.threadId && this.turnId && !this.finished) this.send({ id: 'observer-abort', method: 'turn/interrupt',
+        params: { threadId: this.threadId, turnId: this.turnId } });
+    } catch { /* The owned abort remains required if the protocol is already closed. */ }
+    this.failure = { value: new Error('workflow_review_native_observer_failed') }; this.abortController.abort();
+  };
   get integrityDiagnostic(): string | undefined { return this.failure ? diagnostic(this.failure.value) : undefined; }
+  acceptProcessCompletion(result: WorkflowProcessResult): void {
+    try {
+      if (this.processCompleted) throw new Error('workflow_review_transport_completion_required');
+      requireWorkflowProcessCompletion(result, { ...this.launch, onInput: this.onInput, abortSignal: this.abortSignal });
+      this.processCompleted = true;
+    } catch (value) { this.failure ??= { value }; }
+  }
   private record(direction: 'request' | 'receive', frame: Buffer): NativeCallRecord['request'] {
     const reference = this.capture!.append(frame);
     this.correlations!.append(wire({ invocationId: this.plan.invocationId, reviewerId: this.plan.reviewerId,
       effectiveInvocationDigest: this.effectiveInvocationDigest, sequence: ++this.sequence, direction, frame: reference }));
     return reference;
+  }
+  private captureSelectedFrame(frame: Buffer): NativeCallRecord['request'] | undefined {
+    const message = frameObject(frame);
+    if (message.method === 'error' || Object.hasOwn(message, 'error') && message.error != null) throw new Error('workflow_review_reader_rpc_error');
+    const known = message.method === undefined && Object.hasOwn(message, 'result')
+      || ['turn/started', 'item/tool/call', 'item/started', 'item/completed', 'turn/completed'].includes(String(message.method));
+    if (!known) { if (Object.hasOwn(message, 'id')) throw new Error('workflow_review_transport_request_mismatch'); return undefined; }
+    const check = (value: unknown): void => {
+      if (!value || typeof value !== 'object') return;
+      for (const [key, child] of Object.entries(value)) {
+        if (/^(?:headers|authorization|proxy-authorization|cookies?|body|api[_-]?key|access[_-]?token)$/i.test(key)
+          || key === 'error' && child != null) throw new Error('workflow_review_native_unsafe_protocol_frame');
+        check(child);
+      }
+    };
+    check(message);
+    if (message.method === 'item/tool/call') {
+      const params = message.params as Record<string, unknown>;
+      if (!params || !WORKFLOW_REVIEW_READER_TOOLS.includes(String(params.tool))) throw new Error('workflow_review_transport_request_mismatch');
+      readerArguments(String(params.tool), params.arguments);
+    }
+    return this.record('receive', frame);
   }
   private send(value: unknown, reader = false): NativeCallRecord['response'] {
     this.assertHealthy();
@@ -1791,12 +1928,18 @@ export class WorkflowNativeReviewSession {
     if (frame.length > (reader ? WORKFLOW_REVIEW_READ_LIMIT_BYTES : 65536)) throw new Error('workflow_review_source_response_unbounded');
     const reference = this.record('request', frame); this.writer!.write(frame); return reference;
   }
+  private startTurn(id: number, request: string): void {
+    this.send({ id, method: 'turn/start', params: { threadId: this.threadId, input: [{ type: 'text', text: request, text_elements: [] }],
+      model: this.#pins.prepared.binding.model, effort: this.#pins.prepared.binding.effort, environments: [], outputSchema: this.#pins.schema } });
+  }
   async start(): Promise<void> {
     this.revalidate(true);
     mkdirSync(this.plan.directory); mkdirSync(join(this.plan.directory, 'trace')); mkdirSync(join(this.plan.directory, 'calls'));
     this.capture = new WorkflowReviewOwnedFile(this.plan.directory, 'frames.bin', true);
     this.correlations = new WorkflowReviewOwnedFile(this.plan.directory, 'correlation.jsonl', true);
     this.calls = new WorkflowReviewOwnedFile(this.plan.directory, 'calls.jsonl', true);
+    this.observation = beginWorkflowNativeReviewObservation(this.#pins.observer, { directory: join(this.plan.directory, 'bodies'),
+      invocationId: this.plan.invocationId, onFirstFailure: this.onObserverFailure });
   }
   onInput = (writer: WorkflowProcessInputTransport): void => {
     if (this.writer) throw new Error('workflow_review_transport_duplicate_peer');
@@ -1840,22 +1983,31 @@ export class WorkflowNativeReviewSession {
         this.send({ id: 3, method: 'mcpServerStatus/list', params: { threadId: this.threadId, limit: 1, cursor: result.nextCursor } }); return;
       }
       this.controlStep = 4;
-      this.send({ id: 4, method: 'turn/start', params: { threadId: this.threadId, input: [{ type: 'text', text: this.request, text_elements: [] }],
-        model: this.#pins.prepared.binding.model, effort: this.#pins.prepared.binding.effort, environments: [], outputSchema: this.#pins.schema } }); return;
+      this.startTurn(4, this.request); return;
     }
     const params = message.params as Record<string, unknown> | undefined;
-    if (rpcResponse && message.id === 4 && this.controlStep === 4) {
+    if (rpcResponse && (message.id === 4 && this.controlStep === 4 || message.id === 6 && this.controlStep === 7 && this.calibration?.phase === 'post')) {
       const turn = (message.result as { turn?: { id?: string } })?.turn;
       if (!turn?.id || this.turnId && this.turnId !== turn.id) throw new Error('workflow_review_transport_identity_mismatch');
-      this.turnId = turn.id; this.controlStep = 5; return;
+      this.turnId = turn.id; this.controlStep = message.id === 4 ? 5 : 8; return;
+    }
+    if (rpcResponse && message.id === 5 && this.controlStep === 6 && this.calibration?.phase === 'compact') {
+      if (this.calibration.acknowledged || !isDeepStrictEqual(message.result, {})) throw new Error('workflow_review_transport_response_mismatch');
+      this.calibration.acknowledged = true; return;
     }
     if (message.method === 'turn/started') {
       const turn = params?.turn as { id?: string } | undefined;
       if (!turn?.id || params?.threadId !== this.threadId || this.turnId && this.turnId !== turn.id) throw new Error('workflow_review_transport_identity_mismatch');
+      if (this.calibration?.phase === 'compact') {
+        if (turn.id === this.calibration.firstTurnId || this.calibration.compactTurnId && this.calibration.compactTurnId !== turn.id) throw new Error('workflow_review_transport_identity_mismatch');
+        this.calibration.compactTurnId = turn.id;
+      } else if (this.calibration?.phase === 'post' && [this.calibration.firstTurnId, this.calibration.compactTurnId].includes(turn.id)) {
+        throw new Error('workflow_review_transport_identity_mismatch');
+      }
       this.turnId = turn.id; return;
     }
     if (message.method === 'item/tool/call') {
-      if (this.finished || !params || params.threadId !== this.threadId || params.turnId !== this.turnId
+      if (this.finished || this.calibration?.phase === 'compact' || !params || params.threadId !== this.threadId || params.turnId !== this.turnId
         || params.namespace != null || !WORKFLOW_REVIEW_READER_TOOLS.includes(String(params.tool))
         || typeof params.callId !== 'string' || (typeof message.id !== 'number' && typeof message.id !== 'string')) throw new Error('workflow_review_transport_request_mismatch');
       const args = readerArguments(String(params.tool), params.arguments);
@@ -1864,6 +2016,14 @@ export class WorkflowNativeReviewSession {
       const page = readWorkflowReviewSource(this.bundle(), { kind: params.tool === WORKFLOW_REVIEW_READER_TOOL_MANIFEST ? 'manifest' : 'entry',
         ...args, requestId: message.id, responseEnvelope: envelope });
       const receipt = workflowReviewSourceReceipt(page);
+      if (this.calibration?.phase === 'first') {
+        this.calibration.firstManifest ||= receipt.kind === 'manifest' && page.cursor === null;
+        this.calibration.firstSource ||= receipt.kind === 'entry' && receipt.id?.startsWith('src-') === true && receipt.bytes > 0;
+        if (receipt.bytes > 0) this.calibration.ranges++;
+      }
+      if (this.calibration?.phase === 'post') {
+        this.calibration.postSource ||= receipt.kind === 'entry' && receipt.id?.startsWith('src-') === true && receipt.bytes > 0;
+      }
       appendWorkflowReviewSourceReceipt(this.plan.receiptsPath, receipt);
       const response = this.send(envelope(page), true);
       const call: NativeCallRecord = { callId: params.callId, requestId: message.id, tool: String(params.tool), arguments: params.arguments,
@@ -1871,10 +2031,21 @@ export class WorkflowNativeReviewSession {
       writeWorkflowReviewArtifact({ path: join(this.plan.directory, 'calls', nativeCallName(params.callId)), chunks: [wire(call)] });
       this.calls!.append(wire(call)); this.callCount++; return;
     }
-    if (message.method === 'item/completed') {
-      const item = params?.item as { type?: string; text?: string; phase?: string } | undefined;
+    if (message.method === 'item/completed' || message.method === 'item/started') {
+      const item = params?.item as { type?: string; text?: string; phase?: string; id?: string } | undefined;
       if (params?.threadId !== this.threadId || params?.turnId !== this.turnId) throw new Error('workflow_review_transport_identity_mismatch');
-      if (item?.type === 'agentMessage' && item.phase === 'final_answer') {
+      if (this.calibration?.phase === 'compact' && item?.type === 'contextCompaction') {
+        if (!item.id || this.calibration.compactionId && this.calibration.compactionId !== item.id) throw new Error('workflow_review_transport_identity_mismatch');
+        this.calibration.compactionId = item.id;
+        if (message.method === 'item/started') {
+          if (this.calibration.itemStarted || this.calibration.itemCompleted) throw new Error('workflow_review_transport_incomplete');
+          this.calibration.itemStarted = true;
+        } else {
+          if (!this.calibration.itemStarted || this.calibration.itemCompleted) throw new Error('workflow_review_transport_incomplete');
+          this.calibration.itemCompleted = true;
+        }
+      }
+      if (message.method === 'item/completed' && item?.type === 'agentMessage' && item.phase === 'final_answer') {
         if (this.finalResult !== undefined || typeof item.text !== 'string' || Buffer.byteLength(item.text) > 65536) throw new Error('workflow_review_transport_response_mismatch');
         this.finalResult = item.text;
       }
@@ -1883,9 +2054,25 @@ export class WorkflowNativeReviewSession {
     if (message.method === 'turn/completed') {
       const turn = params?.turn as { id?: string; status?: string; error?: unknown } | undefined;
       if (this.finished || !turn || params?.threadId !== this.threadId || turn.id !== this.turnId || turn.status !== 'completed'
-        || turn.error != null || !this.finalResult) throw new Error('workflow_review_transport_incomplete');
+        || turn.error != null) throw new Error('workflow_review_transport_incomplete');
+      if (this.calibration?.phase === 'first') {
+        if (!this.finalResult || !this.calibration.firstManifest || !this.calibration.firstSource) throw new Error('workflow_review_native_manual_calibration_required');
+        assertNativePartialCalibration(this.bundle(), this.finalResult, this.plan.reviewerId, this.calibration.ranges);
+        this.calibration.firstTurnId = this.turnId; this.calibration.firstResult = this.finalResult; this.calibration.firstCallCount = this.callCount;
+        this.calibration.phase = 'compact'; this.finalResult = undefined; this.turnId = undefined; this.controlStep = 6;
+        this.send({ id: 5, method: 'thread/compact/start', params: { threadId: this.threadId } }); return;
+      }
+      if (this.calibration?.phase === 'compact') {
+        if (!this.calibration.acknowledged || !this.calibration.compactTurnId || !this.calibration.itemCompleted || this.finalResult) throw new Error('workflow_review_native_manual_calibration_required');
+        this.calibration.phase = 'post'; this.turnId = undefined; this.controlStep = 7; this.startTurn(6, this.calibration.postRequest); return;
+      }
+      if (this.calibration && (!this.calibration.postSource || this.callCount <= this.calibration.firstCallCount!)) {
+        throw new Error('workflow_review_native_manual_calibration_required');
+      }
+      if (!this.finalResult) throw new Error('workflow_review_transport_incomplete');
       JSON.parse(this.finalResult);
       writeWorkflowReviewArtifact({ path: `${this.launch.artifactPrefix}.result.json`, chunks: [this.finalResult] });
+      beginWorkflowNativeReviewClientShutdown(this.observation!);
       this.finished = true; this.writer!.end(); return;
     }
     if ('id' in message || message.method === 'error') throw new Error('workflow_review_transport_request_mismatch');
@@ -1894,6 +2081,7 @@ export class WorkflowNativeReviewSession {
     if (this.settled) return;
     this.settled = true;
     try {
+      if (this.observation) this.observationCompletion = await settleWorkflowNativeReviewObservation(this.observation);
       this.decoder.end(); if (!this.finished) throw new Error('workflow_review_transport_incomplete');
       this.sealed = { capture: this.capture!.seal(), correlation: this.correlations!.seal() };
     } catch (error) { this.failure ??= { value: error }; }
@@ -1901,18 +2089,22 @@ export class WorkflowNativeReviewSession {
   }
   completion(): object {
     if (!nativeSessions.has(this)) throw new Error('workflow_review_transport_completion_required');
-    this.assertHealthy(); if (!this.finished || !this.settled || !this.sealed) throw new Error('workflow_review_transport_incomplete');
+    this.assertHealthy(); if (!this.finished || !this.settled || !this.sealed || !this.processCompleted || !this.observationCompletion) throw new Error('workflow_review_transport_incomplete');
     const handle = Object.freeze({}); nativeCompletions.set(handle, this); return handle;
   }
   dispose(): void { /* All owned handles close in settle/prove, including failure paths. */ }
   async prove(handle: object, attestation: unknown): Promise<WorkflowSyntheticReviewProof> {
     if (!nativeSessions.has(this) || nativeCompletions.get(handle) !== this || !this.sealed) throw new Error('workflow_review_transport_completion_required');
     nativeCompletions.delete(handle); this.assertHealthy(); this.revalidate(true);
+    const transport = consumeWorkflowNativeReviewObservationCompletion(this.observation!, this.observationCompletion!);
+    const calibration: NativeCalibrationTrace | undefined = this.calibration ? { firstTurnId: this.calibration.firstTurnId!,
+      compactTurnId: this.calibration.compactTurnId!, postTurnId: this.turnId!, compactionId: this.calibration.compactionId!,
+      firstResult: this.calibration.firstResult!, firstCallCount: this.calibration.firstCallCount!, postRequest: this.calibration.postRequest } : undefined;
     const result = await verifyWorkflowNativeReviewTrace({ directory: this.plan.directory, bundle: this.bundle(),
       reviewerId: this.plan.reviewerId, invocationId: this.plan.invocationId, effectiveInvocationDigest: this.effectiveInvocationDigest,
-      threadId: this.threadId!, turnId: this.turnId!, callCount: this.callCount, attestation,
+      threadId: this.threadId!, turnId: calibration?.firstTurnId ?? this.turnId!, callCount: this.callCount, attestation,
       resultText: this.finalResult!,
-      capture: this.sealed.capture, correlation: this.sealed.correlation });
+      capture: this.sealed.capture, correlation: this.sealed.correlation, request: this.request, schema: this.#pins.schema, transport, calibration });
     return Object.freeze({ invocationId: this.plan.invocationId, reviewerId: this.plan.reviewerId,
       effectiveInvocationDigest: this.effectiveInvocationDigest, ...this.sealed, ...result });
   }
@@ -1926,6 +2118,9 @@ export interface WorkflowNativeReviewTraceProof {
   readonly observed: WorkflowReviewOwnedReference;
   readonly calls: WorkflowReviewOwnedReference;
   readonly requests: number;
+  readonly transport?: WorkflowNativeBodyObserverSettlement;
+  readonly compaction?: Awaited<ReturnType<WorkflowNativeCompactionChain['finish']>>;
+  readonly calibration?: NativeCalibrationTrace;
 }
 /** Offline verification is evidence checking only; it never mints a live native capability. */
 export async function verifyWorkflowNativeReviewTrace(input: {
@@ -1933,15 +2128,27 @@ export async function verifyWorkflowNativeReviewTrace(input: {
   threadId: string; turnId: string; callCount: number; attestation: unknown;
   resultText: string;
   capture: WorkflowReviewOwnedReference; correlation: WorkflowReviewOwnedReference;
+  request?: string; schema?: unknown; transport?: WorkflowNativeBodyObserverSettlement; calibration?: NativeCalibrationTrace;
 }): Promise<{ proof: WorkflowReviewOwnedReference; ranges: number; reconstructionSha256: string; native: WorkflowNativeReviewTraceProof }> {
   const code = 'workflow_review_native_trace_incomplete';
   const held: WorkflowReviewOwnedFile[] = [];
   const open = (directory: string, name: string, create = false) => {
     const file = new WorkflowReviewOwnedFile(directory, name, create); held.push(file); return file;
   };
-  let machine: WorkflowReviewCoverageMachine | undefined; let failed = false;
+  let machine: WorkflowReviewCoverageMachine | undefined;
+  let result: Awaited<ReturnType<typeof verifyWorkflowNativeReviewTrace>>;
+  let cleanupFailure: { value: unknown } | undefined;
+  let chain: WorkflowNativeCompactionChain | undefined;
+  const transactions = input.transport ? iterateWorkflowNativeObservedTransactions({ directory: join(input.directory, 'bodies'),
+    invocationId: input.invocationId, settlement: input.transport, artifactsDirectory: input.directory }) : undefined;
   try {
   const parsed = assertWorkflowReviewCoverageAttribution(input.bundle, input.attestation, input.reviewerId);
+  const calibration = input.calibration;
+  const turns = calibration ? [input.turnId, calibration.compactTurnId, calibration.postTurnId] : [input.turnId];
+  if (calibration && (!input.transport || calibration.firstTurnId !== input.turnId || new Set(turns).size !== 3
+    || turns.some(turn => typeof turn !== 'string' || !turn) || !calibration.compactionId
+    || !Number.isSafeInteger(calibration.firstCallCount) || calibration.firstCallCount < 2
+    || calibration.firstCallCount >= input.callCount)) throw new Error(code);
   verifyWorkflowReviewOwnedReference(input.directory, input.capture); verifyWorkflowReviewOwnedReference(input.directory, input.correlation);
   const capture = open(input.directory, input.capture.name);
   const correlations = open(input.directory, input.correlation.name);
@@ -1979,7 +2186,7 @@ export async function verifyWorkflowNativeReviewTrace(input: {
         throw new Error('workflow_review_reader_observation_incomplete');
       }
       for (const tool of namespace.tools as Record<string, unknown>[]) {
-        const expected = TOOLS[count++];
+        const expected = NATIVE_WIRE_TOOLS[count++];
         if (!expected || tool.type !== 'function' || tool.name !== expected.name || tool.defer_loading === true
           || !isDeepStrictEqual(tool.parameters, expected.inputSchema)) throw new Error('workflow_review_reader_observation_incomplete');
       }
@@ -1987,8 +2194,91 @@ export async function verifyWorkflowNativeReviewTrace(input: {
     if (count !== TOOLS.length) throw new Error('workflow_review_reader_observation_incomplete');
   };
   let count = 0; let received = 0; let sequence = 0; let offset = 0; let previousResponse: string | undefined;
-  let pendingInference: { id: string; path: string } | undefined; let requestCount = 0; let inventory = false;
+  let firstCallCount = 0; let completedTurns = 0; let currentTurnId = input.turnId; let firstSourceReceived = false; let postSourceReceived = false;
+  let pendingInference: { id: string; path: string; postSource: boolean } | undefined; let requestCount = 0; let inventory = false;
   let finalResult = false;
+  let currentWire: WorkflowNativeObservedTransaction | undefined;
+  let pendingCompact: { id: string; requestId: string; completed: boolean } | undefined;
+  let outputBatch = 0;
+  const nextWire = async (): Promise<WorkflowNativeObservedTransaction | undefined> => {
+    if (!transactions) return undefined;
+    let next = await transactions.next(); if (next.done || typeof input.request !== 'string') throw new Error(code);
+    const retain = (transaction: WorkflowNativeObservedTransaction): void => {
+      seals.append(wire({ directory: 'bodies', ...transaction.wire }));
+      seals.append(wire({ directory: 'bodies', ...transaction.decoded }));
+    };
+    retain(next.value);
+    if (!chain) {
+      const iterator = iterateWorkflowReviewNativeItems(next.value.request);
+      let toolsHash: string;
+      try { const first = iterator.next(); if (first.done || first.value.type !== 'additional_tools' || !first.value.fields.tools) throw new Error(code); toolsHash = first.value.fields.tools; }
+      finally { iterator.return(undefined); }
+      chain = new WorkflowNativeCompactionChain({ directory: join(input.directory, 'ancestry'), artifactsDirectory: input.directory,
+        threadId: input.threadId, turnId: input.turnId, toolsSha256: toolsHash,
+        toolNames: [WORKFLOW_REVIEW_READER_TOOL_MANIFEST, WORKFLOW_REVIEW_READER_TOOL_READ],
+        controllerPromptContentSha256: workflowReviewNativeTextContentSha256(input.request) });
+      const control = readWorkflowReviewNativeRequestControls(next.value.request.file, next.value.request.representation);
+      if (control.generate === false) {
+        for (const record of iterateWorkflowReviewJsonRecords({ path: join(input.directory, next.value.request.file.name),
+          arrayKey: 'input', found: { value: false }, streamScalars: true, skipTypes: ['message'] })) {
+          const item = JSON.parse(record) as Record<string, unknown>; if (item.type !== 'additional_tools') throw new Error(code); flattenInventory(item.tools);
+        }
+        chain.registerWarmup(next.value.request, { kind: 'model-event', eventType: 'response.completed', responseId: next.value.response.responseId,
+          output: { sha256: next.value.response.sha256, count: next.value.response.count, mask: 0 } });
+        inventory = true;
+        previousResponse = next.value.response.responseId;
+        next = await transactions.next(); if (next.done) throw new Error(code);
+        retain(next.value);
+      }
+    }
+    return next.value;
+  };
+  const proveModelOutput = (file: WorkflowReviewOwnedFile, responseId?: string): void => {
+    if (!currentWire) { if (transactions) throw new Error(code); return; }
+    if (responseId !== undefined && currentWire.response.responseId !== responseId) throw new Error(code);
+    const aggregate = createHash('sha256').update('array\n'); let count = 0n;
+    for (const item of iterateWorkflowReviewNativeItems({ file, arrayKey: 'output_items' })) { aggregate.update(item.sha256 + '\n'); count++; }
+    if (String(count) !== currentWire.response.count || aggregate.digest('hex') !== currentWire.response.sha256) throw new Error(code);
+  };
+  const receiveSource = (path: string, inferenceId: string): boolean => {
+    const batch = chain ? new WorkflowReviewOwnedFile(input.directory, `source-outputs-${++outputBatch}.json`, true) : undefined;
+    let postSource = false;
+    try {
+    batch?.append(Buffer.from('{"input":[')); let outputs = 0;
+    for (const record of iterateWorkflowReviewJsonRecords({ path, arrayKey: 'input', found: { value: false }, streamScalars: true,
+      skipTypes: ['message', 'reasoning', 'compaction', 'additional_tools', 'function_call', 'compaction_trigger'] })) {
+      const item = JSON.parse(record) as Record<string, unknown>;
+      if (item.type !== 'function_call_output') throw new Error(code);
+      if (typeof item.call_id !== 'string') throw new Error(code);
+      const call = ownedJson(join(input.directory, 'calls'), nativeCallName(item.call_id)) as unknown as NativeCallRecord;
+      const modelCall = ownedJson(join(input.directory, 'model-calls'), nativeCallName(item.call_id));
+      if (call.callId !== item.call_id || modelCall.call_id !== item.call_id) throw new Error(code);
+      const response = frameObject(capture.read(call.response.offset, call.response.bytes));
+      const text = ((response.result as { contentItems: { text: string }[] }).contentItems[0]!).text;
+      if (typeof item.output !== 'string' || item.output !== text) throw new Error('workflow_review_native_delivery_mismatch');
+      const marker = join(input.directory, 'consumed', nativeCallName(item.call_id));
+      if (!existsSync(marker)) {
+        machine!.record(call.receipt, received + 1); observed.append(wire(call.receipt));
+        if (calibration && currentTurnId === calibration.firstTurnId && call.receipt.kind === 'entry'
+          && call.receipt.id?.startsWith('src-') && call.receipt.bytes > 0) firstSourceReceived = true;
+        if (calibration && currentTurnId === calibration.postTurnId && call.receipt.kind === 'entry'
+          && call.receipt.id?.startsWith('src-') && call.receipt.bytes > 0) {
+          const request = frameObject(capture.read(call.request.offset, call.request.bytes));
+          if ((request.params as { turnId?: unknown }).turnId !== calibration.postTurnId) throw new Error(code);
+          postSource = true;
+        }
+        writeWorkflowReviewArtifact({ path: marker, chunks: [wire({ callId: item.call_id, inference: inferenceId })] }); received++;
+        batch?.append(Buffer.from((outputs++ ? ',' : '') + record));
+      }
+    }
+    if (batch) {
+      batch.append(Buffer.from(']}'));
+      if (outputs) chain!.recordToolOutputs({ file: batch, arrayKey: 'input' });
+      seals.append(wire({ directory: '', ...batch.seal() }));
+    }
+    return postSource;
+    } finally { batch?.close(); }
+  };
   let threadStarted = false; let threadEnded = false; let turnStarted = false; let turnEnded = false; let ended = false;
     for await (const line of streamWorkflowReviewLines(correlations)) {
       const record = frameObject(Buffer.from(line));
@@ -2013,15 +2303,16 @@ export async function verifyWorkflowNativeReviewTrace(input: {
       const result = responseMessage.result as { success?: boolean; contentItems?: { type: string; text: string }[] };
       if (sha(request) !== call.request.sha256 || sha(response) !== call.response.sha256 || response.length > WORKFLOW_REVIEW_READ_LIMIT_BYTES
         || requestMessage.method !== 'item/tool/call' || requestMessage.id !== call.requestId || responseMessage.id !== call.requestId
-        || params.threadId !== input.threadId || params.turnId !== input.turnId || params.callId !== call.callId
+        || params.threadId !== input.threadId || !(calibration ? [calibration.firstTurnId, calibration.postTurnId] : [input.turnId]).includes(String(params.turnId)) || params.callId !== call.callId
         || params.namespace != null || params.tool !== call.tool || !isDeepStrictEqual(params.arguments, call.arguments)
         || result.success !== true || result.contentItems?.length !== 1 || result.contentItems[0]?.type !== 'inputText'
         || !isDeepStrictEqual(workflowReviewSourceReceipt(JSON.parse(result.contentItems[0].text)), call.receipt)) throw new Error('workflow_review_evidence_corrupt');
       const callFile = new WorkflowReviewOwnedFile(join(input.directory, 'calls'), nativeCallName(call.callId));
       try { seals.append(wire({ directory: 'calls', ...callFile.seal() })); } finally { callFile.close(); }
       count++;
+      if (params.turnId === input.turnId) firstCallCount++;
     }
-    if (count !== input.callCount) throw new Error(code);
+    if (count !== input.callCount || calibration && firstCallCount !== calibration.firstCallCount) throw new Error(code);
     sequence = 0;
     for await (const line of streamWorkflowReviewLines(trace)) {
       const event = frameObject(Buffer.from(line)); const payload = event.payload as Record<string, unknown>;
@@ -2038,12 +2329,30 @@ export async function verifyWorkflowNativeReviewTrace(input: {
           break;
         }
         case 'codex_turn_started':
-          if (!threadStarted || turnStarted || payload.thread_id !== input.threadId || payload.codex_turn_id !== input.turnId) throw new Error(code);
-          turnStarted = true; break;
+          if (!threadStarted || turnStarted || payload.thread_id !== input.threadId || payload.codex_turn_id !== turns[completedTurns]) throw new Error(code);
+          currentTurnId = String(payload.codex_turn_id);
+          if (calibration && completedTurns === 1) {
+            if (!chain) throw new Error(code); chain.beginManualCompaction(currentTurnId);
+          }
+          if (calibration && completedTurns === 2) {
+            if (!chain) throw new Error(code); chain.beginPostCompactionTurn(currentTurnId, workflowReviewNativeTextContentSha256(calibration.postRequest));
+          }
+          turnStarted = true; turnEnded = false; break;
         case 'inference_started': {
-          if (!turnStarted || turnEnded || pendingInference || payload.thread_id !== input.threadId || payload.codex_turn_id !== input.turnId
+          if (finalResult || !turnStarted || turnEnded || pendingInference || pendingCompact || calibration && completedTurns === 1
+            || payload.thread_id !== input.threadId || payload.codex_turn_id !== currentTurnId
             || payload.model !== 'gpt-6.1-sol' || payload.provider_name !== 'OpenAI' || typeof payload.inference_call_id !== 'string') throw new Error(code);
           const path = sealPayload(payload.request_payload, 'inference_request');
+          currentWire = await nextWire();
+          if (currentWire) {
+            const native = new WorkflowReviewOwnedFile(input.directory, path.slice(input.directory.length + 1).replaceAll('\\', '/'));
+            try {
+              const controls = readWorkflowReviewNativeRequestControls(currentWire.request.file, currentWire.request.representation);
+              if (input.schema === undefined || !isDeepStrictEqual(controls.text?.format,
+                { type: 'json_schema', strict: true, schema: input.schema, name: 'codex_output_schema' })) throw new Error('workflow_review_reader_qualification_mismatch');
+              if (fingerprintWorkflowReviewNativeRequest(native) !== fingerprintWorkflowReviewNativeRequest(currentWire.request.file)) throw new Error(code);
+            } finally { native.close(); }
+          }
           let prior: unknown; let model: unknown; let effort: unknown; let parallel: unknown; let topTools = false;
           for (const field of iterateWorkflowReviewJsonFields({ path, arrayKey: ['input', 'tools', 'include'],
             fields: ['previous_response_id', 'model', 'reasoning', 'parallel_tool_calls'] })) {
@@ -2058,59 +2367,96 @@ export async function verifyWorkflowNativeReviewTrace(input: {
             const tool = JSON.parse(record); flattenInventory([tool]); topTools = true;
           }
           const found = { value: false }; let stated = topTools;
-          for (const record of iterateWorkflowReviewJsonRecords({ path, arrayKey: 'input', found, streamScalars: true, skipTypes: ['message', 'reasoning'] })) {
+          for (const record of iterateWorkflowReviewJsonRecords({ path, arrayKey: 'input', found, streamScalars: true, skipTypes: ['message', 'reasoning', 'compaction'] })) {
             const item = JSON.parse(record) as Record<string, unknown>;
             if (item.type === 'additional_tools') { if (stated) throw new Error(code); flattenInventory(item.tools); stated = true; }
-            if (item.type !== 'function_call_output') continue;
-            if (typeof item.call_id !== 'string') throw new Error(code);
-            const call = ownedJson(join(input.directory, 'calls'), nativeCallName(item.call_id)) as unknown as NativeCallRecord;
-            const modelCall = ownedJson(join(input.directory, 'model-calls'), nativeCallName(item.call_id));
-            if (call.callId !== item.call_id || modelCall.call_id !== item.call_id) throw new Error(code);
-            const output = item.output;
-            const response = frameObject(capture.read(call.response.offset, call.response.bytes));
-            const text = ((response.result as { contentItems: { text: string }[] }).contentItems[0]!).text;
-            if (typeof output !== 'string' || output !== text) throw new Error('workflow_review_native_delivery_mismatch');
-            const marker = join(input.directory, 'consumed', nativeCallName(item.call_id));
-            if (!existsSync(marker)) {
-              machine.record(call.receipt, received + 1); observed.append(wire(call.receipt));
-              writeWorkflowReviewArtifact({ path: marker, chunks: [wire({ callId: item.call_id, inference: payload.inference_call_id })] }); received++;
-            }
           }
           if (!found.value || (!stated && (!inventory || prior !== previousResponse || !previousResponse))) throw new Error('workflow_review_reader_observation_incomplete');
           if (stated) inventory = true;
-          pendingInference = { id: payload.inference_call_id, path }; requestCount++; break;
+          const postSource = receiveSource(path, payload.inference_call_id);
+          if (currentWire) await chain!.startGeneration(payload.inference_call_id, currentWire.request);
+          pendingInference = { id: payload.inference_call_id, path, postSource }; requestCount++; break;
         }
         case 'inference_completed': {
           if (!pendingInference || payload.inference_call_id !== pendingInference.id || typeof payload.response_id !== 'string') throw new Error(code);
           const path = sealPayload(payload.response_payload, 'inference_response'); const found = { value: false };
+          if (currentWire) {
+            const native = new WorkflowReviewOwnedFile(input.directory, path.slice(input.directory.length + 1).replaceAll('\\', '/'));
+            try { proveModelOutput(native, payload.response_id); chain!.completeGeneration(pendingInference.id, payload.response_id, { file: native, arrayKey: 'output_items' }); }
+            finally { native.close(); }
+          }
+          if (pendingInference.postSource) postSourceReceived = true;
           for (const record of iterateWorkflowReviewJsonRecords({ path, arrayKey: 'output_items', found, streamScalars: true, skipTypes: ['reasoning'] })) {
             const item = JSON.parse(record) as Record<string, unknown>;
             if (item.type === 'message' && item.phase === 'final_answer') {
               const content = item.content as { type?: string; text?: string }[];
-              if (finalResult || !Array.isArray(content) || content.some(part => part.type !== 'output_text' || typeof part.text !== 'string')
-                || !isDeepStrictEqual(JSON.parse(content.map(part => part.text).join('')), JSON.parse(input.resultText))) throw new Error(code);
+              const partial = calibration && completedTurns === 0;
+              if (finalResult || received !== (partial ? calibration.firstCallCount : count) || !Array.isArray(content)
+                || content.some(part => part.type !== 'output_text' || typeof part.text !== 'string')
+                || !isDeepStrictEqual(JSON.parse(content.map(part => part.text).join('')), JSON.parse(partial ? calibration.firstResult : input.resultText))) throw new Error(code);
+              if (partial) {
+                if (!firstSourceReceived) throw new Error(code);
+                assertNativePartialCalibration(input.bundle, calibration.firstResult, input.reviewerId, machine.rangeCount);
+              } else {
+                if (calibration && !postSourceReceived) throw new Error(code);
+                machine.finish(parsed);
+              }
               finalResult = true;
             }
             if (item.type !== 'function_call') continue;
-            if (typeof item.call_id !== 'string' || !WORKFLOW_REVIEW_READER_TOOLS.includes(String(item.name))) throw new Error(code);
+            if (finalResult || typeof item.call_id !== 'string' || !WORKFLOW_REVIEW_READER_TOOLS.includes(String(item.name))) throw new Error(code);
             const call = ownedJson(join(input.directory, 'calls'), nativeCallName(item.call_id)) as unknown as NativeCallRecord;
             if (item.name !== call.tool || !isDeepStrictEqual(JSON.parse(String(item.arguments)), call.arguments)) throw new Error(code);
             writeWorkflowReviewArtifact({ path: join(input.directory, 'model-calls', nativeCallName(item.call_id)), chunks: [wire(item)] });
           }
           if (!found.value) throw new Error(code);
-          previousResponse = payload.response_id; pendingInference = undefined; break;
+          previousResponse = payload.response_id; pendingInference = undefined; currentWire = undefined; break;
+        }
+        case 'compaction_request_started': {
+          if (!transactions || finalResult || !turnStarted || turnEnded || pendingInference || pendingCompact
+            || payload.thread_id !== input.threadId || payload.codex_turn_id !== currentTurnId || payload.model !== 'gpt-6.1-sol'
+            || payload.provider_name !== 'OpenAI' || typeof payload.compaction_id !== 'string' || typeof payload.compaction_request_id !== 'string') throw new Error(code);
+          currentWire = await nextWire(); if (!currentWire || !chain) throw new Error(code);
+          if (calibration && completedTurns === 1 && payload.compaction_id !== calibration.compactionId) throw new Error(code);
+          const path = sealPayload(payload.request_payload, 'compaction_request');
+          const native = new WorkflowReviewOwnedFile(input.directory, path.slice(input.directory.length + 1).replaceAll('\\', '/'));
+          try {
+            receiveSource(join(input.directory, currentWire.request.file.name), payload.compaction_request_id);
+            await chain.startCompaction(payload.compaction_id, payload.compaction_request_id, currentWire.request, { file: native, arrayKey: 'input' });
+          } finally { native.close(); }
+          pendingCompact = { id: payload.compaction_id, requestId: payload.compaction_request_id, completed: false }; break;
+        }
+        case 'compaction_request_completed': {
+          if (!chain || !currentWire || !pendingCompact || pendingCompact.completed || payload.compaction_id !== pendingCompact.id
+            || payload.compaction_request_id !== pendingCompact.requestId) throw new Error(code);
+          const path = sealPayload(payload.response_payload, 'compaction_response');
+          const native = new WorkflowReviewOwnedFile(input.directory, path.slice(input.directory.length + 1).replaceAll('\\', '/'));
+          try {
+            proveModelOutput(native); chain.completeCompactionReceipt(pendingCompact.id, pendingCompact.requestId, currentWire.response, { file: native, arrayKey: 'output_items' });
+          } finally { native.close(); }
+          pendingCompact.completed = true; currentWire = undefined; previousResponse = undefined; break;
+        }
+        case 'compaction_installed': {
+          if (!chain || !pendingCompact?.completed || payload.compaction_id !== pendingCompact.id) throw new Error(code);
+          const path = sealPayload(payload.checkpoint_payload, 'compaction_checkpoint');
+          const native = new WorkflowReviewOwnedFile(input.directory, path.slice(input.directory.length + 1).replaceAll('\\', '/'));
+          try { await chain.installCompaction(pendingCompact.id, native); } finally { native.close(); }
+          pendingCompact = undefined; break;
         }
         case 'codex_turn_ended':
-          if (!turnStarted || turnEnded || pendingInference || payload.codex_turn_id !== input.turnId || payload.status !== 'completed') throw new Error(code);
-          turnEnded = true; break;
+          if (!turnStarted || turnEnded || pendingInference || pendingCompact || payload.codex_turn_id !== currentTurnId || payload.status !== 'completed'
+            || completedTurns !== 1 && !finalResult || !calibration && !finalResult) throw new Error(code);
+          completedTurns++; turnEnded = true;
+          if (completedTurns < turns.length) { turnStarted = false; finalResult = false; }
+          break;
         case 'thread_ended':
-          if (!turnEnded || threadEnded || payload.thread_id !== input.threadId || payload.status !== 'completed') throw new Error(code);
+          if (!turnEnded || completedTurns !== turns.length || threadEnded || payload.thread_id !== input.threadId || payload.status !== 'completed') throw new Error(code);
           threadEnded = true; break;
         case 'rollout_ended':
           if (!threadEnded || payload.status !== 'completed') throw new Error(code); ended = true; break;
         case 'tool_call_started': {
           const requester = payload.requester as { type?: string }; const kind = payload.kind as { type?: string; name?: string };
-          if (requester?.type !== 'model' || kind?.type !== 'other' || !WORKFLOW_REVIEW_READER_TOOLS.includes(String(kind.name))) throw new Error(code);
+          if (finalResult || requester?.type !== 'model' || kind?.type !== 'other' || !WORKFLOW_REVIEW_READER_TOOLS.includes(String(kind.name))) throw new Error(code);
           sealPayload(payload.invocation_payload, 'tool_invocation'); break;
         }
         case 'tool_call_ended':
@@ -2119,24 +2465,33 @@ export async function verifyWorkflowNativeReviewTrace(input: {
         default: throw new Error(code);
       }
     }
-    if (!ended || pendingInference || !inventory || !requestCount || !finalResult || received !== count) throw new Error(code);
-    machine.finish(parsed);
+    if (!ended || completedTurns !== turns.length || pendingInference || pendingCompact || !inventory || !requestCount || !finalResult || !machine.isFinished || received !== count) throw new Error(code);
+    if (transactions && !(await transactions.next()).done) throw new Error(code);
+    const compaction = chain ? await chain.finish(false) : undefined;
+    if (input.transport) seals.append(wire({ directory: 'bodies', ...input.transport.journal }));
+    if (compaction) {
+      seals.append(wire({ directory: 'ancestry', ...compaction.history }));
+      seals.append(wire({ directory: 'ancestry', ...compaction.seals }));
+    }
     seals.append(wire({ directory: nativeDirectory!.slice(input.directory.length + 1), ...trace.seal() }));
     seals.append(wire({ directory: '', ...journal.seal() }));
     for await (const line of streamWorkflowReviewLines(seals)) {
       const seal = frameObject(Buffer.from(line)); verifyWorkflowReviewOwnedReference(join(input.directory, String(seal.directory)), seal as unknown as WorkflowReviewOwnedReference);
     }
     verifyWorkflowReviewOwnedReference(input.directory, input.capture); verifyWorkflowReviewOwnedReference(input.directory, input.correlation);
-    return Object.freeze({ proof: machine.retainedProof, ranges: machine.rangeCount, reconstructionSha256: machine.reconstructionDigest,
+    result = Object.freeze({ proof: machine.retainedProof, ranges: machine.rangeCount, reconstructionSha256: machine.reconstructionDigest,
       native: Object.freeze({ observer: 'codex-rollout-trace' as const, producer: NATIVE_CODEX,
         directory: nativeDirectory!.slice(input.directory.length + 1), seals: seals.seal(), observed: observed.seal(),
-        calls: journal.seal(), requests: requestCount }) });
-  } catch (error) { failed = true; throw error; }
-  finally {
-    for (const close of [() => machine?.dispose(), ...held.map(file => () => file.close())]) {
-      if (failed) { try { close(); } catch { /* Preserve the first integrity failure. */ } } else close();
+        calls: journal.seal(), requests: requestCount, ...(input.transport ? { transport: input.transport, compaction } : {}),
+        ...(calibration ? { calibration } : {}) }) });
+  } finally {
+    try { await transactions?.return(undefined); } catch (value) { cleanupFailure = { value }; }
+    for (const close of [() => chain?.dispose(), () => machine?.dispose(), ...held.map(file => () => file.close())]) {
+      try { close(); } catch (value) { cleanupFailure ??= { value }; }
     }
   }
+  if (cleanupFailure) throw cleanupFailure.value;
+  return result;
 }
 
 export async function runWorkflowReviewSourceServer(): Promise<void> {

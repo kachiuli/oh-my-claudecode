@@ -274,7 +274,19 @@ export function* readWorkflowReviewFileChunks(absolute: string,
 }
 
 /** Same bounded streaming read as UTF-8 text, decoding multi-byte sequences across chunk seams. */
-function* readWorkflowReviewTextChunks(absolute: string, chunkBytes = WORKFLOW_REVIEW_BUFFER_LIMIT_BYTES): Generator<string> {
+function* readWorkflowReviewTextChunks(absolute: string | WorkflowReviewOwnedFile, chunkBytes = WORKFLOW_REVIEW_BUFFER_LIMIT_BYTES): Generator<string> {
+  if (typeof absolute !== 'string') {
+    const before = absolute.seal(); const capacity = Math.max(1, Math.min(chunkBytes, WORKFLOW_REVIEW_BUFFER_LIMIT_BYTES));
+    const decoder = new TextDecoder('utf-8', { fatal: true });
+    for (let offset = 0; offset < before.bytes; offset += capacity) {
+      const bytes = absolute.read(offset, Math.min(capacity, before.bytes - offset)); const release = holdReviewResource('bufferBytes', bytes.length);
+      try { const text = decoder.decode(bytes, { stream: true }); if (text) yield text; } finally { release(); }
+    }
+    const tail = decoder.decode(); if (tail) yield tail;
+    const after = absolute.seal();
+    if (before.bytes !== after.bytes || before.sha256 !== after.sha256) throw new Error('workflow_review_evidence_corrupt');
+    return;
+  }
   const descriptor = openSync(absolute, 'r');
   const releaseDescriptor = holdReviewResource('descriptors');
   const releaseBuffer = holdReviewResource('bufferBytes', Math.max(1, Math.min(chunkBytes, WORKFLOW_REVIEW_BUFFER_LIMIT_BYTES)));
@@ -487,6 +499,30 @@ class WorkflowReviewStructureCursor {
       } else {
         if (!/^\\["\\/bfnrt]/.test(this.buffer)) throw new Error('workflow_review_source_corrupt');
         this.buffer = this.buffer.slice(2);
+      }
+    }
+  }
+  /** Decode one arbitrarily long JSON string in bounded pieces, preserving UTF-16 code units. */
+  streamString(consume: (piece: string) => void): void {
+    this.take('"');
+    for (;;) {
+      this.fill(1);
+      if (!this.buffer.length) throw new Error('workflow_review_source_corrupt');
+      const at = this.buffer.search(/["\\\u0000-\u001f]/);
+      const length = at < 0 ? this.buffer.length : at;
+      for (let offset = 0; offset < length; offset += 16384) consume(this.buffer.slice(offset, Math.min(length, offset + 16384)));
+      this.buffer = this.buffer.slice(length);
+      if (at < 0) continue;
+      if (this.buffer[0] === '"') { this.buffer = this.buffer.slice(1); return; }
+      if (this.buffer[0] !== '\\') throw new Error('workflow_review_source_corrupt');
+      this.fill(2);
+      if (this.buffer[1] === 'u') {
+        this.fill(6);
+        if (!/^\\u[0-9a-fA-F]{4}/.test(this.buffer)) throw new Error('workflow_review_source_corrupt');
+        consume(String.fromCharCode(parseInt(this.buffer.slice(2, 6), 16))); this.buffer = this.buffer.slice(6);
+      } else {
+        if (!/^\\["\\/bfnrt]/.test(this.buffer)) throw new Error('workflow_review_source_corrupt');
+        consume(JSON.parse(`"${this.buffer.slice(0, 2)}"`) as string); this.buffer = this.buffer.slice(2);
       }
     }
   }
@@ -784,7 +820,7 @@ export function* iterateWorkflowReviewJsonFields(input: { path: string; arrayKey
       cursor.take(':');
       if (typeof input.arrayKey === 'string' ? key === input.arrayKey : input.arrayKey.includes(key)) {
         if (!cursor.peek('[')) throw new Error('workflow_review_codex_catalog_unavailable');
-        skipStructured(cursor, '[', typeof input.arrayKey !== 'string');
+        skipStructured(cursor, '[', true);
         continue;
       }
       if (input.fields && !input.fields.includes(key)) {
@@ -860,6 +896,314 @@ function skipStructured(cursor: WorkflowReviewStructureCursor, opening: '{' | '[
     else cursor.readScalar(REVIEW_STRUCTURE_FIELD_LIMIT);
   }
   cursor.take(closing);
+}
+
+export interface WorkflowReviewNativeItemFingerprint {
+  readonly type: string;
+  readonly id?: string;
+  readonly role?: string;
+  readonly phase?: string;
+  readonly callId?: string;
+  readonly name?: string;
+  readonly sha256: string;
+  readonly withoutIdSha256: string;
+  /** Context reconstruction is checked separately; this digest is never ordinary item equality. */
+  readonly contextSha256?: string;
+  readonly metadata?: { readonly turnId?: string; readonly createTime: boolean; readonly kindsSha256?: string };
+  readonly fields: Readonly<Record<string, string>>;
+  /** Pinned serialization candidate; only completed model-output ancestry may adopt it. */
+  readonly historySerialization?: { readonly sha256: string; readonly fields: Readonly<Record<string, string>> };
+}
+interface NativeFingerprintField {
+  sha256: string; value?: string; mask?: number; null?: boolean; count?: bigint;
+  metadata?: { turnId?: string; createTime: boolean; kindsSha256?: string; withoutCreateTimeSha256: string; fields: Readonly<Record<string, string>> };
+}
+type NativeFieldReader = () => NativeFingerprintField;
+function nativeFingerprintObject(fields: Readonly<Record<string, string>>): string {
+  const hash = createHash('sha256').update('object\n');
+  for (const key of Object.keys(fields).sort()) hash.update(JSON.stringify([key, fields[key]]) + '\n');
+  return hash.digest('hex');
+}
+function nativeFingerprintString(cursor: WorkflowReviewStructureCursor): NativeFingerprintField {
+  const hash = createHash('sha256').update('string\n'); let units = 0n;
+  cursor.streamString(piece => {
+    // UTF-16 code units make literal/escaped pairs equal without replacing a lone surrogate or a
+    // pair split across pieces. Each temporary buffer stays below the existing working-buffer bound.
+    const bytes = Buffer.from(piece, 'utf16le'); const release = holdReviewResource('bufferBytes', bytes.length);
+    try { hash.update(bytes); units += BigInt(piece.length); } finally { release(); }
+  });
+  hash.update(`\n${units}`); return { sha256: hash.digest('hex') };
+}
+function nativeFingerprintControl(cursor: WorkflowReviewStructureCursor): NativeFingerprintField {
+  const value = cursor.readString(REVIEW_STRUCTURE_FIELD_LIMIT);
+  return { sha256: digest(Buffer.from(JSON.stringify(value))), value };
+}
+function nativeFingerprintScalar(cursor: WorkflowReviewStructureCursor): NativeFingerprintField {
+  const value: unknown = JSON.parse(cursor.readScalar(REVIEW_STRUCTURE_FIELD_LIMIT));
+  if (typeof value === 'number' && !Number.isFinite(value)) throw new Error('workflow_review_source_corrupt');
+  return { sha256: digest(Buffer.from(JSON.stringify(value))), ...(value === null ? { null: true } : {}) };
+}
+function nativeFingerprintFields(cursor: WorkflowReviewStructureCursor, readers: Readonly<Record<string, NativeFieldReader>>): Record<string, NativeFingerprintField> {
+  cursor.take('{'); const fields: Record<string, NativeFingerprintField> = {}; let first = true;
+  while (!cursor.peek('}')) {
+    if (!first) cursor.take(','); first = false;
+    const key = cursor.readString(REVIEW_STRUCTURE_FIELD_LIMIT); cursor.take(':');
+    if (!Object.hasOwn(readers, key) || Object.hasOwn(fields, key)) throw new Error('workflow_review_source_corrupt');
+    fields[key] = readers[key]!();
+  }
+  cursor.take('}'); return fields;
+}
+function nativeFingerprintArray(cursor: WorkflowReviewStructureCursor, item: NativeFieldReader): NativeFingerprintField {
+  cursor.take('['); const hash = createHash('sha256').update('array\n'); let first = true; let mask = 0; let count = 0n;
+  while (!cursor.peek(']')) {
+    if (!first) cursor.take(','); first = false;
+    const field = item(); hash.update(field.sha256 + '\n'); mask |= field.mask ?? 0; count++;
+  }
+  cursor.take(']'); return { sha256: hash.digest('hex'), mask, count };
+}
+function nativeFingerprintText(cursor: WorkflowReviewStructureCursor): NativeFingerprintField {
+  const fields = nativeFingerprintFields(cursor, { type: () => nativeFingerprintControl(cursor), text: () => nativeFingerprintString(cursor) });
+  const types = ['input_text', 'output_text', 'summary_text', 'reasoning_text']; const at = types.indexOf(fields.type?.value ?? '');
+  if (at < 0 || !fields.text) throw new Error('workflow_review_source_corrupt');
+  return { sha256: nativeFingerprintObject(Object.fromEntries(Object.entries(fields).map(([key, field]) => [key, field.sha256]))), mask: 1 << at };
+}
+function nativeFingerprintMetadata(cursor: WorkflowReviewStructureCursor): NativeFingerprintField {
+  const fields = nativeFingerprintFields(cursor, { turn_id: () => nativeFingerprintControl(cursor),
+    create_time: () => {
+      const raw = cursor.readScalar(REVIEW_STRUCTURE_FIELD_LIMIT); const value: unknown = JSON.parse(raw);
+      if (typeof value !== 'number' || !Number.isFinite(value)) throw new Error('workflow_review_source_corrupt');
+      return { sha256: digest(Buffer.from(JSON.stringify(value))) };
+    }, content_item_kinds: () => nativeFingerprintArray(cursor, () => nativeFingerprintControl(cursor)) });
+  const hashes = Object.fromEntries(Object.entries(fields).map(([key, field]) => [key, field.sha256]));
+  const { create_time: _time, ...withoutTime } = hashes;
+  return { sha256: nativeFingerprintObject(hashes), metadata: { turnId: fields.turn_id?.value, createTime: !!fields.create_time,
+    kindsSha256: fields.content_item_kinds?.sha256, withoutCreateTimeSha256: nativeFingerprintObject(withoutTime), fields: hashes } };
+}
+/** Only bounded inventory/schema controls use a generic JSON value; source/history never does. */
+function nativeFingerprintControlJson(raw: string): NativeFingerprintField {
+  const bounded = new WorkflowReviewStructureCursor((function* () { yield raw; })(), { whitespace: true });
+  const walk = (): NativeFingerprintField => {
+    if (bounded.peek('[')) return nativeFingerprintArray(bounded, walk);
+    if (bounded.peek('{')) {
+      bounded.take('{'); const fields: Record<string, string> = Object.create(null); let first = true;
+      while (!bounded.peek('}')) {
+        if (!first) bounded.take(','); first = false;
+        const key = bounded.readString(REVIEW_STRUCTURE_FIELD_LIMIT); bounded.take(':');
+        if (Object.hasOwn(fields, key)) throw new Error('workflow_review_source_corrupt');
+        fields[key] = walk().sha256;
+      }
+      bounded.take('}'); return { sha256: nativeFingerprintObject(fields) };
+    }
+    return bounded.peek('"') ? nativeFingerprintControl(bounded) : nativeFingerprintScalar(bounded);
+  };
+  try { const field = walk(); bounded.end(); return field; } finally { bounded.close(); }
+}
+function nativeFingerprintInventory(cursor: WorkflowReviewStructureCursor): NativeFingerprintField {
+  if (!cursor.peek('[')) throw new Error('workflow_review_source_corrupt');
+  return nativeFingerprintControlJson(cursor.readStructured(REVIEW_STRUCTURE_RECORD_LIMIT));
+}
+function nativeFingerprintItem(cursor: WorkflowReviewStructureCursor, publicCompactionMetadata: boolean): WorkflowReviewNativeItemFingerprint {
+  const control = () => nativeFingerprintControl(cursor); const string = () => nativeFingerprintString(cursor);
+  const optionalString = () => cursor.peek('null') ? nativeFingerprintScalar(cursor) : string();
+  const fields = nativeFingerprintFields(cursor, { type: control, id: control, role: control, phase: control, name: control,
+    namespace: () => cursor.peek('null') ? nativeFingerprintScalar(cursor) : control(), call_id: control,
+    arguments: string, output: string, encrypted_content: optionalString,
+    content: () => cursor.peek('null') ? nativeFingerprintScalar(cursor) : nativeFingerprintArray(cursor, () => nativeFingerprintText(cursor)),
+    summary: () => nativeFingerprintArray(cursor, () => nativeFingerprintText(cursor)),
+    tools: () => nativeFingerprintInventory(cursor),
+    internal_chat_message_metadata_passthrough: () => nativeFingerprintMetadata(cursor),
+    metadata: () => {
+      const values = nativeFingerprintFields(cursor, { turn_id: control });
+      if (!values.turn_id) throw new Error('workflow_review_source_corrupt');
+      return values.turn_id;
+    } });
+  const type = fields.type?.value ?? '';
+  if (type === 'reasoning' && !fields.encrypted_content) fields.encrypted_content = { sha256: digest(Buffer.from('null')), null: true };
+  const schemas: Record<string, { required: readonly string[]; optional: readonly string[] }> = {
+    message: { required: ['role', 'content'], optional: ['id', 'phase', 'internal_chat_message_metadata_passthrough'] },
+    reasoning: { required: ['summary', 'encrypted_content'], optional: ['id', 'content', 'internal_chat_message_metadata_passthrough'] },
+    function_call: { required: ['name', 'arguments', 'call_id'], optional: ['id', 'namespace', 'internal_chat_message_metadata_passthrough'] },
+    function_call_output: { required: ['call_id', 'output'], optional: ['id', 'name', 'namespace', 'internal_chat_message_metadata_passthrough'] },
+    compaction: { required: ['encrypted_content'], optional: ['id', 'internal_chat_message_metadata_passthrough', ...(publicCompactionMetadata ? ['metadata'] : [])] },
+    compaction_trigger: { required: [], optional: [] },
+    additional_tools: { required: ['role', 'tools'], optional: ['id'] },
+  };
+  const schema = Object.hasOwn(schemas, type) ? schemas[type] : undefined;
+  if (!schema || schema.required.some(key => !fields[key])
+    || Object.keys(fields).some(key => key !== 'type' && !schema.required.includes(key) && !schema.optional.includes(key))
+    || type === 'message' && (fields.content!.null || !['developer', 'user', 'assistant', 'system'].includes(fields.role!.value ?? '') || ((fields.content!.mask ?? 0) & ~3))
+    || type === 'message' && fields.phase && !['commentary', 'final_answer'].includes(fields.phase.value ?? '')
+    || type === 'reasoning' && (((fields.summary!.mask ?? 0) & ~4) || ((fields.content?.mask ?? 0) & ~8))
+    || type === 'additional_tools' && fields.role!.value !== 'developer'
+    || type === 'compaction' && fields.encrypted_content!.null) throw new Error('workflow_review_source_corrupt');
+  if (fields.metadata && (type !== 'compaction' || !publicCompactionMetadata
+    || fields.metadata.value !== fields.internal_chat_message_metadata_passthrough?.metadata?.turnId)) throw new Error('workflow_review_source_corrupt');
+  const hashes = Object.fromEntries(Object.entries(fields).filter(([key]) => key !== 'metadata').map(([key, field]) => [key, field.sha256]));
+  const { id: _id, ...withoutId } = hashes;
+  const metadata = fields.internal_chat_message_metadata_passthrough?.metadata;
+  const context = metadata ? { ...withoutId, internal_chat_message_metadata_passthrough: metadata.withoutCreateTimeSha256 } : withoutId;
+  let history: Record<string, string> | undefined;
+  // Codex 0.159.1 unsupported-audio normalization writes positional unknown kinds for
+  // unchanged text when kinds were absent (annotated_content.rs:52–98). Existing kinds stay exact.
+  if (type === 'message' && fields.role?.value === 'assistant' && !metadata?.kindsSha256) {
+    const kinds = createHash('sha256').update('array\n'); const unknown = digest(Buffer.from(JSON.stringify('unknown')));
+    for (let count = fields.content!.count!; count > 0n; count--) kinds.update(unknown + '\n');
+    history = { ...hashes, internal_chat_message_metadata_passthrough: nativeFingerprintObject({
+      ...metadata?.fields, content_item_kinds: kinds.digest('hex') }) };
+  } else if (type === 'reasoning' && fields.content?.count === 0n) {
+    // protocol/models.rs should_serialize_reasoning_content omits Some([]), never nonempty text.
+    const { content: _content, ...withoutEmptyContent } = hashes; history = withoutEmptyContent;
+  }
+  return Object.freeze({ type, id: fields.id?.value, role: fields.role?.value, phase: fields.phase?.value,
+    callId: fields.call_id?.value, name: fields.name?.value, fields: Object.freeze(hashes),
+    sha256: nativeFingerprintObject(hashes), withoutIdSha256: nativeFingerprintObject(withoutId),
+    ...(history ? { historySerialization: Object.freeze({ sha256: nativeFingerprintObject(history), fields: Object.freeze(history) }) } : {}),
+    ...(type === 'message' ? { contextSha256: nativeFingerprintObject(context) } : {}),
+    ...(metadata ? { metadata: Object.freeze({ turnId: metadata.turnId, createTime: metadata.createTime, kindsSha256: metadata.kindsSha256 }) } : {}) });
+}
+/** Stream typed text-only native history items from an owned JSON file, with no item/history size cap. */
+export function* iterateWorkflowReviewNativeItems(input: { file: WorkflowReviewOwnedFile; arrayKey: string;
+  publicCompactionMetadata?: boolean; chunkBytes?: number }): Generator<WorkflowReviewNativeItemFingerprint> {
+  const cursor = new WorkflowReviewStructureCursor(readWorkflowReviewTextChunks(input.file,
+    Math.max(1, Math.min(input.chunkBytes ?? 16384, 16384))), { whitespace: true }); let found = false;
+  try {
+    cursor.take('{'); let first = true;
+    while (!cursor.peek('}')) {
+      if (!first) cursor.take(','); first = false;
+      const key = cursor.readString(REVIEW_STRUCTURE_FIELD_LIMIT); cursor.take(':');
+      if (key !== input.arrayKey) {
+        if (cursor.peek('{') || cursor.peek('[')) skipStructured(cursor, cursor.peek('{') ? '{' : '[', true);
+        else cursor.skipScalar();
+        continue;
+      }
+      if (found) throw new Error('workflow_review_source_corrupt'); found = true;
+      cursor.take('['); let firstItem = true;
+      while (!cursor.peek(']')) {
+        if (!firstItem) cursor.take(','); firstItem = false;
+        yield nativeFingerprintItem(cursor, input.publicCompactionMetadata === true);
+      }
+      cursor.take(']');
+    }
+    cursor.take('}'); cursor.end();
+    if (!found) throw new Error('workflow_review_evidence_corrupt');
+  } finally { cursor.close(); }
+}
+
+/** Compare every request field while streaming the only unbounded field: model input history. */
+export function fingerprintWorkflowReviewNativeRequest(file: WorkflowReviewOwnedFile): string {
+  const cursor = new WorkflowReviewStructureCursor(readWorkflowReviewTextChunks(file, 16384), { whitespace: true });
+  const fields: Record<string, string> = Object.create(null);
+  try {
+    cursor.take('{'); let first = true;
+    while (!cursor.peek('}')) {
+      if (!first) cursor.take(','); first = false;
+      const key = cursor.readString(REVIEW_STRUCTURE_FIELD_LIMIT); cursor.take(':');
+      if (Object.hasOwn(fields, key)) throw new Error('workflow_review_source_corrupt');
+      if (key === 'input') fields[key] = nativeFingerprintArray(cursor, () => ({ sha256: nativeFingerprintItem(cursor, false).sha256 })).sha256;
+      else {
+        const raw = cursor.peek('{') || cursor.peek('[') ? cursor.readStructured(REVIEW_STRUCTURE_RECORD_LIMIT)
+          : cursor.peek('"') ? JSON.stringify(cursor.readString(REVIEW_STRUCTURE_FIELD_LIMIT)) : cursor.readScalar(REVIEW_STRUCTURE_FIELD_LIMIT);
+        fields[key] = nativeFingerprintControlJson(raw).sha256;
+      }
+    }
+    cursor.take('}'); cursor.end();
+    if (!fields.input) throw new Error('workflow_review_evidence_corrupt');
+    return nativeFingerprintObject(fields);
+  } finally { cursor.close(); }
+}
+export function workflowReviewNativeTextContentSha256(text: string): string {
+  const value = createHash('sha256').update('string\n').update(Buffer.from(text, 'utf16le')).update(`\n${BigInt(text.length)}`).digest('hex');
+  const item = nativeFingerprintObject({ type: digest(Buffer.from(JSON.stringify('input_text'))), text: value });
+  return createHash('sha256').update('array\n').update(item + '\n').digest('hex');
+}
+export interface WorkflowReviewNativeRequestControls {
+  readonly model: string;
+  readonly parallel: boolean;
+  readonly effort?: string;
+  readonly context?: string;
+  readonly previousResponseId?: string;
+  readonly threadId?: string;
+  readonly sessionId?: string;
+  readonly turnId?: string;
+  readonly requestKind?: string;
+  readonly instructionsContentSha256?: string;
+  readonly generate?: false;
+  readonly text?: { readonly verbosity?: string; readonly format?: unknown };
+}
+/** Observed HTTP/stock WebSocket Responses Lite controls; no inference from omitted wire fields. */
+export function readWorkflowReviewNativeRequestControls(file: WorkflowReviewOwnedFile,
+  representation: 'wire' | 'wire-wss' | 'compact-trace' = 'wire'): WorkflowReviewNativeRequestControls {
+  const cursor = new WorkflowReviewStructureCursor(readWorkflowReviewTextChunks(file, 16384), { whitespace: true });
+  const controls: { model?: string; parallel?: boolean; effort?: string; context?: string; previousResponseId?: string;
+    threadId?: string; sessionId?: string; turnId?: string; requestKind?: string; instructionsContentSha256?: string; generate?: false;
+    text?: { verbosity?: string; format?: unknown } } = {};
+  const allowed = representation === 'compact-trace' ? ['model', 'instructions', 'input', 'parallel_tool_calls']
+    : ['model', 'input', 'tool_choice', 'parallel_tool_calls', 'reasoning', 'store', 'stream', 'include', 'prompt_cache_key', 'text', 'client_metadata', 'previous_response_id'];
+  if (representation === 'wire-wss') allowed.push('type', 'generate');
+  const seen = new Set<string>();
+  const boundedJson = (): unknown => {
+    const raw = cursor.readStructured(REVIEW_STRUCTURE_RECORD_LIMIT); nativeFingerprintControlJson(raw); return JSON.parse(raw) as unknown;
+  };
+  try {
+    cursor.take('{'); let first = true;
+    while (!cursor.peek('}')) {
+      if (!first) cursor.take(','); first = false;
+      const key = cursor.readString(REVIEW_STRUCTURE_FIELD_LIMIT); cursor.take(':');
+      if (!allowed.includes(key) || seen.has(key)) throw new Error('workflow_review_native_controls_unsupported'); seen.add(key);
+      if (key === 'type') { if (cursor.readString(REVIEW_STRUCTURE_FIELD_LIMIT) !== 'response.create') throw new Error('workflow_review_native_controls_unsupported'); continue; }
+      if (key === 'generate') { if (cursor.readScalar(REVIEW_STRUCTURE_FIELD_LIMIT) !== 'false') throw new Error('workflow_review_native_controls_unsupported'); controls.generate = false; continue; }
+      if (key === 'input') { skipStructured(cursor, '[', true); continue; }
+      if (key === 'instructions') {
+        const text = nativeFingerprintString(cursor);
+        const content = nativeFingerprintObject({ type: digest(Buffer.from(JSON.stringify('input_text'))), text: text.sha256 });
+        controls.instructionsContentSha256 = createHash('sha256').update('array\n').update(content + '\n').digest('hex'); continue;
+      }
+      if (key === 'model') { controls.model = cursor.readString(REVIEW_STRUCTURE_FIELD_LIMIT); continue; }
+      if (key === 'previous_response_id') { controls.previousResponseId = cursor.readString(REVIEW_STRUCTURE_FIELD_LIMIT); continue; }
+      if (key === 'parallel_tool_calls') {
+        const raw = cursor.readScalar(REVIEW_STRUCTURE_FIELD_LIMIT);
+        if (raw !== 'true' && raw !== 'false') throw new Error('workflow_review_native_controls_unsupported'); controls.parallel = raw === 'true'; continue;
+      }
+      if (key === 'reasoning') {
+        const value = boundedJson() as { effort?: unknown; context?: unknown };
+        if (!value || Array.isArray(value) || Object.keys(value).some(field => !['effort', 'context', 'summary'].includes(field))
+          || typeof value.effort !== 'string' || typeof value.context !== 'string') throw new Error('workflow_review_native_controls_unsupported');
+        controls.effort = value.effort; controls.context = value.context; continue;
+      }
+      if (key === 'text') {
+        const value = boundedJson() as { verbosity?: string; format?: unknown };
+        if (!value || Array.isArray(value) || Object.keys(value).some(field => !['verbosity', 'format'].includes(field))
+          || value.verbosity !== undefined && !['low', 'medium', 'high'].includes(value.verbosity)) throw new Error('workflow_review_native_controls_unsupported');
+        controls.text = value; continue;
+      }
+      if (key === 'client_metadata') {
+        const value = boundedJson() as Record<string, unknown>;
+        if (!value || Array.isArray(value) || Object.values(value).some(field => typeof field !== 'string')) throw new Error('workflow_review_native_controls_unsupported');
+        for (const field of ['thread_id', 'session_id', 'turn_id']) if (typeof value[field] !== 'string') throw new Error('workflow_review_native_controls_unsupported');
+        controls.threadId = value.thread_id as string; controls.sessionId = value.session_id as string; controls.turnId = value.turn_id as string;
+        if (representation === 'wire-wss' && value.ws_request_header_x_openai_internal_codex_responses_lite !== 'true') throw new Error('workflow_review_native_controls_unsupported');
+        if (typeof value['x-codex-turn-metadata'] !== 'string') throw new Error('workflow_review_native_controls_unsupported');
+        nativeFingerprintControlJson(value['x-codex-turn-metadata']);
+        const metadata = JSON.parse(value['x-codex-turn-metadata']) as Record<string, unknown>;
+        if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)
+          || metadata.thread_id !== controls.threadId || metadata.session_id !== controls.sessionId || metadata.turn_id !== controls.turnId
+          || typeof metadata.request_kind !== 'string') throw new Error('workflow_review_native_controls_unsupported');
+        controls.requestKind = metadata.request_kind; continue;
+      }
+      if (key === 'tool_choice') { if (cursor.readString(REVIEW_STRUCTURE_FIELD_LIMIT) !== 'auto') throw new Error('workflow_review_native_controls_unsupported'); continue; }
+      if (key === 'store' || key === 'stream') {
+        if (cursor.readScalar(REVIEW_STRUCTURE_FIELD_LIMIT) !== (key === 'store' ? 'false' : 'true')) throw new Error('workflow_review_native_controls_unsupported'); continue;
+      }
+      if (cursor.peek('{') || cursor.peek('[')) skipStructured(cursor, cursor.peek('{') ? '{' : '[', true);
+      else cursor.skipScalar();
+    }
+    cursor.take('}'); cursor.end();
+    const required = representation === 'compact-trace' ? allowed : ['model', 'input', 'parallel_tool_calls', 'reasoning', 'client_metadata', 'tool_choice', 'store', 'stream'];
+    if (required.some(key => !seen.has(key)) || !controls.model || controls.parallel === undefined) throw new Error('workflow_review_native_controls_unsupported');
+    if (representation === 'wire-wss' && (!seen.has('type') || controls.generate === false
+      && (controls.requestKind !== 'prewarm' || controls.turnId !== '' || controls.previousResponseId !== undefined))) throw new Error('workflow_review_native_controls_unsupported');
+    return Object.freeze(controls as WorkflowReviewNativeRequestControls);
+  } finally { cursor.close(); }
 }
 
 /**
