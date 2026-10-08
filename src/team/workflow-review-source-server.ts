@@ -28,14 +28,14 @@ import { serializeMessage } from '@modelcontextprotocol/sdk/shared/stdio.js';
 import type { JSONRPCMessage } from '@modelcontextprotocol/sdk/types.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { openWorkflowReviewSourceBundle, readWorkflowReviewSource, workflowReviewSourceReceipt, hashWorkflowReviewArtifact,
-  writeWorkflowReviewArtifact, iterateWorkflowReviewJsonFields, iterateWorkflowReviewJsonRecords,
+  writeWorkflowReviewArtifact, iterateWorkflowReviewJsonFields, iterateWorkflowReviewJsonRecords, iterateWorkflowReviewManifestEntries,
   WORKFLOW_REVIEW_READ_LIMIT_BYTES,
   parseWorkflowReviewEvidenceArtifact, assertWorkflowReviewCoverageAttribution,
   WorkflowReviewCoverageMachine, WorkflowReviewOwnedFile, verifyWorkflowReviewOwnedReference,
   workflowReviewResourceUsage, workflowReviewSourceObjectBytes,
   iterateWorkflowReviewNativeItems, readWorkflowReviewNativeRequestControls, fingerprintWorkflowReviewNativeRequest,
   workflowReviewNativeTextContentSha256,
-  type WorkflowReviewSourceBundle, type WorkflowReviewSourceReceipt, type WorkflowReviewEvidenceArtifact,
+  type WorkflowReviewSourceBundle, type WorkflowReviewSourceEntry, type WorkflowReviewSourceReadResult, type WorkflowReviewSourceReceipt, type WorkflowReviewEvidenceArtifact,
   type WorkflowReviewCoverageProof, type WorkflowReviewOwnedReference } from './workflow-review-source.js';
 import { buildWorkflowReviewSourceBundle, streamWorkflowReviewLines } from './workflow-review-source.js';
 import { runWorkflowProcess, requireWorkflowProcessCompletion, type WorkflowProcessInputTransport, type WorkflowProcessResult } from './workflow-process.js';
@@ -1721,9 +1721,9 @@ export async function qualifyWorkflowNativeReviewClientFactory(input: {
   writeWorkflowReviewArtifact({ path: schemaPath, chunks: [JSON.stringify(input.schema, null, 2) + '\n'] });
   const request = JSON.stringify({ operation: 'native-reader-calibration', bundleSha256: bundle.digest, reviewerId: plan.reviewerId,
     entries: bundle.entryCount, server: WORKFLOW_REVIEW_NATIVE_NAMESPACE, tools: WORKFLOW_REVIEW_READER_TOOLS,
-    instruction: 'Calibration phase one: read the entire manifest using its cursor. Read entries in manifest order through the first nonempty source page, then stop this turn. Preserve the next id and cursor and every received page. Return findings:[] and coverage with this bundleSha256/reviewerId, complete:false, entries equal to the manifest entry count and ranges equal to the number of returned pages whose bytes is greater than zero. The controller will compact only after this turn completes, then ask you to finish.' });
+    instruction: 'Calibration phase one: read the entire manifest using its cursor. Read entries in manifest order through the first nonempty source page, then stop this turn. Preserve the latest trusted progress and every received page across compaction. Follow progress.next for the next kind/id/cursor; omit the cursor argument when progress.next.cursor is null to start that object. Return findings:[] and coverage with this bundleSha256/reviewerId, complete:false, entries equal to the manifest entry count and ranges copied exactly from the latest progress.ranges. The controller will compact only after this turn completes, then ask you to finish.' });
   const postRequest = JSON.stringify({ operation: 'native-reader-calibration-after-compaction', bundleSha256: bundle.digest, reviewerId: plan.reviewerId,
-    instruction: 'Continue from the preserved entry id/cursor in manifest order. Read every remaining source byte and every empty terminal page. Preserve exact reader progress and cumulative nonzero-page range count across compaction; revisit reader pages if needed. Return findings:[] and complete:true coverage for this bundle and reviewer only after the entire original manifest and all entries have been received.' });
+    instruction: 'Continue from the preserved progress.next kind/id/cursor in manifest order; omit the cursor argument when progress.next.cursor is null to start that object. Read every remaining source byte and every empty terminal page. Preserve the latest trusted progress across compaction; revisit already completed ranges if needed. Return findings:[] and complete:true coverage for this bundle and reviewer only after progress.next is null and the entire original manifest and all entries have been received. Copy the final progress.ranges exactly into coverage.ranges.' });
   const launch: WorkflowSyntheticReviewLaunch = { command: input.prepared.command, args: workflowNativeReviewArguments(catalog.path, mcpServers), cwd,
     environment: nativeObserverEnvironment(input.prepared, observer, join(plan.directory, 'trace')),
     redactionEnvironment: { ...input.prepared.redactionEnvironment, ...workflowNativeReviewObserverConfiguration(observer).redactionEnvironment },
@@ -1794,12 +1794,105 @@ const NATIVE_CURSOR_REFUSAL_RESULT = {
   contentItems: [{ type: 'inputText', text: 'Error: workflow_review_source_invalid_cursor. Copy the cursor exactly from the preceding page for this entry, or omit cursor to restart.' }],
   success: false,
 };
+const NATIVE_ORDER_REFUSAL = 'workflow_review_source_out_of_order';
+const NATIVE_SINGLETON_IDS = ['inventory', 'diff', 'objective', 'shared-context', 'contracts'];
+interface NativeSourceProgress {
+  readonly ranges: number;
+  readonly next: { readonly kind: 'manifest' | 'entry'; readonly id: string | null; readonly cursor: string | null } | null;
+}
+/** Serving advice only. Independent observed-byte reconstruction remains the coverage authority. */
+class NativeSourceProgressTracker {
+  private readonly objects: Generator<WorkflowReviewSourceEntry>;
+  private current?: WorkflowReviewSourceEntry;
+  private next?: WorkflowReviewSourceEntry;
+  private manifestComplete = false;
+  private instructions = 0;
+  private sources = 0;
+  private singletons = 0;
+  private offset = 0;
+  private cursor: string | null = null;
+  private ranges = 0;
+  constructor(bundle: WorkflowReviewSourceBundle) {
+    this.objects = iterateWorkflowReviewManifestEntries(bundle);
+    try { this.next = this.objects.next().value; } catch (error) { this.dispose(); throw error; }
+  }
+  snapshot(): NativeSourceProgress {
+    return { ranges: this.ranges, next: !this.manifestComplete ? { kind: 'manifest', id: null, cursor: this.cursor }
+      : this.current ? { kind: 'entry', id: this.current.id, cursor: this.cursor } : null };
+  }
+  private isCurrent(page: WorkflowReviewSourceReadResult): boolean {
+    return this.manifestComplete ? page.kind === 'entry' && page.id === this.current?.id : page.kind === 'manifest';
+  }
+  accepts(page: WorkflowReviewSourceReadResult): boolean {
+    if (this.isCurrent(page)) return page.offset === this.offset || page.offset < this.offset && page.offset + page.bytes <= this.offset;
+    if (page.kind === 'manifest') return this.manifestComplete;
+    const ordinal = /^(instr|src)-(0|[1-9][0-9]*)$/.exec(page.id!);
+    if (ordinal) return Number.isSafeInteger(Number(ordinal[2])) && Number(ordinal[2]) < (ordinal[1] === 'instr' ? this.instructions : this.sources);
+    const index = NATIVE_SINGLETON_IDS.indexOf(page.id!);
+    return index >= 0 && (this.singletons & 1 << index) !== 0;
+  }
+  /** The fitter may call this many times. No iterator or counter advances for a trial slice. */
+  preview(page: WorkflowReviewSourceReadResult): NativeSourceProgress {
+    const progress = this.snapshot();
+    return { ranges: this.ranges + (page.bytes > 0 ? 1 : 0),
+      next: this.isCurrent(page) && page.offset === this.offset
+        ? page.cursor === null ? this.next ? { kind: 'entry', id: this.next.id, cursor: null } : null
+          : { kind: page.kind, id: page.id, cursor: page.cursor }
+        : progress.next };
+  }
+  commit(page: WorkflowReviewSourceReadResult): void {
+    if (!this.accepts(page)) throw new Error(NATIVE_ORDER_REFUSAL);
+    if (this.isCurrent(page) && page.offset === this.offset) {
+      if (page.cursor === null) {
+        if (!this.manifestComplete) this.manifestComplete = true;
+        else {
+          const entry = this.current!;
+          if (entry.kind === 'instruction') {
+            if (entry.id !== `instr-${this.instructions}`) throw new Error('workflow_review_source_corrupt');
+            this.instructions++;
+          } else if (entry.kind === 'source') {
+            if (entry.id !== `src-${this.sources}`) throw new Error('workflow_review_source_corrupt');
+            this.sources++;
+          } else {
+            const index = NATIVE_SINGLETON_IDS.indexOf(entry.id);
+            if (index < 0 || entry.id !== entry.kind || (this.singletons & 1 << index) !== 0) throw new Error('workflow_review_source_corrupt');
+            this.singletons |= 1 << index;
+          }
+        }
+        this.current = this.next; this.next = this.objects.next().value;
+        this.offset = 0; this.cursor = null;
+      } else { this.offset += page.bytes; this.cursor = page.cursor; }
+    }
+    if (page.bytes > 0) this.ranges++;
+  }
+  dispose(): void { this.objects.return(undefined); }
+}
+function readNativeSource(bundle: WorkflowReviewSourceBundle, progress: NativeSourceProgressTracker,
+  tool: string, args: ReturnType<typeof readerArguments>, requestId: string | number) {
+  const success = (page: WorkflowReviewSourceReadResult) => ({ contentItems: [{ type: 'inputText',
+    text: JSON.stringify({ ...page, progress: progress.preview(page) }) }], success: true });
+  let page: WorkflowReviewSourceReadResult | undefined;
+  let refusal: typeof NATIVE_CURSOR_REFUSAL | typeof NATIVE_ORDER_REFUSAL | undefined;
+  try {
+    page = readWorkflowReviewSource(bundle, { kind: tool === WORKFLOW_REVIEW_READER_TOOL_MANIFEST ? 'manifest' : 'entry',
+      ...args, requestId, responseEnvelope: candidate => ({ id: requestId, result: success(candidate) }) });
+  } catch (error) {
+    if (!(error instanceof Error) || error.message !== NATIVE_CURSOR_REFUSAL) throw error;
+    refusal = NATIVE_CURSOR_REFUSAL;
+  }
+  if (page && !progress.accepts(page)) { refusal = NATIVE_ORDER_REFUSAL; page = undefined; }
+  const result = page ? success(page) : refusal === NATIVE_CURSOR_REFUSAL ? NATIVE_CURSOR_REFUSAL_RESULT
+    : { contentItems: [{ type: 'inputText', text: JSON.stringify({ error: NATIVE_ORDER_REFUSAL, progress: progress.snapshot() }) }], success: false };
+  if (wire({ id: requestId, result }).length > WORKFLOW_REVIEW_READ_LIMIT_BYTES) throw new Error('workflow_review_source_response_unbounded');
+  if (page) progress.commit(page);
+  return { page, refusal, result };
+}
 type NativeCallRecord = {
   readonly callId: string; readonly requestId: string | number; readonly tool: string; readonly arguments: unknown;
   readonly request: { offset: number; bytes: number; sha256: string };
   readonly response: { offset: number; bytes: number; sha256: string };
 } & ({ readonly receipt: WorkflowReviewSourceReceipt; readonly refusal?: never }
-  | { readonly refusal: typeof NATIVE_CURSOR_REFUSAL; readonly receipt?: never });
+  | { readonly refusal: typeof NATIVE_CURSOR_REFUSAL | typeof NATIVE_ORDER_REFUSAL; readonly receipt?: never });
 function ownedJson(directory: string, name: string): Record<string, unknown> {
   const file = new WorkflowReviewOwnedFile(directory, name);
   try {
@@ -1846,6 +1939,7 @@ export class WorkflowNativeReviewSession {
   private sealed?: { capture: WorkflowReviewOwnedReference; correlation: WorkflowReviewOwnedReference };
   private readonly decoder: WorkflowReviewFrameDecoder;
   private incoming?: NativeCallRecord['request'];
+  private progress?: NativeSourceProgressTracker;
   private readonly abortController = new AbortController();
   private readonly calibration?: { readonly postRequest: string; phase: 'first' | 'compact' | 'post'; firstManifest: boolean; firstSource: boolean; postSource: boolean;
     firstTurnId?: string; compactTurnId?: string; compactionId?: string; firstResult?: string; firstCallCount?: number;
@@ -2016,17 +2110,8 @@ export class WorkflowNativeReviewSession {
         || params.namespace != null || !WORKFLOW_REVIEW_READER_TOOLS.includes(String(params.tool))
         || typeof params.callId !== 'string' || (typeof message.id !== 'number' && typeof message.id !== 'string')) throw new Error('workflow_review_transport_request_mismatch');
       const args = readerArguments(String(params.tool), params.arguments);
-      const envelope = (page: Parameters<typeof workflowReviewSourceReceipt>[0]) => ({ id: message.id,
-        result: { contentItems: [{ type: 'inputText', text: JSON.stringify(page) }], success: true } });
       const bundle = this.bundle();
-      let page: ReturnType<typeof readWorkflowReviewSource> | undefined;
-      try {
-        page = readWorkflowReviewSource(bundle, { kind: params.tool === WORKFLOW_REVIEW_READER_TOOL_MANIFEST ? 'manifest' : 'entry',
-          ...args, requestId: message.id, responseEnvelope: envelope });
-      } catch (error) {
-        // A rejected cursor is model input, never a delivered source page. All other reader failures remain fatal.
-        if (!(error instanceof Error) || error.message !== NATIVE_CURSOR_REFUSAL) throw error;
-      }
+      const { page, refusal, result } = readNativeSource(bundle, this.progress ??= new NativeSourceProgressTracker(bundle), String(params.tool), args, message.id);
       const receipt = page && workflowReviewSourceReceipt(page);
       if (page && receipt && this.calibration?.phase === 'first') {
         this.calibration.firstManifest ||= receipt.kind === 'manifest' && page.cursor === null;
@@ -2037,9 +2122,9 @@ export class WorkflowNativeReviewSession {
         this.calibration.postSource ||= receipt.kind === 'entry' && receipt.id?.startsWith('src-') === true && receipt.bytes > 0;
       }
       if (receipt) appendWorkflowReviewSourceReceipt(this.plan.receiptsPath, receipt);
-      const response = this.send(page ? envelope(page) : { id: message.id, result: NATIVE_CURSOR_REFUSAL_RESULT }, true);
+      const response = this.send({ id: message.id, result }, true);
       const call: NativeCallRecord = { callId: params.callId, requestId: message.id, tool: String(params.tool), arguments: params.arguments,
-        request: reference, response, ...(receipt ? { receipt } : { refusal: NATIVE_CURSOR_REFUSAL }) };
+        request: reference, response, ...(receipt ? { receipt } : { refusal: refusal! }) };
       writeWorkflowReviewArtifact({ path: join(this.plan.directory, 'calls', nativeCallName(params.callId)), chunks: [wire(call)] });
       this.calls!.append(wire(call)); this.callCount++; return;
     }
@@ -2097,14 +2182,17 @@ export class WorkflowNativeReviewSession {
       this.decoder.end(); if (!this.finished) throw new Error('workflow_review_transport_incomplete');
       this.sealed = { capture: this.capture!.seal(), correlation: this.correlations!.seal() };
     } catch (error) { this.failure ??= { value: error }; }
-    finally { for (const file of [this.capture, this.correlations, this.calls]) try { file?.close(); } catch (error) { this.failure ??= { value: error }; } }
+    finally {
+      try { this.progress?.dispose(); } catch (error) { this.failure ??= { value: error }; }
+      for (const file of [this.capture, this.correlations, this.calls]) try { file?.close(); } catch (error) { this.failure ??= { value: error }; }
+    }
   }
   completion(): object {
     if (!nativeSessions.has(this)) throw new Error('workflow_review_transport_completion_required');
     this.assertHealthy(); if (!this.finished || !this.settled || !this.sealed || !this.processCompleted || !this.observationCompletion) throw new Error('workflow_review_transport_incomplete');
     const handle = Object.freeze({}); nativeCompletions.set(handle, this); return handle;
   }
-  dispose(): void { /* All owned handles close in settle/prove, including failure paths. */ }
+  dispose(): void { this.progress?.dispose(); }
   async prove(handle: object, attestation: unknown): Promise<WorkflowSyntheticReviewProof> {
     if (!nativeSessions.has(this) || nativeCompletions.get(handle) !== this || !this.sealed) throw new Error('workflow_review_transport_completion_required');
     nativeCompletions.delete(handle); this.assertHealthy(); this.revalidate(true);
@@ -2149,6 +2237,7 @@ export async function verifyWorkflowNativeReviewTrace(input: {
     const file = new WorkflowReviewOwnedFile(directory, name, create); held.push(file); return file;
   };
   let machine: WorkflowReviewCoverageMachine | undefined;
+  let serving: NativeSourceProgressTracker | undefined;
   let result: Awaited<ReturnType<typeof verifyWorkflowNativeReviewTrace>>;
   let cleanupFailure: { value: unknown } | undefined;
   let chain: WorkflowNativeCompactionChain | undefined;
@@ -2308,6 +2397,7 @@ export async function verifyWorkflowNativeReviewTrace(input: {
       frameObject(bytes);
     }
     if (offset !== input.capture.bytes) throw new Error('workflow_review_evidence_corrupt');
+    serving = new NativeSourceProgressTracker(input.bundle);
     for await (const line of streamWorkflowReviewLines(journal)) {
       const call = frameObject(Buffer.from(line)) as unknown as NativeCallRecord;
       const retained = ownedJson(join(input.directory, 'calls'), nativeCallName(call.callId));
@@ -2315,26 +2405,17 @@ export async function verifyWorkflowNativeReviewTrace(input: {
       const request = capture.read(call.request.offset, call.request.bytes); const response = capture.read(call.response.offset, call.response.bytes);
       const requestMessage = frameObject(request); const responseMessage = frameObject(response);
       const params = requestMessage.params as Record<string, unknown>;
-      const result = responseMessage.result as { success?: boolean; contentItems?: { type: string; text: string }[] };
       if (sha(request) !== call.request.sha256 || sha(response) !== call.response.sha256 || response.length > WORKFLOW_REVIEW_READ_LIMIT_BYTES
         || requestMessage.method !== 'item/tool/call' || requestMessage.id !== call.requestId || responseMessage.id !== call.requestId
         || params.threadId !== input.threadId || !(calibration ? [calibration.firstTurnId, calibration.postTurnId] : [input.turnId]).includes(String(params.turnId)) || params.callId !== call.callId
         || params.namespace != null || params.tool !== call.tool || !isDeepStrictEqual(params.arguments, call.arguments)
         || !WORKFLOW_REVIEW_READER_TOOLS.includes(call.tool)) throw new Error('workflow_review_evidence_corrupt');
-      if (Object.hasOwn(call, 'refusal')) {
-        if (call.refusal !== NATIVE_CURSOR_REFUSAL || Object.hasOwn(call, 'receipt')
-          || !isDeepStrictEqual(responseMessage, { id: call.requestId, result: NATIVE_CURSOR_REFUSAL_RESULT })) throw new Error('workflow_review_evidence_corrupt');
-        const args = readerArguments(call.tool, call.arguments);
-        let refused = false;
-        try {
-          readWorkflowReviewSource(input.bundle, { kind: call.tool === WORKFLOW_REVIEW_READER_TOOL_MANIFEST ? 'manifest' : 'entry', ...args });
-        } catch (error) {
-          if (!(error instanceof Error) || error.message !== NATIVE_CURSOR_REFUSAL) throw error;
-          refused = true;
-        }
-        if (!refused) throw new Error('workflow_review_evidence_corrupt');
-      } else if (result.success !== true || result.contentItems?.length !== 1 || result.contentItems[0]?.type !== 'inputText'
-        || !isDeepStrictEqual(workflowReviewSourceReceipt(JSON.parse(result.contentItems[0].text)), call.receipt)) throw new Error('workflow_review_evidence_corrupt');
+      const replay = readNativeSource(input.bundle, serving, call.tool, readerArguments(call.tool, call.arguments), call.requestId);
+      if (!isDeepStrictEqual(responseMessage, { id: call.requestId, result: replay.result })) throw new Error('workflow_review_evidence_corrupt');
+      if (replay.refusal) {
+        if (call.refusal !== replay.refusal || Object.hasOwn(call, 'receipt')) throw new Error('workflow_review_evidence_corrupt');
+      } else if (Object.hasOwn(call, 'refusal') || !replay.page
+        || !isDeepStrictEqual(workflowReviewSourceReceipt(replay.page), call.receipt)) throw new Error('workflow_review_evidence_corrupt');
       const callFile = new WorkflowReviewOwnedFile(join(input.directory, 'calls'), nativeCallName(call.callId));
       try { seals.append(wire({ directory: 'calls', ...callFile.seal() })); } finally { callFile.close(); }
       count++;
@@ -2509,9 +2590,11 @@ export async function verifyWorkflowNativeReviewTrace(input: {
             if (typeof payload.tool_call_id !== 'string') throw new Error(code);
             const call = ownedJson(join(input.directory, 'calls'), nativeCallName(payload.tool_call_id)) as unknown as NativeCallRecord;
             const modelCall = ownedJson(join(input.directory, 'model-calls'), nativeCallName(payload.tool_call_id));
-            if (call.refusal !== NATIVE_CURSOR_REFUSAL || call.callId !== payload.tool_call_id || modelCall.call_id !== call.callId
+            const response = frameObject(capture.read(call.response.offset, call.response.bytes));
+            const text = ((response.result as { contentItems: { text: string }[] }).contentItems[0]!).text;
+            if (![NATIVE_CURSOR_REFUSAL, NATIVE_ORDER_REFUSAL].includes(call.refusal!) || call.callId !== payload.tool_call_id || modelCall.call_id !== call.callId
               || !isDeepStrictEqual(boundedPayload(payload.result_payload, 'tool_result'), { type: 'direct_response',
-                response_item: { type: 'function_call_output', call_id: call.callId, output: NATIVE_CURSOR_REFUSAL_RESULT.contentItems[0]!.text } })) throw new Error(code);
+                response_item: { type: 'function_call_output', call_id: call.callId, output: text } })) throw new Error(code);
           } else {
             if (payload.status !== 'completed') throw new Error(code);
             sealPayload(payload.result_payload, 'tool_result');
@@ -2544,7 +2627,7 @@ export async function verifyWorkflowNativeReviewTrace(input: {
         ...(calibration ? { calibration } : {}) }) });
   } finally {
     try { await transactions?.return(undefined); } catch (value) { cleanupFailure = { value }; }
-    for (const close of [() => chain?.dispose(), () => machine?.dispose(), ...held.map(file => () => file.close())]) {
+    for (const close of [() => serving?.dispose(), () => chain?.dispose(), () => machine?.dispose(), ...held.map(file => () => file.close())]) {
       try { close(); } catch (value) { cleanupFailure ??= { value }; }
     }
   }

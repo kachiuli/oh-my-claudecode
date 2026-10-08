@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { buildWorkflowReviewSourceBundle, iterateWorkflowReviewManifestEntries, readWorkflowReviewSource,
-  workflowReviewSourceReceipt, WorkflowReviewOwnedFile, iterateWorkflowReviewNativeItems } from '../workflow-review-source.js';
+  workflowReviewSourceReceipt, WorkflowReviewCoverageMachine, WorkflowReviewOwnedFile, iterateWorkflowReviewNativeItems } from '../workflow-review-source.js';
 import { createWorkflowReviewSourceServer, qualifyWorkflowNativeReviewClientFactory, requireWorkflowNativeReviewClientFactory,
   verifyWorkflowNativeReviewTrace, WORKFLOW_REVIEW_READER_TOOLS } from '../workflow-review-source-server.js';
 import { WorkflowNativeReviewSession } from '../workflow-review-source-server.js';
@@ -126,14 +126,15 @@ describe('native reader authority and exact response fitting', () => {
 
 /** Synthetic protocol fixtures exercise offline checking; they cannot mint native runtime authority. */
 function fixture(fault?: 'extra-tool' | 'wire-corruption' | 'ancestry' | 'missing-completion' | 'missing-empty' | 'wrong-model' | 'wrong-effort' | 'sequence'
-  | 'early-final' | 'post-final-call' | 'post-final-inference' | 'post-final-dispatch', sourceRepeats = 300, recoverCursor = false) {
+  | 'early-final' | 'post-final-call' | 'post-final-inference' | 'post-final-dispatch', sourceRepeats = 300, recovery?: 'invalid-cursor-recovery' | 'order-progress') {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'omc-native-trace-fixture-'))); roots.push(root);
   const directory = join(root, 'delivery'); mkdirSync(directory); mkdirSync(join(directory, 'calls'));
   const traceRoot = join(directory, 'trace', 'trace-1234'); mkdirSync(join(traceRoot, 'payloads'), { recursive: true });
   const threadId = 'native-thread'; const turnId = 'native-turn'; const invocationId = 'fixture-invocation';
   const reviewerId = 'fixture-reviewer'; const effectiveInvocationDigest = sha('fixture-launch');
   const bundle = buildWorkflowReviewSourceBundle({ repository: root, baseCommit: '0'.repeat(40), head: '1'.repeat(40), directory: join(root, 'source'),
-    materials: [{ kind: 'source', path: 'unicode.txt', content: Buffer.from('界🙂"\\\n'.repeat(sourceRepeats)) },
+    materials: [...(recovery === 'order-progress' ? [{ kind: 'instruction' as const, path: 'AGENTS.md', content: Buffer.from('Read in manifest order.') }] : []),
+      { kind: 'source', path: 'unicode.txt', content: Buffer.from('界🙂"\\\n'.repeat(sourceRepeats)) },
       { kind: 'source', path: 'empty.txt', content: Buffer.alloc(0) }, ...requiredMaterials()] });
   const frames = new WorkflowReviewOwnedFile(directory, 'frames.bin', true);
   const correlations = new WorkflowReviewOwnedFile(directory, 'correlation.jsonl', true);
@@ -143,38 +144,35 @@ function fixture(fault?: 'extra-tool' | 'wire-corruption' | 'ancestry' | 'missin
     const frame = frames.append(wire(value)); correlations.append(wire({ invocationId, reviewerId, effectiveInvocationDigest,
       sequence: ++frameSequence, direction, frame })); return frame;
   };
+  let reply: { result: { contentItems: { text: string }[]; success: boolean } } | undefined;
+  // One persistent real handler with offline sinks; this unbranded object cannot authorize a native factory.
+  const session: WorkflowNativeReviewSession = Object.assign(Object.create(WorkflowNativeReviewSession.prototype) as WorkflowNativeReviewSession, {
+    threadId, turnId, bundle: () => bundle, callCount: 0, calls: journal,
+    plan: { directory, receiptsPath: join(directory, 'intended.jsonl') },
+    send(value: unknown) { reply = value as typeof reply; return record('request', value); },
+  });
+  let progress: { ranges: number; next: { kind: 'manifest' | 'entry'; id: string | null; cursor: string | null } | null } | undefined;
   const dispatch = (kind: 'manifest' | 'entry', id?: string, cursor?: string) => {
       const requestId = calls.length; const callId = `call_${requestId}`;
       const tool = WORKFLOW_REVIEW_READER_TOOLS[kind === 'manifest' ? 0 : 1]!;
       const args = { ...(id ? { id } : {}), ...(cursor ? { cursor } : {}) };
       const message = { id: requestId, method: 'item/tool/call', params: { threadId, turnId, callId, namespace: null, tool, arguments: args } };
       const request = record('receive', message);
-      if (recoverCursor) {
-        let reply: { result: { contentItems: { text: string }[]; success: boolean } } | undefined;
-        // Exercise the real handler with offline sinks only; this unbranded object cannot authorize a native factory.
-        const session = Object.assign(Object.create(WorkflowNativeReviewSession.prototype) as WorkflowNativeReviewSession, {
-          incoming: request, threadId, turnId, bundle: () => bundle, callCount: 0, calls: journal,
-          plan: { directory, receiptsPath: join(directory, 'intended.jsonl') },
-          send(value: unknown) { reply = value as typeof reply; return record('request', value); },
-        });
-        WorkflowNativeReviewSession.prototype['receive'].call(session, wire(message));
-        if (!reply) throw new Error('missing native fixture response');
-        const output = reply.result.contentItems[0]!.text;
-        const page = reply.result.success ? JSON.parse(output) as ReturnType<typeof readWorkflowReviewSource> : undefined;
-        calls.push({ callId, tool, arguments: args, output, bytes: page?.bytes ?? 0 }); return page;
-      }
-      const page = readWorkflowReviewSource(bundle, { kind, id, cursor });
-      const output = JSON.stringify(page);
-      const response = record('request', { id: requestId, result: { contentItems: [{ type: 'inputText', text: output }], success: true } });
-      const call = { callId, requestId, tool, arguments: args, request, response, receipt: workflowReviewSourceReceipt(page) };
-      journal.append(wire(call)); writeFileSync(join(directory, 'calls', `${sha(callId)}.json`), wire(call));
-      calls.push({ callId, tool, arguments: args, output, bytes: page.bytes }); return page;
+      Object.assign(session, { incoming: request }); reply = undefined;
+      WorkflowNativeReviewSession.prototype['receive'].call(session, wire(message));
+      const response = reply as { result: { contentItems: { text: string }[]; success: boolean } } | undefined;
+      if (!response) throw new Error('missing native fixture response');
+      expect(wire(response).length).toBeLessThanOrEqual(8192);
+      const output = response.result.contentItems[0]!.text;
+      const page = response.result.success ? JSON.parse(output) as ReturnType<typeof readWorkflowReviewSource> & { progress: NonNullable<typeof progress> } : undefined;
+      if (page) progress = page.progress;
+      calls.push({ callId, tool, arguments: args, output, bytes: page?.bytes ?? 0 }); return page;
   };
   let refused = false;
   const read = (kind: 'manifest' | 'entry', id?: string) => {
     let cursor: string | undefined;
     do {
-      if (recoverCursor && !refused && kind === 'entry' && id?.startsWith('src-') && cursor) {
+      if (recovery === 'invalid-cursor-recovery' && !refused && kind === 'entry' && id?.startsWith('src-') && cursor) {
         // Same failure class as the real run: 100 base64url characters decoding to 75 non-JSON bytes.
         expect(dispatch(kind, id, Buffer.alloc(75, 120).toString('base64url'))).toBeUndefined(); refused = true;
       }
@@ -183,10 +181,27 @@ function fixture(fault?: 'extra-tool' | 'wire-corruption' | 'ancestry' | 'missin
       cursor = page.cursor ?? undefined;
     } while (cursor);
   };
-  read('manifest'); for (const entry of iterateWorkflowReviewManifestEntries(bundle)) read('entry', entry.id);
+  try {
+    read('manifest');
+    if (recovery === 'order-progress') {
+      expect(dispatch('entry', 'objective')).toBeUndefined();
+      let revisited = false;
+      while (progress?.next) {
+        const next = progress.next;
+        const page = dispatch(next.kind, next.id ?? undefined, next.cursor ?? undefined);
+        if (!page) throw new Error('expected canonical source page');
+        if (!revisited && next.id === 'instr-0' && page.cursor === null) {
+          const before = progress!;
+          const revisit = dispatch('entry', 'instr-0');
+          expect(revisit!.progress).toEqual({ ranges: before.ranges + 1, next: before.next }); revisited = true;
+        }
+      }
+      expect(revisited).toBe(true);
+    } else for (const entry of iterateWorkflowReviewManifestEntries(bundle)) read('entry', entry.id);
+  } finally { session.dispose(); }
   const capture = frames.seal(); const correlation = correlations.seal(); frames.close(); correlations.close(); journal.close();
-  const attestation = { bundleSha256: bundle.digest, reviewerId, complete: true, entries: bundle.entryCount,
-    ranges: calls.filter(call => call.bytes > 0).length };
+  const attestation = { bundleSha256: bundle.digest, reviewerId, complete: true as const, entries: bundle.entryCount,
+    ranges: progress!.ranges };
   const resultText = JSON.stringify({ findings: [], coverage: attestation });
   const events: unknown[] = []; let ordinal = 0;
   const payload = (kind: string, value: unknown) => {
@@ -265,7 +280,7 @@ function compactionTrace(input: ReturnType<typeof fixture>, request: string, fau
   const calls = readFileSync(join(input.directory, 'calls.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
   const positiveSource = (call: typeof calls[number]) => call.receipt?.kind === 'entry' && call.receipt.id.startsWith('src-') && call.receipt.bytes > 0;
   const firstCallCount = fault === 'manual-no-post-calls' ? calls.length : fault === 'manual-no-post-positive'
-    ? calls.findLastIndex(positiveSource) + 1 : fault === 'invalid-cursor-recovery'
+    ? calls.findLastIndex(positiveSource) + 1 : fault === 'invalid-cursor-recovery' || fault === 'order-progress'
       ? calls.findIndex(call => call.refusal) + 1 : calls.findIndex(positiveSource) + 1;
   const compactTurnId = automatic ? input.turnId : 'manual-compact-turn';
   const postTurnId = automatic ? input.turnId : 'manual-post-turn'; const compactionId = 'manual-compaction';
@@ -386,7 +401,7 @@ function compactionTrace(input: ReturnType<typeof fixture>, request: string, fau
 }
 
 function observedFixture(fault?: string, cachedWarmup = false, manual: boolean | 'auto' = false) {
-  const input = fixture(undefined, manual ? 1000 : 300, fault === 'invalid-cursor-recovery'); const traceRoot = join(input.directory, 'trace', 'trace-1234');
+  const input = fixture(undefined, manual ? 1000 : 300, fault === 'invalid-cursor-recovery' || fault === 'order-progress' ? fault : undefined); const traceRoot = join(input.directory, 'trace', 'trace-1234');
   const request = 'Read every source page, preserve progress and return the exact coverage result.';
   const manualProof = manual ? compactionTrace(input, request, fault, manual === 'auto') : undefined;
   const events = readFileSync(join(traceRoot, 'trace.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
@@ -478,6 +493,53 @@ function observedFixture(fault?: string, cachedWarmup = false, manual: boolean |
 }
 
 describe('offline selected transport and native trace join', () => {
+  it('corrects native manifest order through compaction and counts positive revisits without crediting refusals or empty pages', async () => {
+    const input = observedFixture('order-progress', false, 'auto');
+    const calls = readFileSync(join(input.directory, 'calls.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    const frames = readFileSync(join(input.directory, input.capture.name));
+    const response = (call: typeof calls[number]) => JSON.parse(frames.subarray(call.response.offset, call.response.offset + call.response.bytes).toString()).result;
+    const refused = calls.filter(call => call.refusal);
+    expect(refused).toHaveLength(1);
+    const refusal = refused[0]!;
+    expect(refusal.refusal).toBe('workflow_review_source_out_of_order');
+    expect(refusal.arguments).toEqual({ id: 'objective' }); expect(refusal).not.toHaveProperty('receipt');
+    const index = calls.indexOf(refusal); const before = JSON.parse(response(calls[index - 1]).contentItems[0].text).progress;
+    const rejected = response(refusal); const progress = { ranges: before.ranges, next: { kind: 'entry', id: 'instr-0', cursor: null } };
+    expect(rejected).toEqual({ success: false, contentItems: [{ type: 'inputText',
+      text: JSON.stringify({ error: 'workflow_review_source_out_of_order', progress }) }] });
+    expect(calls[index + 1].arguments).toEqual({ id: 'instr-0' });
+    expect(calls.filter(call => call.receipt?.id === 'instr-0')).toHaveLength(2);
+    let ranges = 0;
+    for (const call of calls) {
+      if (call.receipt?.bytes > 0) ranges++;
+      expect(call.response.bytes).toBeLessThanOrEqual(8192);
+      expect(JSON.parse(response(call).contentItems[0].text).progress.ranges).toBe(ranges);
+    }
+    const last = calls.at(-1)!;
+    expect(last.receipt.bytes).toBe(0);
+    expect(JSON.parse(response(last).contentItems[0].text).progress).toEqual({ ranges, next: null });
+    expect(input.attestation.ranges).toBe(ranges);
+    const traceRoot = join(input.directory, 'trace', 'trace-1234');
+    const events = readFileSync(join(traceRoot, 'trace.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    const compact = events.find(event => event.payload.type === 'compaction_request_started');
+    const history = JSON.parse(readFileSync(join(traceRoot, compact.payload.request_payload.path), 'utf8')).input;
+    for (const call of calls.slice(0, index + 1)) expect(history).toContainEqual({ type: 'function_call_output',
+      id: `fco_${call.callId}`, call_id: call.callId, output: response(call).contentItems[0].text });
+    const proof = await verifyWorkflowNativeReviewTrace(input);
+    expect(proof.native.compaction).toMatchObject({ authority: false, compactions: 1 });
+    expect(proof.ranges).toBe(ranges);
+    const observed = readFileSync(join(input.directory, proof.native.observed.name), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    const intended = readFileSync(join(input.directory, 'intended.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    expect(observed).toEqual(intended); expect(observed).toHaveLength(input.callCount - 1);
+    expect(readdirSync(join(input.directory, 'consumed'))).toHaveLength(input.callCount);
+    const coverage = new WorkflowReviewCoverageMachine(input.bundle);
+    try {
+      observed.forEach((receipt, sequence) => coverage.record(receipt, sequence + 1));
+      expect(() => coverage.finish({ ...input.attestation, ranges: ranges + 1 })).toThrow('workflow_review_coverage_incomplete');
+      coverage.finish(input.attestation); expect(coverage.reconstructionDigest).toBe(proof.reconstructionSha256);
+    } finally { coverage.dispose(); }
+    expect(() => requireWorkflowNativeReviewClientFactory({ ...input, mode: 'native' })).toThrow('workflow_review_reader_observation_required');
+  });
   it('joins a clean server Close with zero credit and a complete full-history reconnect after compaction', async () => {
     const input = observedFixture('server-close-reconnect', false, 'auto');
     const proof = await verifyWorkflowNativeReviewTrace(input);
