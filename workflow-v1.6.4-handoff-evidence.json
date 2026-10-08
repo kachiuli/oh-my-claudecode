@@ -1,0 +1,242 @@
+{
+  "schemaVersion": 1,
+  "createdAtUtc": "2026-10-08T11:39:27.8260435Z",
+  "purpose": "Portable diagnostic handoff; no acceptance/native/publication authority",
+  "candidate": {
+    "patchBytes": 43724,
+    "patchSha256": "fc2eba922b7552a19d589c91efb52f2c477b7fd36eabb0232958cf257c63a531",
+    "parent": "a0410ba7217c1783e042312b5a0207a97b925fbf",
+    "head": "a7f448a25f079b9d00a98c8da67219fedb0ec40d",
+    "files": [
+      {
+        "path": "inventory/inventory-graph.json",
+        "bytes": 2752744,
+        "sha256": "be6ff5f097dc5d28f879dfd370a6b589e3407d207e288da3526d9b48fa7ad31c"
+      },
+      {
+        "path": "src/team/__tests__/workflow-native-review.test.ts",
+        "bytes": 55289,
+        "sha256": "a056f233c4f18716d34e057fe2f5bcde710d76b14d27f2e1545cc42d972a54ec"
+      },
+      {
+        "path": "src/team/workflow-review-source-server.ts",
+        "bytes": 214909,
+        "sha256": "80b1191621e994778d084b3aa2e561e0e8cea3d308ff54ef2fa71f0762a465f0"
+      },
+      {
+        "path": "src/team/workflow.ts",
+        "bytes": 169151,
+        "sha256": "beb090bbcaa44a3e7f83d8aacd91e06500ae0948855b07627cbb38ed9434a21d"
+      }
+    ],
+    "tree": "a83cd4d88904946b008e32ab0399a5b07ea01555"
+  },
+  "localValidation": {
+    "selectedTestsPassed": 30,
+    "nodeSha256": "ac51903c4c111815d52280b1fdcc8da067cbb37e2fe1a765097b85c3292c8582",
+    "ownedConfigSha256": "f1c448fb48c7853aa56ceb02aa4e72098b072c5de3fcff560bcf684c1e167989",
+    "vitestVersion": "4.1.11",
+    "ownedConfigSource": "import path from 'node:path';\nimport { pathToFileURL } from 'node:url';\nconst cwd = process.cwd();\nconst { default: config } = await import(pathToFileURL(path.join(cwd, 'vitest.config.ts')).href);\nexport default { ...config, root: cwd, cacheDir: path.join(cwd, '.tmp', 'native-order-progress-validation', 'vite-cache'), test: { ...config.test, cache: false } };\n\n",
+    "nodeVersion": "v24.18.1",
+    "checks": [
+      {
+        "id": "focused-final-01",
+        "executable": "node.exe",
+        "args": [
+          "node_modules/vitest/vitest.mjs",
+          "run",
+          "src/team/__tests__/workflow-native-review.test.ts",
+          "src/team/__tests__/workflow-review-source.test.ts",
+          "-t",
+          "corrects native manifest order|continues after a malformed native cursor|clean server Close|fits near-bound Unicode|reconstructs synthetic trace fixtures|joins automatic compaction|joins manual calibration|refuses .* in a complete manual calibration trace|reconstructs complete source from held requests|refuses .* before findings are accepted|preserves raw MCP schemas|proves exact done/native outputs|at the final-answer ordering boundary|serves bounded pages with opaque cursors|delivers an empty material as one complete zero-byte page|proves complete manifest and entry coverage|reconstructs delivery from the returned bytes|retains an empty reconstruction proof|uses the retained original snapshot for partial reconstruction revisits",
+          "--config",
+          ".tmp/native-order-progress-validation/vitest.config.mjs",
+          "--configLoader",
+          "native",
+          "--no-cache",
+          "--fileParallelism=false",
+          "--maxWorkers=1"
+        ],
+        "exitCode": 0,
+        "sourceUnchanged": true,
+        "receiptSha256": "b0e47cabd0d31a6c98da4af33d36249d6d783b1ad877d706298c251984874d5c",
+        "stdoutSha256": "191448a16cc1eb518cc37272229c6df22d3504880329d05cca68dc22e4dd8ddd",
+        "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "id": "lint-final-01",
+        "executable": "node.exe",
+        "args": [
+          "node_modules/eslint/bin/eslint.js",
+          "src/team/workflow.ts",
+          "src/team/workflow-review-source-server.ts",
+          "src/team/__tests__/workflow-native-review.test.ts"
+        ],
+        "exitCode": 0,
+        "sourceUnchanged": true,
+        "receiptSha256": "befa96815d719c45eeb96fd4399bdf72a8d3cc7212c1275b8eb3726d5d1ce257",
+        "stdoutSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "id": "typecheck-final-01",
+        "executable": "node.exe",
+        "args": [
+          "node_modules/typescript/bin/tsc",
+          "--noEmit",
+          "--incremental",
+          "false"
+        ],
+        "exitCode": 0,
+        "sourceUnchanged": true,
+        "receiptSha256": "d030e76f17cd4ef185d4571a2c08955b340bb257da43d90fb13be9fff415265d",
+        "stdoutSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "id": "static-final-01",
+        "executable": "node.exe",
+        "args": [
+          "scripts/ci/check-multirepo-paths.mjs"
+        ],
+        "exitCode": 0,
+        "sourceUnchanged": true,
+        "receiptSha256": "ce0cc5d5bcc0170a76c867a240fbcb92cfeb5ac6a4fe43d32679e41139717d97",
+        "stdoutSha256": "97c6471d5fc2be1d8f3e5c780a807a2527b79f7f95c62422798be088e7c7eace",
+        "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "id": "inventory-final-01",
+        "executable": "node.exe",
+        "args": [
+          "scripts/generate-inventory-graph.mjs",
+          "--verify"
+        ],
+        "exitCode": 0,
+        "sourceUnchanged": true,
+        "receiptSha256": "5378aa1efaa96bd0c75c17177202e27af67702f21cc610e262ac85a110dad77e",
+        "stdoutSha256": "f69c9b69a73c24eea75b35101d366efd60fd9e5a270ff31ad4d588b382baf3f4",
+        "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "id": "diff-final-01",
+        "executable": "git",
+        "args": [
+          "diff",
+          "--check",
+          "a0410ba7217c1783e042312b5a0207a97b925fbf"
+        ],
+        "exitCode": 0,
+        "sourceUnchanged": true,
+        "receiptSha256": "6ed4a5f3ffdfde0264a3e510cbc2ea5c9f2cce9ce7af4217b87aacbf850df843",
+        "stdoutSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    ],
+    "filteredTests": 110,
+    "vectorSha256": "0d71d98579fcaefc6ed7c36f556bb51b0cbc4524616d97bf893bc040608dd67a",
+    "receiptSha256": "c70712417644fbde000f6ca1b98f188176ed4e1cac08fcdab8b0fda499a30655"
+  },
+  "independentReview": {
+    "receiptSha256": "2bdc6f609fe8837f0f9dbe34ab612c7e83311a892eb34d0b96dd6d55fef536ed",
+    "checksRerun": false,
+    "verdict": "APPROVE",
+    "scope": "frozen local candidate only",
+    "findings": 0
+  },
+  "planPins": {
+    "architectureSha256": "466c5f4f87434db3d91aebb2701a2116f262d615129eba6135e7c0a4cd7ab17d",
+    "writerCleanupPlanSha256": "ded079b6a8c837728bf5caf1e3179a6a6ecaeba3c425ee379490227355d149d7",
+    "rootScopeSha256": "1f16cc64f098e9decf3a17dbb46d8c7023432e7d0766ebc9758d519fdfde4840"
+  },
+  "acceptedSource": {
+    "ciRun": 37704967873,
+    "tree": "36d89f72e33253149c45187870879fde78eac3e0",
+    "completeNativeReviewAccepted": false,
+    "windowsHostTestsPassed": 1442,
+    "head": "a0410ba7217c1783e042312b5a0207a97b925fbf",
+    "normalChecksPassed": 22,
+    "mainTestsPassed": 16150,
+    "ciUrl": "https://github.com/kachiuli/oh-my-claudecode/actions/runs/37704967873",
+    "buildCapturePassed": true
+  },
+  "lastNativeFailure": {
+    "terminalAuditSha256": "699654e3b76f0ec2826d6ce67ac65b4c866b1181873d4d4e6b3f1612ed2e402b",
+    "residentExit": 1,
+    "stockNativeExit": 0,
+    "laterUnreachedCount": {
+      "actualPositiveReceipts": 1111,
+      "modelReportedRanges": 1112
+    },
+    "resourcesAfterDisposal": 0,
+    "zeroCreditAbandonments": 4,
+    "firstRefusalSha256": "42143c4bc7bbf4219f0d24dc5c0123132dfa0ea349b75d2080c605c78543cc32",
+    "findingsAccepted": false,
+    "firstRefusal": "receipt4 objective instead of instr-0;order omitted from full-review descriptor",
+    "observerFailures": 0
+  },
+  "budgets": {
+    "source": {
+      "accepted": 6,
+      "failed": 4,
+      "cumulativeTotal": 11,
+      "additionalAuthorized": 1,
+      "newWorkflowMaximum": 1,
+      "spent": 10
+    },
+    "reset": false,
+    "native": {
+      "total": 10,
+      "spent": 4,
+      "localAttemptedInNewWorkflow": 0,
+      "outsideFailedInNewWorkflow": 4,
+      "completed": 0
+    }
+  },
+  "source11": {
+    "genuineAccepted": false,
+    "hostBytes": 69,
+    "task": "final-src",
+    "workflow": "omc60-order-20261008",
+    "hostSha256": "85782a8e8bea1a55384a8443d200ae6f56b4dad70536087a3b53ac97739832b0",
+    "packet": "UNBOUND",
+    "reservationLaunched": false,
+    "adminReadbackSha256": "8dc1ab82d38f9680f77a0a8f9748b4cb06900d2b9ef316cba473d8e693a75844",
+    "unboundBindingsSha256": "70abadcba5fbffd13892d13e8d96cd2b7f0942f3a04ab32d1dd6a6e76d2b4513",
+    "unboundPreparationSha256": "119bbc4db2e5312480fdef953e4f539cd0a4af4b4015b50a688a2c932180b061",
+    "workflowInitialized": false
+  },
+  "protectedReusablePins": {
+    "originalContractsSha256": "4d6d20177638abaaa5614ee3836a79462d8ceb8cd2f8ddc966764a3cb233a71b",
+    "codexVersion": "0.159.1",
+    "codexBinarySha256": "1203922d910426522182b35a52402085d0955101bb585a87bd7c88110d8d68d8",
+    "runtimeReceiptSha256": "fbc08292f9e14a8feca7c007a020d9cde07116c5d6f8e1fe7e38d892d9a7db40",
+    "sourceControllerTree": "b4a16d6349816e28100b49a0735c50d624302f64",
+    "sourceControllerManifestSha256": "97158f776f0d90ea66b4a03e68ac223ccf777706eab6f2836c6cbe89bbdb2e11",
+    "originalHelperSha256": "66a4a5e95bcca3ab237ac56cab5858a81c8ddbee66c1ef4845a183c0a1995379",
+    "sourceControllerHead": "697b1fb6eebe6186736d83fa415151c7aa8dd4ba",
+    "acceptedArtifactSha256": "26dfb15911df2d7a97a29ba57b7ba0af62283148c632d183f38bb92456716372",
+    "requestedModel": "gpt-6.1-sol",
+    "requestedEffort": "ultra",
+    "sourceControllerFiles": 11748,
+    "nativeEffort": "xhigh",
+    "source10PublisherPatternSha256": "22d4e568a271eff9f1d156f87fc9a61ae1f48ab6004e699f982adb48cc3d3151",
+    "originalGuardSha256": "e4be679d7555c1dcd0a8630065488f372eeef0bd414aa703cfe798c6b83211fa"
+  },
+  "release": {
+    "packageHelperSha256": "ca2b262d38fab0c3dbc224febcc194c5902d67b3a53316b86e39620547573713",
+    "tag": "workflow-v1.6.4",
+    "packageVersion": "5.5.0",
+    "publicCompatZipSha256": "bd71f253eab6fd1231f18b5c93f08b98c373a1fb79decc2913031ebde27d4a3b",
+    "published": false,
+    "packageHelperExecuted": false,
+    "privateZipPublicationForbidden": true,
+    "issuesStillOpen": [
+      60,
+      62,
+      64
+    ],
+    "consumerOperationsRequired": false,
+    "publicCompatZipBytes": 35683453
+  }
+}
